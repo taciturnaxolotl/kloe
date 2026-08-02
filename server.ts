@@ -2,7 +2,7 @@ import { Elysia, t } from "elysia";
 import { randomUUID } from "node:crypto";
 import { Store } from "./src/store";
 import { ConversationActor, type Subscriber, type WireEvent } from "./src/actor";
-import { run } from "./src/inference";
+import { run, initInference, getRegistry } from "./src/inference";
 import { sseBlock } from "./src/sse";
 import { parseEventId } from "./src/events";
 import {
@@ -99,6 +99,11 @@ export function buildApp(deps: {
 
   app.get("/health", () => ({ ok: true }));
 
+  // All models available to this deployment (enabled providers × catalog),
+  // with metadata for the settings UI. Curation of which subset the chat UI
+  // shows is layered on top separately.
+  app.get("/models", () => ({ models: getRegistry().listModels() }));
+
   app.get(
     "/conversations/:id/stream",
     ({ params, request }) => {
@@ -169,7 +174,7 @@ export function buildApp(deps: {
         runId,
         messageId,
         prompt: body.content,
-        model: process.env.HYPER_MODEL ?? "echo",
+        model: body.model,
       });
 
       // Enqueue decouples the response from the run: the client opens /stream
@@ -182,6 +187,7 @@ export function buildApp(deps: {
       body: t.Object({
         content: t.String(),
         runId: t.Optional(t.String()),
+        model: t.String(),
       }),
     },
   );
@@ -217,14 +223,14 @@ export function buildApp(deps: {
         runId,
         messageId,
         prompt: body.content,
-        model: process.env.HYPER_MODEL ?? "echo",
+        model: body.model,
       });
 
       set.status = 202;
       return { ok: true, jobId, runId, messageId };
     },
     {
-      body: t.Object({ content: t.String() }),
+      body: t.Object({ content: t.String(), model: t.String() }),
     },
   );
 
@@ -243,6 +249,10 @@ const isEntryPoint = import.meta.main;
 let store: Store;
 let app: Elysia;
 if (isEntryPoint) {
+  // Load the catalog and build the provider registry before serving, so the
+  // first request already has models resolvable.
+  await initInference();
+
   store = new Store();
   app = buildApp({ store });
 

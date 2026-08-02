@@ -64,7 +64,7 @@ test("prompt → SSE stream emits user-message, message-start, deltas, message-e
     new Request(`${base}/conversations/${conv}/prompt`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ content: "hello kloe" }),
+      body: JSON.stringify({ content: "hello kloe", model: "echo" }),
     }),
   );
   expect(res.status).toBe(202);

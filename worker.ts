@@ -1,6 +1,6 @@
 import { Store } from "./src/store";
 import { ConversationActor } from "./src/actor";
-import { run } from "./src/inference";
+import { run, initInference } from "./src/inference";
 import { LEASE_GRACE_MS, HEARTBEAT_INTERVAL_MS, REAP_INTERVAL_MS } from "./src/config";
 
 interface CurrentJob {
@@ -110,6 +110,9 @@ export class Worker {
 
 // Entry point: run the claim loop when invoked directly.
 if (import.meta.main) {
+  // Build the provider registry (catalog + ops config) before claiming work.
+  await initInference();
+
   const store = new Store();
   const worker = new Worker(store);
   worker.start();
