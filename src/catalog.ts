@@ -81,10 +81,19 @@ interface RawProvider {
   models?: RawModel[];
 }
 
+/** Requires a non-empty string, else throws — guards against garbage payloads. */
+function reqStr(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`catalog: entry has invalid "${field}" (${JSON.stringify(value)})`);
+  }
+  return value;
+}
+
 function parseModel(m: RawModel): CatalogModel {
+  const id = reqStr(m.id, "model.id");
   return {
-    id: m.id,
-    name: m.name,
+    id,
+    name: typeof m.name === "string" && m.name.length > 0 ? m.name : id,
     contextWindow: m.context_window ?? 0,
     defaultMaxTokens: m.default_max_tokens ?? 0,
     costPer1MIn: m.cost_per_1m_in ?? 0,
@@ -99,9 +108,10 @@ function parseModel(m: RawModel): CatalogModel {
 }
 
 function parseProvider(p: RawProvider): CatalogProvider {
+  const id = reqStr(p.id, "provider.id");
   return {
-    id: p.id,
-    name: p.name,
+    id,
+    name: typeof p.name === "string" && p.name.length > 0 ? p.name : id,
     type: p.type ?? "openai-compat",
     apiEndpoint: p.api_endpoint,
     apiKey: p.api_key,

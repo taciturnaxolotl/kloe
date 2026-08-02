@@ -91,6 +91,53 @@ function evictIdleActors(): void {
   }
 }
 
+/** Refs of every model this deployment can run (enabled providers + echo). */
+function knownModelRefs(): Set<string> {
+  return new Set(getRegistry().listModels().map((m) => m.ref));
+}
+
+/**
+ * Every available model joined to its curation state, for the settings UI.
+ * Models with no curation row default to hidden with their catalog name.
+ */
+function adminModels(store: Store) {
+  const settings = new Map(store.listModelSettings().map((s) => [s.ref, s]));
+  return getRegistry()
+    .listModels()
+    .map((m) => {
+      const s = settings.get(m.ref);
+      return {
+        ...m,
+        visible: s?.visible ?? false,
+        displayName: s?.displayName ?? null,
+        sortOrder: s?.sortOrder ?? 0,
+      };
+    });
+}
+
+/**
+ * The curated subset shown in the chat picker: opt-in (visible only), with
+ * displayName applied and ordered by sortOrder then name.
+ */
+function chatModels(store: Store) {
+  const settings = new Map(store.listModelSettings().map((s) => [s.ref, s]));
+  return getRegistry()
+    .listModels()
+    .filter((m) => settings.get(m.ref)?.visible)
+    .map((m) => {
+      const s = settings.get(m.ref)!;
+      return {
+        ref: m.ref,
+        name: s.displayName ?? m.name,
+        contextWindow: m.contextWindow,
+        reasoningLevels: m.reasoningLevels,
+        supportsImages: m.supportsImages,
+        sortOrder: s.sortOrder,
+      };
+    })
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+}
+
 export function buildApp(deps: {
   store: Store;
 }): Elysia {
@@ -99,10 +146,46 @@ export function buildApp(deps: {
 
   app.get("/health", () => ({ ok: true }));
 
-  // All models available to this deployment (enabled providers × catalog),
-  // with metadata for the settings UI. Curation of which subset the chat UI
-  // shows is layered on top separately.
-  app.get("/models", () => ({ models: getRegistry().listModels() }));
+  // Settings/admin view: every model available to this deployment (enabled
+  // providers × catalog) with its catalog metadata joined to its curation
+  // state (visible / displayName / sortOrder).
+  app.get("/models", () => ({ models: adminModels(store) }));
+
+  // Chat view: the curated, opt-in subset — only models explicitly marked
+  // visible, with pretty names applied, ordered for the picker.
+  app.get("/models/chat", () => ({ models: chatModels(store) }));
+
+  // Curation mutation for the settings menu. Partial: omitted fields keep
+  // their current value; `displayName: null` clears an override.
+  app.patch(
+    "/models",
+    ({ body, set }) => {
+      if (!knownModelRefs().has(body.ref)) {
+        set.status = 422;
+        return { error: `unknown model "${body.ref}"` };
+      }
+      const prev = store.getModelSetting(body.ref);
+      const merged = {
+        ref: body.ref,
+        visible: body.visible ?? prev?.visible ?? false,
+        displayName:
+          body.displayName !== undefined
+            ? body.displayName
+            : (prev?.displayName ?? null),
+        sortOrder: body.sortOrder ?? prev?.sortOrder ?? 0,
+      };
+      store.setModelSetting(merged);
+      return merged;
+    },
+    {
+      body: t.Object({
+        ref: t.String(),
+        visible: t.Optional(t.Boolean()),
+        displayName: t.Optional(t.Union([t.String(), t.Null()])),
+        sortOrder: t.Optional(t.Number()),
+      }),
+    },
+  );
 
   app.get(
     "/conversations/:id/stream",
@@ -160,6 +243,14 @@ export function buildApp(deps: {
     "/conversations/:id/prompt",
     async ({ params, body, set }) => {
       const conversationId = params.id;
+
+      // Reject unknown models up front: otherwise the job is accepted (202)
+      // and fails silently in the worker at resolve time.
+      if (!knownModelRefs().has(body.model)) {
+        set.status = 422;
+        return { error: `unknown model "${body.model}"` };
+      }
+
       const actor = getActor(conversationId, store);
       const runId = body.runId ?? randomUUID();
       const messageId = randomUUID();
@@ -208,6 +299,12 @@ export function buildApp(deps: {
     "/conversations/:id/steer",
     async ({ params, body, set }) => {
       const conversationId = params.id;
+
+      if (!knownModelRefs().has(body.model)) {
+        set.status = 422;
+        return { error: `unknown model "${body.model}"` };
+      }
+
       const actor = getActor(conversationId, store);
       // Hard steer: abort the current run, then queue a new one with the
       // redirect message.

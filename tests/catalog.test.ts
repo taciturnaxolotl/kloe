@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Catalog, loadCatalog } from "../src/catalog";
+import { initInference, getRegistry } from "../src/inference";
 
 const RAW = [
   {
@@ -56,6 +57,24 @@ test("Catalog.fromRaw rejects a non-array payload", () => {
   expect(() => Catalog.fromRaw({ providers: [] })).toThrow(/array of providers/);
 });
 
+test("Catalog.fromRaw rejects a garbage array (entries without a valid id)", () => {
+  expect(() => Catalog.fromRaw([{ foo: "bar" }])).toThrow(/invalid "provider.id"/);
+  expect(() => Catalog.fromRaw([{ id: null, name: 1 }])).toThrow(/invalid "provider.id"/);
+});
+
+test("loadCatalog does NOT cache a garbage-array 200; it falls through to the seed", async () => {
+  const cachePath = join(mkdtempSync(join(tmpdir(), "kloe-poison-")), "catwalk.json");
+  const seedPath = tmpFile("seed.json", JSON.stringify(RAW));
+  const garbage = (async () =>
+    new Response(JSON.stringify([{ foo: "bar" }]), { status: 200 })) as unknown as typeof fetch;
+
+  const catalog = await loadCatalog({ cachePath, seedPath, fetchImpl: garbage });
+  // Fell back to the (good) seed, not the garbage.
+  expect(catalog.getProvider("acme")).toBeDefined();
+  // Crucially, the poisoned payload was never written to the cache.
+  expect(existsSync(cachePath)).toBe(false);
+});
+
 test("loadCatalog fetches live and writes the disk cache", async () => {
   const cachePath = join(mkdtempSync(join(tmpdir(), "kloe-cache-")), "catwalk.json");
   const catalog = await loadCatalog({
@@ -97,4 +116,18 @@ test("loadCatalog throws when fetch fails and there's no cache or seed", async (
       fetchImpl: failFetch(),
     }),
   ).rejects.toThrow(/catalog unavailable/);
+});
+
+test("initInference is idempotent — concurrent calls share one registry", async () => {
+  const opts = {
+    catalog: {
+      cachePath: "/nonexistent-cache.json",
+      seedPath: tmpFile("seed.json", JSON.stringify(RAW)),
+      fetchImpl: failFetch(),
+    },
+    configPath: "/nonexistent-providers.json",
+  };
+  const [a, b] = await Promise.all([initInference(opts), initInference(opts)]);
+  expect(a).toBe(b);
+  expect(getRegistry()).toBe(a);
 });

@@ -1,14 +1,23 @@
-import { test, expect } from "bun:test";
+import { test, expect, beforeEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Store } from "../src/store";
 import { buildApp, getActor } from "../server";
+import { setRegistry } from "../src/inference";
+import { ProviderRegistry } from "../src/providers";
+import { Catalog } from "../src/catalog";
 
 const tmp = mkdtempSync(join(tmpdir(), "kloe-srv-"));
 const store = new Store(join(tmp, "test.db"));
 const app = buildApp({ store });
 const base = "http://localhost";
+
+// A minimal registry so model validation resolves (echo is always known).
+// Set per-test to survive interleaving with other files' registry mutations.
+beforeEach(() => {
+  setRegistry(new ProviderRegistry(Catalog.fromRaw([]), { config: { providers: [] } }));
+});
 
 interface Frame {
   event: string;
@@ -57,6 +66,41 @@ async function readSse(
   }
   return frames;
 }
+
+test("prompt rejects an unknown model with 422 (no silent async failure)", async () => {
+  const res = await app.handle(
+    new Request(`${base}/conversations/badmodel/prompt`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: "hi", model: "openai/gpt-4" }),
+    }),
+  );
+  expect(res.status).toBe(422);
+  // Nothing should have been enqueued for that conversation.
+  expect(getActor("badmodel", store).replay(0).length).toBe(0);
+});
+
+test("prompt rejects an empty model string with 422", async () => {
+  const res = await app.handle(
+    new Request(`${base}/conversations/emptymodel/prompt`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: "hi", model: "" }),
+    }),
+  );
+  expect(res.status).toBe(422);
+});
+
+test("steer rejects an unknown model with 422", async () => {
+  const res = await app.handle(
+    new Request(`${base}/conversations/steerbad/steer`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: "go", model: "nope/nope" }),
+    }),
+  );
+  expect(res.status).toBe(422);
+});
 
 test("prompt → SSE stream emits user-message, message-start, deltas, message-end", async () => {
   const conv = "s1";

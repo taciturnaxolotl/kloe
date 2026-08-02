@@ -67,6 +67,14 @@ const ECHO_MODEL: ModelInfo = {
 /** A cached, model-id-parameterized adapter for one provider. */
 type ModelFactory = (modelId: string) => LanguageModel;
 
+/** Cached factory plus the resolved credentials it was built with, so a
+ * rotated key/endpoint rebuilds instead of serving a stale one. */
+interface CachedFactory {
+  apiKey: string;
+  baseURL: string | undefined;
+  factory: ModelFactory;
+}
+
 /**
  * Registry of *enabled* providers: joins the local ops config against the
  * catalog. Construction fails loudly if an enabled provider isn't in the
@@ -74,7 +82,7 @@ type ModelFactory = (modelId: string) => LanguageModel;
  */
 export class ProviderRegistry {
   private readonly configs = new Map<string, ProviderConfig>();
-  private readonly factories = new Map<string, ModelFactory>();
+  private readonly factories = new Map<string, CachedFactory>();
   private readonly catalog: Catalog;
 
   constructor(
@@ -184,11 +192,13 @@ export class ProviderRegistry {
     return this.factoryFor(providerId, config)(modelId);
   }
 
-  /** Builds (and caches) the AI SDK adapter for a provider, keyed by `type`. */
+  /**
+   * Builds (and caches) the AI SDK adapter for a provider. Credentials are
+   * resolved from the environment on each call; the cache is invalidated if the
+   * resolved key or endpoint changed (e.g. a rotated secret), so a long-running
+   * process doesn't keep serving a stale key.
+   */
   private factoryFor(providerId: string, config: ProviderConfig): ModelFactory {
-    let factory = this.factories.get(providerId);
-    if (factory) return factory;
-
     const catProvider = this.catalog.getProvider(providerId)!;
     const apiKey = resolveEnv(config.apiKey);
     if (!apiKey) {
@@ -198,8 +208,13 @@ export class ProviderRegistry {
     }
     const baseURL = resolveEnv(config.apiEndpoint) ?? resolveEnv(catProvider.apiEndpoint);
 
-    factory = buildFactory(providerId, catProvider.type, apiKey, baseURL);
-    this.factories.set(providerId, factory);
+    const cached = this.factories.get(providerId);
+    if (cached && cached.apiKey === apiKey && cached.baseURL === baseURL) {
+      return cached.factory;
+    }
+
+    const factory = buildFactory(providerId, catProvider.type, apiKey, baseURL);
+    this.factories.set(providerId, { apiKey, baseURL, factory });
     return factory;
   }
 }
@@ -252,6 +267,11 @@ function createEchoModel(): LanguageModel {
     provider: "kloe-mock",
     modelId: "echo",
     supportedUrls: {},
+    // Echo is stream-only; fail loudly rather than returning undefined if a
+    // non-streaming path ever calls it.
+    doGenerate: async () => {
+      throw new Error("echo model is stream-only (doGenerate not supported)");
+    },
     doStream: async (opts: { prompt: unknown; abortSignal?: AbortSignal }) => {
       const messages = (opts.prompt ?? []) as Array<{
         role: string;

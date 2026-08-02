@@ -111,6 +111,11 @@ export class RateLimiter {
         limiter.release();
         limiter.maybeDecay();
       };
+      // Defensive secondary trigger: if the underlying stream settles (closes
+      // or errors) by any path — not just our pull loop — reclaim the permit.
+      // The permit is still held for the stream's lifetime; the caller's
+      // contract is to drain or cancel the returned stream (streamText does).
+      void reader.closed.then(releaseOnce, releaseOnce);
       const stream = new ReadableStream<unknown>({
         async pull(controller) {
           try {

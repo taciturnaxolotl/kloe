@@ -13,10 +13,12 @@ import { loadCatalog, type LoadCatalogOptions } from "./catalog";
  * Tests can bypass that with `setRegistry`.
  */
 let registry: ProviderRegistry | null = null;
+let initPromise: Promise<ProviderRegistry> | null = null;
 const limiters = new Map<string, RateLimiter>();
 
 export function setRegistry(r: ProviderRegistry): void {
   registry = r;
+  initPromise = Promise.resolve(r);
   limiters.clear();
 }
 
@@ -27,14 +29,22 @@ export function getRegistry(): ProviderRegistry {
   return registry;
 }
 
-/** Loads the catalog and builds the provider registry. Call once at startup. */
-export async function initInference(
-  opts: { catalog?: LoadCatalogOptions; configPath?: string } = {},
+/**
+ * Loads the catalog and builds the provider registry. Idempotent: concurrent or
+ * repeated calls share one in-flight load rather than re-fetching and clobbering
+ * limiter state. Pass `force: true` to rebuild (e.g. to reload the catalog).
+ */
+export function initInference(
+  opts: { catalog?: LoadCatalogOptions; configPath?: string; force?: boolean } = {},
 ): Promise<ProviderRegistry> {
-  const catalog = await loadCatalog(opts.catalog);
-  const r = new ProviderRegistry(catalog, { configPath: opts.configPath });
-  setRegistry(r);
-  return r;
+  if (initPromise && !opts.force) return initPromise;
+  initPromise = (async () => {
+    const catalog = await loadCatalog(opts.catalog);
+    const r = new ProviderRegistry(catalog, { configPath: opts.configPath });
+    setRegistry(r);
+    return r;
+  })();
+  return initPromise;
 }
 
 function limiterFor(providerName: string): RateLimiter | undefined {

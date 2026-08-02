@@ -25,6 +25,34 @@ export interface StoredEvent {
   data: unknown;
 }
 
+/**
+ * Curation of a model for the chat UI. Opt-in: a model with no row (or
+ * `visible: false`) is hidden from the chat picker. `displayName` overrides the
+ * catalog name; `sortOrder` controls ordering in the picker.
+ */
+export interface ModelSetting {
+  ref: string;
+  visible: boolean;
+  displayName: string | null;
+  sortOrder: number;
+}
+
+interface ModelSettingRow {
+  model_ref: string;
+  visible: number;
+  display_name: string | null;
+  sort_order: number;
+}
+
+function rowToSetting(r: ModelSettingRow): ModelSetting {
+  return {
+    ref: r.model_ref,
+    visible: r.visible === 1,
+    displayName: r.display_name,
+    sortOrder: r.sort_order,
+  };
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY,
@@ -52,6 +80,13 @@ CREATE TABLE IF NOT EXISTS jobs (
   params TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status);
+
+CREATE TABLE IF NOT EXISTS model_settings (
+  model_ref TEXT PRIMARY KEY,
+  visible INTEGER NOT NULL DEFAULT 0,
+  display_name TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
 `;
 
 /**
@@ -75,6 +110,9 @@ export class Store {
   private checkpointStmt: ReturnType<Database["prepare"]>;
   private reapStmt: ReturnType<Database["prepare"]>;
   private finishStmt: ReturnType<Database["prepare"]>;
+  private listSettingsStmt: ReturnType<Database["prepare"]>;
+  private getSettingStmt: ReturnType<Database["prepare"]>;
+  private upsertSettingStmt: ReturnType<Database["prepare"]>;
 
   constructor(databasePath: string = process.env.KLOE_DB ?? "data/kloe.db") {
     // Ensure the parent directory exists so a fresh checkout (where `data/` is
@@ -124,6 +162,41 @@ export class Store {
     );
     this.finishStmt = this.db.prepare(
       `UPDATE jobs SET status = ?, lease_until = 0 WHERE id = ?`,
+    );
+
+    this.listSettingsStmt = this.db.prepare(
+      `SELECT model_ref, visible, display_name, sort_order FROM model_settings`,
+    );
+    this.getSettingStmt = this.db.prepare(
+      `SELECT model_ref, visible, display_name, sort_order
+       FROM model_settings WHERE model_ref = ?`,
+    );
+    this.upsertSettingStmt = this.db.prepare(
+      `INSERT INTO model_settings (model_ref, visible, display_name, sort_order)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(model_ref) DO UPDATE SET
+         visible = excluded.visible,
+         display_name = excluded.display_name,
+         sort_order = excluded.sort_order`,
+    );
+  }
+
+  /** All curation rows (models with no row are hidden by default). */
+  listModelSettings(): ModelSetting[] {
+    return (this.listSettingsStmt.all() as ModelSettingRow[]).map(rowToSetting);
+  }
+
+  getModelSetting(ref: string): ModelSetting | undefined {
+    const row = this.getSettingStmt.get(ref) as ModelSettingRow | null;
+    return row ? rowToSetting(row) : undefined;
+  }
+
+  setModelSetting(s: ModelSetting): void {
+    this.upsertSettingStmt.run(
+      s.ref,
+      s.visible ? 1 : 0,
+      s.displayName,
+      s.sortOrder,
     );
   }
 

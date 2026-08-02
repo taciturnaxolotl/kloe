@@ -102,6 +102,16 @@ test("resolveModel builds an adapter when the key is present", () => {
   expect(reg.resolveModel("anthropic/claude-x")).toBeDefined();
 });
 
+test("credentials are re-resolved per call, not cached forever", () => {
+  process.env.ACME_KEY = "sk-first";
+  const reg = registry();
+  expect(reg.resolveModel("acme/acme-1")).toBeDefined();
+  // Rotate the secret away: a subsequent resolve must re-read the env and fail,
+  // proving the factory cache doesn't serve a stale/invalid credential blindly.
+  delete process.env.ACME_KEY;
+  expect(() => reg.resolveModel("acme/acme-1")).toThrow(/API key/);
+});
+
 // --- registry: introspection ---
 
 test("listModels includes echo plus every enabled provider's models", () => {
@@ -203,4 +213,46 @@ test("rate limiter backs off on 429", () => {
   const afterFirst = limiterAny.minIntervalMs;
   limiter.onRateLimit();
   expect(limiterAny.minIntervalMs).toBeGreaterThan(afterFirst);
+});
+
+/** Minimal streaming model whose doStream yields the given chunks then closes. */
+function fakeStreamingModel(chunks: unknown[]): any {
+  return {
+    doStream: async () => ({
+      stream: new ReadableStream({
+        start(c) {
+          for (const ch of chunks) c.enqueue(ch);
+          c.close();
+        },
+      }),
+    }),
+  };
+}
+
+test("wrap releases the permit after the stream is fully drained", async () => {
+  const limiter = new RateLimiter(limiterConfig({ maxConcurrency: 1 }));
+  const wrapped = limiter.wrap(fakeStreamingModel(["a", "b"])) as any;
+  const { stream } = await wrapped.doStream();
+  expect((limiter as any).active).toBe(1); // permit held during streaming
+  const reader = stream.getReader();
+  while (!(await reader.read()).done) {
+    /* drain */
+  }
+  expect((limiter as any).active).toBe(0); // released on completion
+});
+
+test("wrap releases the permit when the stream is cancelled early", async () => {
+  const limiter = new RateLimiter(limiterConfig({ maxConcurrency: 1 }));
+  const wrapped = limiter.wrap(fakeStreamingModel(["a", "b", "c"])) as any;
+  const { stream } = await wrapped.doStream();
+  const reader = stream.getReader();
+  await reader.read();
+  await reader.cancel();
+  expect((limiter as any).active).toBe(0);
+});
+
+test("echo model rejects doGenerate (stream-only)", async () => {
+  process.env.ACME_KEY = "sk-test";
+  const model = registry().resolveModel("echo") as any;
+  await expect(model.doGenerate()).rejects.toThrow(/stream-only/);
 });
