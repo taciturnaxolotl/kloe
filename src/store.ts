@@ -1,4 +1,6 @@
 import { Database } from "bun:sqlite";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 export interface JobRow {
   id: string;
@@ -75,6 +77,12 @@ export class Store {
   private finishStmt: ReturnType<Database["prepare"]>;
 
   constructor(databasePath: string = process.env.KLOE_DB ?? "data/kloe.db") {
+    // Ensure the parent directory exists so a fresh checkout (where `data/` is
+    // gitignored and absent) doesn't crash with SQLITE_CANTOPEN. Skipped for
+    // in-memory databases, which have no filesystem path.
+    if (databasePath !== ":memory:" && !databasePath.startsWith("file::memory:")) {
+      mkdirSync(dirname(databasePath), { recursive: true });
+    }
     this.db = new Database(databasePath);
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA synchronous = FULL");
