@@ -15,8 +15,7 @@ const serverProc = Bun.spawn(["bun", "server.ts"], {
     ...process.env,
     PORT: String(PORT),
     KLOE_DB: DB,
-    HYPER_MODEL: "echo",
-    ECHO_DELAY_MS: "200", // slow enough that cancel lands mid-run
+    ECHO_DELAY_MS: "500", // slow enough that cancel lands mid-run despite the 1s claim poll
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -92,7 +91,7 @@ async function readUntil(
 const res = await fetch(`${base}/conversations/${conv}/prompt`, {
   method: "POST",
   headers: { "content-type": "application/json" },
-  body: JSON.stringify({ content: "hello" }),
+  body: JSON.stringify({ content: "hello", model: "echo" }),
 });
 console.log("prompt status:", res.status, await res.text());
 
@@ -124,7 +123,7 @@ console.log("resume-at-tail frames:", resumed.length, "(expect 0)");
 const res2 = await fetch(`${base}/conversations/${conv}/prompt`, {
   method: "POST",
   headers: { "content-type": "application/json" },
-  body: JSON.stringify({ content: "cancel me" }),
+  body: JSON.stringify({ content: "cancel me", model: "echo" }),
 });
 console.log("prompt2 status:", res2.status);
 await Bun.sleep(1200); // let the drive loop claim + start the run
