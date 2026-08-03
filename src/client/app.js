@@ -19,6 +19,7 @@
  * stays authoritative — optimism is a local projection reconciled by the echo.
  */
 import * as smd from "streaming-markdown";
+import { mountSidebar } from "./sidebar.js";
 
 (function () {
   "use strict";
@@ -29,8 +30,6 @@ import * as smd from "streaming-markdown";
   var thread = $("thread"), scroll = $("scroll"), jump = $("jump");
   var input = $("input"), send = $("send"), composer = $("composer");
   var title = $("title"), status = $("status"), conn = $("conn");
-  var railList = $("railList"), appEl = $("app"), scrim = $("scrim");
-  var chatsModal = $("chatsModal"), chatsList = $("chatsList"), chatsSearch = $("chatsSearch");
   var pill = $("pill"), pillModel = $("pillModel"), picker = $("picker");
   var ctx = $("ctx"), ctxbar = $("ctxbar"), ctxpct = $("ctxpct");
   var queueEl = $("queue"), queueCount = $("queueCount"), queueItems = $("queueItems");
@@ -387,7 +386,7 @@ import * as smd from "streaming-markdown";
         if (err.error) console.warn("prompt rejected:", err.error);
         return;
       }
-      if (wasNew) { title.textContent = content.slice(0, 80); setTimeout(loadConversations, 400); }
+      if (wasNew) { title.textContent = content.slice(0, 80); setDocTitle(content.slice(0, 80)); setTimeout(loadConversations, 400); }
     } catch (e) {
       streaming = false; updateSend();
       failUser(runId);
@@ -449,110 +448,30 @@ import * as smd from "streaming-markdown";
   }
 
   // ---- conversation rail -------------------------------------------------
+  // The sidebar (recents list, nav, collapse/overlay toggle) is shared with the
+  // Conversations page; this page just tells it how to open/create a chat.
   var conversations = [];
+  var sidebar = mountSidebar({
+    onSelect: function (id, t) { selectConversation(id, t); },
+    onNew: function () { newConversation(); },
+    activeId: function () { return convId; },
+  });
   function hasConversation(id) { return conversations.some(function (c) { return c.id === id; }); }
   async function loadConversations() {
     try {
       var res = await fetch("/api/conversations");
       conversations = (await res.json()).conversations || [];
     } catch (_) { conversations = []; }
-    renderRail();
+    sidebar.render(conversations);
   }
-  // The panel toggle: on mobile the sidebar is an overlay (open/close); on
-  // desktop it's a column that collapses to reclaim width. Two independent
-  // classes, each scoped to its breakpoint in CSS, so a stale one from the other
-  // viewport is harmless.
-  var railMql = window.matchMedia("(max-width: 720px)");
-  function toggleRail() {
-    appEl.classList.toggle(railMql.matches ? "rail-open" : "rail-collapsed");
-  }
-  // Close the mobile overlay after navigation; a no-op on desktop (the column
-  // stays put — collapsing is the toggle's job, not navigation's).
-  function closeRail() { appEl.classList.remove("rail-open"); }
-  // The rail shows only the most recent handful; the full, searchable list
-  // lives in the Chats modal.
-  var RECENTS = 8;
-  function convButton(c) {
-    var b = document.createElement("button");
-    b.className = "conv"; b.type = "button";
-    b.textContent = c.title || "Untitled";
-    if (c.id === convId) b.setAttribute("aria-current", "true");
-    b.onclick = function () { selectConversation(c.id, c.title); closeRail(); };
-    return b;
-  }
-  function renderRail() {
-    railList.innerHTML = "";
-    if (conversations.length === 0) {
-      var empty = document.createElement("div");
-      empty.className = "empty"; empty.textContent = "No conversations yet";
-      railList.appendChild(empty);
-      return;
-    }
-    conversations.slice(0, RECENTS).forEach(function (c) { railList.appendChild(convButton(c)); });
-  }
-  function selectConversation(id, t) { title.textContent = t || "Conversation"; openStream(id); renderRail(); }
+  // Browser tab: "<conversation> - Kloe" once a conversation has a title, else
+  // just "Kloe".
+  function setDocTitle(t) { document.title = t ? t + " - Kloe" : "Kloe"; }
+  function selectConversation(id, t) { title.textContent = t || "Conversation"; setDocTitle(t); openStream(id); sidebar.render(conversations); }
   function newConversation() {
     var id = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
-    title.textContent = "New conversation";
-    openStream(id); renderRail(); closeRail(); input.focus();
-  }
-
-  // ---- chats modal (full, searchable list) -------------------------------
-  // Search hits titles AND message contents (server-side); results carry a
-  // snippet of the matching text. A monotonic token guards against a slow
-  // response overwriting a newer one.
-  var chatsSearchTimer = null, chatsSearchSeq = 0;
-  function openChats() {
-    chatsModal.hidden = false;
-    chatsSearch.value = "";
-    renderChatsList(conversations, ""); // instant from cache
-    // Refresh in the background so a brand-new chat shows without a reload.
-    loadConversations().then(function () {
-      if (!chatsModal.hidden && !chatsSearch.value.trim()) renderChatsList(conversations, "");
-    });
-    closeRail();
-    setTimeout(function () { chatsSearch.focus(); }, 0);
-  }
-  function closeChats() { chatsModal.hidden = true; }
-  function renderChatsList(list, q) {
-    chatsList.innerHTML = "";
-    if (!list.length) {
-      var e = document.createElement("div");
-      e.className = "modalempty";
-      e.textContent = q ? "No conversations match “" + q + "”" : "No conversations yet";
-      chatsList.appendChild(e);
-      return;
-    }
-    list.forEach(function (c) {
-      var b = document.createElement("button");
-      b.className = "modalitem"; b.type = "button";
-      var t = document.createElement("div");
-      t.className = "t"; t.textContent = c.title || "Untitled";
-      b.appendChild(t);
-      if (c.snippet && c.snippet !== c.title) {
-        var s = document.createElement("div");
-        s.className = "s"; s.textContent = c.snippet;
-        b.appendChild(s);
-      }
-      b.onclick = function () { selectConversation(c.id, c.title); closeChats(); };
-      chatsList.appendChild(b);
-    });
-  }
-  async function runChatsSearch(q) {
-    var mine = ++chatsSearchSeq;
-    if (!q) { renderChatsList(conversations, ""); return; }
-    try {
-      var res = await fetch("/api/conversations?q=" + encodeURIComponent(q));
-      var list = ((await res.json()).conversations) || [];
-      if (mine === chatsSearchSeq) renderChatsList(list, q);
-    } catch (_) {
-      if (mine === chatsSearchSeq) renderChatsList([], q);
-    }
-  }
-  function onChatsInput() {
-    clearTimeout(chatsSearchTimer);
-    var q = chatsSearch.value.trim();
-    chatsSearchTimer = setTimeout(function () { runChatsSearch(q); }, 160);
+    title.textContent = "New conversation"; setDocTitle(null);
+    openStream(id); sidebar.render(conversations); sidebar.closeRail(); input.focus();
   }
 
   // ---- model picker ------------------------------------------------------
@@ -603,22 +522,11 @@ import * as smd from "streaming-markdown";
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
   });
   $("stop").addEventListener("click", function () { if (streaming) stop(); });
-  $("new").addEventListener("click", newConversation);
-  $("newChat").addEventListener("click", newConversation);
-  $("menu").addEventListener("click", toggleRail);
-  $("railClose").addEventListener("click", closeRail);
-  scrim.addEventListener("click", closeRail);
-  $("chatsBtn").addEventListener("click", openChats);
-  $("searchBtn").addEventListener("click", openChats);
-  $("chatsBack").addEventListener("click", closeChats);
-  chatsSearch.addEventListener("input", onChatsInput);
   pill.addEventListener("click", function () { if (picker.hidden) openPicker(); else closePicker(); });
   document.addEventListener("click", function (e) {
     if (!picker.hidden && !picker.contains(e.target) && e.target !== pill && !pill.contains(e.target)) closePicker();
   });
-  document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape") { closePicker(); if (!chatsModal.hidden) closeChats(); }
-  });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") closePicker(); });
   scroll.addEventListener("scroll", function () {
     atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;
     jump.style.display = atBottom ? "none" : "block";
@@ -628,8 +536,22 @@ import * as smd from "streaming-markdown";
   // ---- boot --------------------------------------------------------------
   (async function init() {
     await Promise.all([loadModels(), loadConversations()]);
-    if (conversations.length) selectConversation(conversations[0].id, conversations[0].title);
-    else newConversation();
+    // Deep links from the conversations page: ?new starts fresh, ?c=<id> opens
+    // a specific conversation. Strip the query afterward so a reload is clean.
+    var params = new URLSearchParams(location.search);
+    if (params.has("new")) {
+      newConversation();
+      history.replaceState(null, "", "/");
+    } else if (params.get("c")) {
+      var id = params.get("c");
+      var c = conversations.find(function (x) { return x.id === id; });
+      selectConversation(id, c ? c.title : null);
+      history.replaceState(null, "", "/");
+    } else if (conversations.length) {
+      selectConversation(conversations[0].id, conversations[0].title);
+    } else {
+      newConversation();
+    }
     updateSend();
   })();
 })();

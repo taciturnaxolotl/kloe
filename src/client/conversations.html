@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Kloe</title>
+<link rel="stylesheet" href="./app.css">
+</head>
+<body>
+  <div class="app" id="app">
+    <div class="scrim" id="scrim" aria-hidden="true"></div>
+    <nav class="rail" id="rail" aria-label="Conversations"></nav>
+    <div class="main">
+      <header class="head chatshead">
+        <button class="icon menu" id="menu" type="button" aria-label="Toggle sidebar" title="Toggle sidebar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>
+        </button>
+        <span class="title">Conversations</span>
+        <div class="chatsactions">
+          <div class="chatsearch">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+            <input id="search" type="search" placeholder="Search conversations…" autocomplete="off" spellcheck="false" aria-label="Search conversations">
+          </div>
+          <button class="btn" id="selectBtn" type="button">Select</button>
+          <button class="btn danger" id="deleteBtn" type="button" hidden>Delete</button>
+          <a class="btn primary" id="newBtn" href="/?new=1">New</a>
+        </div>
+      </header>
+      <div class="chatscroll">
+        <div class="chatspage">
+          <div class="chatrows" id="rows"><div class="chatsempty">Loading…</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="./conversations.js"></script>
+</body>
+</html>

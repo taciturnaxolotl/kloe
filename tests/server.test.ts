@@ -353,6 +353,22 @@ test("search escapes LIKE wildcards so a query matches literally", async () => {
   expect(miss.conversations.map((c) => c.id)).not.toContain("search-literal");
 });
 
+test("DELETE /api/conversations/:id removes the conversation and its events", async () => {
+  const conv = "delete-me";
+  getActor(conv, store).appendUser("scratch this", "del-1");
+  expect(store.replay(conv, 0).length).toBeGreaterThan(0);
+
+  const res = await fetch(`${base}/api/conversations/${conv}`, { method: "DELETE" });
+  expect(res.status).toBe(200);
+
+  // Gone from the event log and the list.
+  expect(store.replay(conv, 0)).toEqual([]);
+  const list = (await (await fetch(`${base}/api/conversations`)).json()) as {
+    conversations: Array<{ id: string }>;
+  };
+  expect(list.conversations.map((c) => c.id)).not.toContain(conv);
+});
+
 const steerPost = (base: string, conv: string, body: object) =>
   fetch(`${base}/api/conversations/${conv}/steer`, {
     method: "POST",

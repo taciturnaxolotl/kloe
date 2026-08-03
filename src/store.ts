@@ -80,6 +80,8 @@ export interface StoredEvent {
 export interface ConversationSummary {
   id: string;
   createdAt: number;
+  /** Time of the newest event (falls back to createdAt) — for the "last active" date. */
+  updatedAt: number;
   lastSeq: number;
   /** First user message, truncated — null for a conversation with no prompt yet. */
   title: string | null;
@@ -95,6 +97,7 @@ export interface ConversationSearchResult extends ConversationSummary {
 interface ConversationRow {
   id: string;
   created_at: number;
+  last_activity: number;
   last_seq: number;
   first_user: string | null;
 }
@@ -109,7 +112,7 @@ function rowToSummary(r: ConversationRow): ConversationSummary {
       // malformed row: leave title null rather than crash the list
     }
   }
-  return { id: r.id, createdAt: r.created_at, lastSeq: r.last_seq, title };
+  return { id: r.id, createdAt: r.created_at, updatedAt: r.last_activity, lastSeq: r.last_seq, title };
 }
 
 /** Escapes LIKE wildcards so a user query matches literally (paired with ESCAPE '\'). */
@@ -390,6 +393,15 @@ export class Store {
       ...rowToSummary(r),
       snippet: r.match_text ? snippetAround(r.match_text, query) : null,
     }));
+  }
+
+  /** Permanently removes a conversation and everything scoped to it. */
+  deleteConversation(id: string): void {
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM events WHERE conversation_id = ?").run(id);
+      this.db.prepare("DELETE FROM jobs WHERE conversation_id = ?").run(id);
+      this.db.prepare("DELETE FROM conversations WHERE id = ?").run(id);
+    })();
   }
 
   /** All curation rows (models with no row are hidden by default). */

@@ -27,11 +27,13 @@ a { color: var(--accent); }
 
 .app { flex: 1; display: grid; grid-template-columns: 244px 1fr; min-height: 0; }
 @media (max-width: 720px) { .app { grid-template-columns: 1fr; } }
-/* Desktop: the panel toggle collapses the sidebar to reclaim width. */
+/* Desktop: the panel toggle collapses the sidebar to reclaim width. Use a
+   single column — with the rail display:none, a `0 1fr` grid would auto-place
+   `main` into the empty 0 track and squash it to nothing. */
 @media (min-width: 721px) {
-  .app.rail-collapsed { grid-template-columns: 0 1fr; }
+  .app.rail-collapsed { grid-template-columns: 1fr; }
   .app.rail-collapsed .rail { display: none; }
-  .app:not(.rail-collapsed) .head .headnew { display: none; }
+  .app.rail-collapsed .head .menu { display: inline-flex; }
 }
 
 /* ---- sidebar ----------------------------------------------------------- */
@@ -48,6 +50,8 @@ a { color: var(--accent); }
   cursor: pointer; text-align: left; text-decoration: none; }
 .navrow:hover { background: var(--bg-sunk); }
 .navrow svg { width: 17px; height: 17px; color: var(--ink-muted); flex: none; }
+.navrow.active { background: color-mix(in srgb, var(--accent) 12%, var(--bg-raise)); }
+.navrow.active svg { color: var(--accent); }
 
 .raillabel { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
   color: var(--ink-faint); padding: 12px 14px 5px; }
@@ -65,37 +69,88 @@ a { color: var(--accent); }
 .railfoot:hover { color: var(--ink); background: var(--bg-sunk); }
 .railfoot svg { width: 16px; height: 16px; }
 
-/* ---- chats search modal ------------------------------------------------ */
-.modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: flex-start;
-  justify-content: center; padding: 12vh 16px 16px; }
-.modal[hidden] { display: none; }
-.modalback { position: absolute; inset: 0; background: rgba(0,0,0,.44); }
-.modalcard { position: relative; width: 100%; max-width: 560px; max-height: 68vh;
-  display: flex; flex-direction: column; overflow: hidden;
-  background: var(--bg-raise); border: 1px solid var(--rule-strong); border-radius: 14px;
-  box-shadow: 0 24px 64px rgba(0,0,0,.32); }
-.modalsearch { display: flex; align-items: center; gap: 10px; padding: 13px 15px;
-  border-bottom: 1px solid var(--rule); }
-.modalsearch svg { width: 18px; height: 18px; color: var(--ink-faint); flex: none; }
-.modalsearch input { flex: 1; border: 0; background: none; color: var(--ink); font: inherit;
-  font-size: 15px; outline: none; }
-.modalsearch input::placeholder { color: var(--ink-faint); }
-.modallist { overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 1px; }
-.modalitem { display: block; width: 100%; text-align: left; border: 0; background: none; cursor: pointer;
-  padding: 9px 11px; border-radius: 9px; color: var(--ink); font: inherit; }
-.modalitem:hover { background: var(--bg-sunk); }
-.modalitem .t { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.modalitem .s { font-size: 12px; color: var(--ink-muted); margin-top: 2px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.modalempty { padding: 22px; text-align: center; color: var(--ink-faint); font-size: 13px; }
+/* ---- conversations page ------------------------------------------------ */
+.chatscroll { flex: 1; overflow-y: auto; min-height: 0; }
+.chatspage { padding: 10px 14px 60px; width: 100%; }
+/* The header reuses the chat `.head` bar so the toggle lands in the exact same
+   place across pages; it wraps its actions on narrow screens and drops the
+   under-bar divider (the list carries its own between-row rules). */
+.head.chatshead { flex-wrap: wrap; row-gap: 8px; border-bottom: 0; }
+.head.chatshead .title { font-size: 16px; }
+.chatsactions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* When the header wraps, the search field spans the full width to the edge. */
+@media (max-width: 640px) {
+  .head.chatshead .chatsactions { width: 100%; margin-left: 0; }
+  .head.chatshead .chatsearch { flex: 1 1 100%; }
+  .head.chatshead .chatsearch input { width: auto; max-width: none; flex: 1; }
+}
+.chatsearch { display: flex; align-items: center; gap: 8px; background: var(--bg-sunk);
+  border: 1px solid var(--rule); border-radius: 10px; padding: 6px 11px; }
+.chatsearch:focus-within { border-color: color-mix(in srgb, var(--accent) 40%, var(--rule-strong)); }
+.chatsearch svg { width: 16px; height: 16px; color: var(--ink-faint); flex: none; }
+.chatsearch input { border: 0; background: none; color: var(--ink); font: inherit; font-size: 14px;
+  outline: none; width: 210px; max-width: 42vw; }
+.chatsearch input::placeholder { color: var(--ink-faint); }
 
-.railhead .railx { display: none; }
+.btn { font: inherit; font-size: 13.5px; padding: 7px 13px; border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--rule-strong); background: var(--bg-raise); color: var(--ink);
+  text-decoration: none; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.btn:hover { background: var(--bg-sunk); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { background: var(--accent); filter: brightness(1.08); }
+.btn.danger { background: var(--err); border-color: var(--err); color: #fff; }
+.btn.danger:hover { background: var(--err); filter: brightness(1.06); }
+.btn:disabled { opacity: .5; cursor: default; filter: none; }
+/* `.btn`'s display would otherwise override the [hidden] attribute (author
+   rules beat the UA sheet), so hidden buttons stay hidden. */
+.btn[hidden] { display: none; }
+
+.chatrows { display: flex; flex-direction: column; }
+.chatsempty { padding: 40px 4px; color: var(--ink-faint); font-size: 14px; }
+/* Dividers sit only BETWEEN rows (first row's is transparent, no bottom rule),
+   and the divider vanishes around a hovered row, which gets a rounded fill. */
+.chatrow { position: relative; display: flex; align-items: center; gap: 12px; padding: 8px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--rule) 55%, transparent); cursor: pointer; }
+.chatrow:first-child { border-top-color: transparent; }
+.chatrow:hover { background: var(--bg-sunk); border-radius: 5px; border-top-color: transparent; }
+.chatrow:hover + .chatrow { border-top-color: transparent; }
+.chatcheck { display: none; flex: none; width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+body.selecting .chatcheck { display: block; }
+.chatmain { flex: 1; min-width: 0; }
+.chattitle { font-size: 14.5px; line-height: 1.35; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chatsnip { font-size: 12px; color: var(--ink-muted); margin-top: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chatdate { font-size: 12.5px; line-height: 20px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+
+/* Right slot: the date reserves the space; the ⋮ overlays it (absolute) and
+   fades in on hover (or while its menu is open), so nothing reflows and the ⋮
+   can be comfortably padded. */
+.chatend { position: relative; flex: none; display: flex; align-items: center; justify-content: flex-end; min-width: 46px; }
+.chatmore { position: absolute; right: 0; top: 50%; transform: translateY(-50%); opacity: 0;
+  display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
+  border-radius: 7px; border: 0; background: none; color: var(--ink-faint); cursor: pointer; padding: 0; }
+.chatrow:hover .chatmore, .chatrow.menuopen .chatmore { opacity: 1; }
+.chatrow:hover .chatdate, .chatrow.menuopen .chatdate { opacity: 0; }
+@media (hover: none) { .chatmore { opacity: 1; } .chatrow .chatdate { opacity: 0; } }
+.chatmore:hover { background: color-mix(in srgb, var(--ink) 9%, transparent); color: var(--ink); }
+.chatmore svg { width: 17px; height: 17px; }
+.chatmenu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 10; min-width: 132px;
+  background: var(--bg-raise); border: 1px solid var(--rule-strong); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.2); padding: 4px; display: flex; flex-direction: column; }
+.chatmenu[hidden] { display: none; }
+.chatmenu button { text-align: left; font: inherit; font-size: 13px; color: var(--ink); background: none;
+  border: 0; border-radius: 7px; padding: 7px 10px; cursor: pointer; }
+.chatmenu button:hover { background: var(--bg-sunk); }
+.chatmenu button.danger { color: var(--err); }
+.chatmenu button.danger:hover { background: color-mix(in srgb, var(--err) 12%, transparent); }
+
+.railhead .railx { display: inline-flex; } /* the toggle lives inside the sidebar */
 .scrim { display: none; }
 @media (max-width: 720px) {
   .rail { position: fixed; top: 0; bottom: 0; left: 0; width: 84%; max-width: 320px; z-index: 30;
     transform: translateX(-100%); transition: transform .2s ease; box-shadow: 8px 0 34px rgba(0,0,0,.22); }
   .app.rail-open .rail { transform: translateX(0); }
-  .railhead .railx { display: inline-flex; }
+  .app:not(.rail-open) .head .menu { display: inline-flex; } /* reopen the closed overlay */
   .scrim { display: block; position: fixed; inset: 0; z-index: 25; background: rgba(0,0,0,.42);
     opacity: 0; pointer-events: none; transition: opacity .2s ease; }
   .app.rail-open .scrim { opacity: 1; pointer-events: auto; }
@@ -105,10 +160,18 @@ a { color: var(--accent); }
 .main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .head { border-bottom: 1px solid var(--rule); padding: 9px 14px; display: flex; align-items: center; gap: 8px; }
 .head .title { font-size: 14.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.head .connstat { margin-left: auto; font-family: var(--mono); font-size: 11.5px; }
+/* The toggle lives in the sidebar; this header copy only appears to REOPEN the
+   sidebar when it's hidden (collapsed on desktop, closed overlay on mobile). */
+.head .menu { display: none; }
+.head .menu, .railhead .railx { width: 30px; height: 30px; }
+.head .menu svg, .railhead .railx svg { width: 16px; height: 16px; }
+/* Connection status: silent when healthy; a quiet mono caption (like the other
+   meta labels) appears only when the stream is degraded. */
+.head .connstat { margin-left: auto; font-family: var(--mono); font-size: 11px;
+  letter-spacing: .04em; color: var(--ink-faint); }
 .head .connstat .conn { display: none; }
-.head .connstat[data-state="reconnecting"] .conn { display: inline; color: var(--warn); }
-.head .connstat[data-state="offline"] .conn { display: inline; color: var(--err); }
+.head .connstat[data-state="reconnecting"] .conn,
+.head .connstat[data-state="offline"] .conn { display: inline; }
 
 .scroll { flex: 1; overflow-y: auto; min-height: 0; position: relative; }
 .thread { max-width: var(--measure); margin: 0 auto; padding: 22px 20px 32px; }
@@ -250,7 +313,8 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
 
 /* ---- settings ---------------------------------------------------------- */
 .settings { max-width: 860px; margin: 0 auto; padding: 28px 24px 60px; width: 100%; }
-.settings h1 { font-size: 20px; margin: 0 0 4px; }
+.settings h1 { font-size: 20px; margin: 0 0 18px; }
+.settings .shead { font-size: 15px; font-weight: 600; margin: 0 0 4px; color: var(--ink); }
 .settings .lede { color: var(--ink-muted); font-size: 14px; margin: 0 0 24px; }
 .settings .back { font-family: var(--mono); font-size: 12px; color: var(--ink-muted); text-decoration: none; }
 .settings .back:hover { color: var(--ink); }

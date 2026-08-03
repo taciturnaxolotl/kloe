@@ -323,5 +323,12 @@ export function apiRoutes(deps: { store: Store }) {
       GET: (req: Bun.BunRequest<"/api/conversations/:id/events">) =>
         Response.json(getActor(req.params.id, store).replay(0)),
     },
+    "/api/conversations/:id": {
+      DELETE: (req: Bun.BunRequest<"/api/conversations/:id">) => {
+        store.deleteConversation(req.params.id);
+        actors.delete(req.params.id); // drop the in-memory actor so it can't resurrect the log
+        return Response.json({ ok: true });
+      },
+    },
   };
 }

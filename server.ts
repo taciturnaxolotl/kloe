@@ -1,5 +1,6 @@
 import indexHTML from "./src/client/index.html";
 import settingsHTML from "./src/client/settings.html";
+import conversationsHTML from "./src/client/conversations.html";
 import { Store } from "./src/store";
 import { initInference } from "./src/inference";
 import { apiRoutes, getActor, evictIdleActors } from "./src/http";
@@ -47,6 +48,7 @@ if (import.meta.main) {
     routes: {
       "/": indexHTML,
       "/settings": settingsHTML,
+      "/conversations": conversationsHTML,
       ...apiRoutes({ store }),
     },
   });
