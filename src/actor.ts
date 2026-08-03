@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Store } from "./store";
-import { Event, makeId, type EventData, type EventName } from "./events";
+import { Event, makeId, type EventData, type EventName, type TokenUsage } from "./events";
 import { truncateUtf8 } from "./sse";
 import { BATCH_FLUSH_MS, BATCH_MAX_DELTAS } from "./config";
 
@@ -20,7 +20,12 @@ export interface TextStep {
   kind: "text";
   chunk: string;
 }
-export type RunStep = TextStep;
+/** Real provider token usage, yielded once after the text stream drains. */
+export interface UsageStep {
+  kind: "usage";
+  usage: TokenUsage;
+}
+export type RunStep = TextStep | UsageStep;
 
 /**
  * One single-writer conversation. Owns the durable event log (via Store), the
@@ -201,6 +206,7 @@ export class ConversationActor {
       flushDelta();
     }, BATCH_FLUSH_MS);
 
+    let usage: TokenUsage | undefined;
     try {
       for await (const step of steps(abortController.signal)) {
         if (this.isCancelled()) {
@@ -214,6 +220,8 @@ export class ConversationActor {
             flushDelta();
             batch = 0;
           }
+        } else if (step.kind === "usage") {
+          usage = step.usage;
         }
       }
     } catch (err) {
@@ -236,7 +244,7 @@ export class ConversationActor {
     if (finish === "aborted") {
       this.persist(Event.Cancelled, { runId, threadId: this.conversationId });
     }
-    this.persist(Event.MsgEnd, { runId, threadId: this.conversationId, messageId, finishReason: finish });
+    this.persist(Event.MsgEnd, { runId, threadId: this.conversationId, messageId, finishReason: finish, usage });
     this.currentRunId = null;
   }
 }

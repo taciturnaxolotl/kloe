@@ -37,6 +37,35 @@ test("event ids are monotonic across a conversation", async () => {
   }
 });
 
+test("a usage step is stamped onto the message-end event", async () => {
+  const a = new ConversationActor("t-usage", store);
+  const events: WireEvent[] = [];
+  const sub: Subscriber = { push: (e) => events.push(e), closed: false };
+  a.follow(sub);
+
+  await a.runText("r-u", "m-u", async function* (_signal) {
+    yield { kind: "text", chunk: "hello" };
+    yield { kind: "usage", usage: { inputTokens: 12, outputTokens: 5, totalTokens: 17 } };
+  });
+
+  const end = events.find((e) => e.event === Event.MsgEnd);
+  expect(end).toBeDefined();
+  const data = end!.data as { finishReason: string; usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number } };
+  expect(data.finishReason).toBe("stop");
+  expect(data.usage).toEqual({ inputTokens: 12, outputTokens: 5, totalTokens: 17 });
+});
+
+test("message-end omits usage when no usage step is yielded", async () => {
+  const a = new ConversationActor("t-nousage", store);
+  const events: WireEvent[] = [];
+  a.follow({ push: (e) => events.push(e), closed: false });
+  await a.runText("r-n", "m-n", async function* (_signal) {
+    yield { kind: "text", chunk: "hi" };
+  });
+  const end = events.find((e) => e.event === Event.MsgEnd);
+  expect((end!.data as { usage?: unknown }).usage).toBeUndefined();
+});
+
 test("cancel resets between runs", async () => {
   const a = new ConversationActor("t2", store);
   const events: string[] = [];

@@ -60,11 +60,20 @@ export interface ToolResultData {
   output: unknown;
 }
 
+/** Real token usage reported by the provider (AI SDK LanguageModelUsage). */
+export interface TokenUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+}
+
 export interface MessageEndData {
   threadId: string;
   runId: string;
   messageId: string;
   finishReason: "stop" | "length" | "tool-calls" | "aborted" | "error";
+  /** Present when the provider reported usage for this run. */
+  usage?: TokenUsage;
 }
 
 export interface RunErrorData {
