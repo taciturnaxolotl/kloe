@@ -2,6 +2,21 @@ import { streamText, type LanguageModel } from "ai";
 import { ProviderRegistry } from "./providers";
 import { RateLimiter } from "./ratelimit";
 import { loadCatalog, type LoadCatalogOptions } from "./catalog";
+import type { RunStep } from "./actor";
+import type { TokenUsage } from "./events";
+
+/** Keeps only finite token fields; returns undefined if none reported. */
+function normalizeUsage(u: {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+}): TokenUsage | undefined {
+  const out: TokenUsage = {};
+  if (Number.isFinite(u.inputTokens)) out.inputTokens = u.inputTokens;
+  if (Number.isFinite(u.outputTokens)) out.outputTokens = u.outputTokens;
+  if (Number.isFinite(u.totalTokens)) out.totalTokens = u.totalTokens;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 /**
  * The inference layer. Models are addressed as `provider/model` refs. Each
@@ -41,6 +56,9 @@ export function initInference(
   initPromise = (async () => {
     const catalog = await loadCatalog(opts.catalog);
     const r = new ProviderRegistry(catalog, { configPath: opts.configPath });
+    // Live model discovery for non-catalog providers (e.g. Hyper). Soft-fails:
+    // the server boots with whatever models were declared inline.
+    await r.discover();
     setRegistry(r);
     return r;
   })();
@@ -76,7 +94,7 @@ export interface RunOptions {
 export async function* run(
   prompt: string,
   opts: RunOptions,
-): AsyncGenerator<{ kind: "text"; chunk: string }> {
+): AsyncGenerator<RunStep> {
   const model = resolveModel(opts.model);
   const result = streamText({
     model,
@@ -86,5 +104,15 @@ export async function* run(
   });
   for await (const chunk of result.textStream) {
     yield { kind: "text", chunk };
+  }
+  // The stream has drained normally (a cancel throws above and skips this):
+  // real provider usage is now resolvable. Emit it as the final step so the
+  // actor can stamp it onto message-end. Best-effort — a provider that reports
+  // no usage simply yields nothing here.
+  try {
+    const usage = normalizeUsage(await result.usage);
+    if (usage) yield { kind: "usage", usage };
+  } catch {
+    // provider didn't surface usage; leave message-end without it
   }
 }

@@ -89,6 +89,70 @@ test("registry throws when an enabled provider isn't in the catalog", () => {
   ).toThrow(/not in the catalog/);
 });
 
+// --- registry: inline (non-catalog) providers ---
+
+/** A provider the catalog doesn't know, declared entirely in the ops file. */
+function inlineConfig(over: Record<string, unknown> = {}) {
+  return {
+    id: "hyper",
+    apiKey: "$HYPER_KEY",
+    apiEndpoint: "https://hyper.test/v1",
+    models: [
+      { id: "hyper-1", name: "Hyper One", context_window: 32000 },
+    ],
+    ...over,
+  };
+}
+
+test("inline provider: model list and resolution come from the ops file", () => {
+  process.env.HYPER_KEY = "sk-hyper";
+  const reg = new ProviderRegistry(fixtureCatalog(), {
+    config: { providers: [inlineConfig()] },
+  });
+  const refs = reg.listModels().map((m) => m.ref);
+  expect(refs).toContain("hyper/hyper-1");
+  expect(reg.resolveModel("hyper/hyper-1")).toBeDefined();
+});
+
+test("inline provider: metadata defaults fill in like the catalog does", () => {
+  const reg = new ProviderRegistry(fixtureCatalog(), {
+    config: { providers: [inlineConfig()] },
+  });
+  const m = reg.listModels().find((x) => x.ref === "hyper/hyper-1")!;
+  expect(m.contextWindow).toBe(32000);
+  expect(m.costPer1MIn).toBe(0);
+  expect(m.reasoningLevels).toEqual([]);
+});
+
+test("inline provider: unknown model still throws", () => {
+  const reg = new ProviderRegistry(fixtureCatalog(), {
+    config: { providers: [inlineConfig()] },
+  });
+  expect(() => reg.resolveModel("hyper/ghost")).toThrow(/unknown model/);
+});
+
+test("inline provider: missing apiEndpoint fails at construction", () => {
+  const noEndpoint = inlineConfig({ apiEndpoint: undefined });
+  const noEndpointNoModels = inlineConfig({ apiEndpoint: undefined, models: [] });
+  expect(
+    () => new ProviderRegistry(fixtureCatalog(), { config: { providers: [noEndpoint] } }),
+  ).toThrow(/apiEndpoint/);
+  expect(
+    () =>
+      new ProviderRegistry(fixtureCatalog(), {
+        config: { providers: [noEndpointNoModels] },
+      }),
+  ).toThrow(/apiEndpoint/);
+});
+
+test("inline provider: requires its API key at resolve time", () => {
+  delete process.env.HYPER_KEY;
+  const reg = new ProviderRegistry(fixtureCatalog(), {
+    config: { providers: [inlineConfig()] },
+  });
+  expect(() => reg.resolveModel("hyper/hyper-1")).toThrow(/API key/);
+});
+
 test("resolveModel requires the provider's API key env var", () => {
   delete process.env.ACME_KEY;
   expect(() => registry().resolveModel("acme/acme-1")).toThrow(/API key/);

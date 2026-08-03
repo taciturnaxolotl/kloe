@@ -33,7 +33,7 @@ Event names (`src/events.ts`) follow AG-UI conventions (`message-start`, `text-d
 ## The model pipeline (three layers, keep them separate)
 
 1. **Catalog** (`src/catalog.ts`): read-only metadata about what models exist, fetched live from catwalk with two fallbacks: disk cache (`.cache/catwalk.json`) then vendored seed (`vendor/catwalk.seed.json`). Raw payloads are snake_case and parsed into camelCase here; never let raw catwalk shapes leak past `Catalog.fromRaw`.
-2. **Ops config** (`providers.json`, parsed in `src/providers.ts`): which providers this deployment enables, plus secrets and rate limits. An entry in this file means "enabled". `apiKey`/`apiEndpoint` may be `"$ENV_VAR"` interpolation strings. A provider listed here but missing from the catalog fails at startup, by design.
+2. **Ops config** (`providers.json`, parsed in `src/providers.ts`): which providers this deployment enables, plus secrets and rate limits. An entry in this file means "enabled". `apiKey`/`apiEndpoint` may be `"$ENV_VAR"` interpolation strings. A provider listed here but missing from the catalog must carry `apiEndpoint`; if it also has no inline `models` list, models are **discovered live** from `{apiEndpoint}/models` at startup (`initInference` awaits `registry.discover()`), then enriched by the type's enricher in `src/discover.ts`. Crush convention: empty model list ⇒ discover, explicit list ⇒ skip (unless `discoverModels: true`). Explicit inline entries always win over discovered duplicates. `type` selects both the AI SDK adapter and the enricher (`"hyper"`, ...; default `"openai-compat"`).
 3. **Curation** (`model_settings` table, `PATCH /models`): which models the chat UI shows. **Opt-in: a model with no row is hidden.** `/models` is the admin view (all models + curation state), `/models/chat` is the curated view.
 
 The built-in **`echo` model** (`createEchoModel` in `src/providers.ts`) is a deterministic streaming mock that bypasses all three layers. It exists so the whole pipeline runs with zero network access; tests and the smoke script rely on it. Refs are `provider/model`; `echo` is the one bare ref allowed.
@@ -46,7 +46,7 @@ The built-in **`echo` model** (`createEchoModel` in `src/providers.ts`) is a det
 - `src/store.ts` — SQLite schema and all prepared statements. Column names are snake_case; TS interfaces camelCase; `rowToSetting`-style converters bridge them. Follow that pattern for new tables.
 - `src/inference.ts` — module-level registry (`initInference`/`getRegistry`/`setRegistry`) and `run()`, which wraps `streamText`.
 - `src/ratelimit.ts` — per-provider concurrency cap + min-interval shaping with 429-adaptive backoff. The semaphore deliberately hands permits from `release()` directly to a waiter without decrementing `active`; don't "simplify" it, the comment explains the race it prevents.
-- `src/catalog.ts`, `src/providers.ts`, `src/events.ts`, `src/sse.ts`, `src/config.ts`, `src/errors.ts`.
+- `src/catalog.ts`, `src/providers.ts`, `src/discover.ts`, `src/events.ts`, `src/sse.ts`, `src/config.ts`, `src/errors.ts`. Discovery is ported from crush's `internal/discover`: generic `{base}/models` listing + per-type enrichers that backfill metadata without ever overwriting operator-set fields, failing soft at every step.
 - Tuning constants live in `src/config.ts`. `LEASE_GRACE_MS` (30s) must stay above `HEARTBEAT_INTERVAL_MS` (10s) or healthy runs get reaped between beats.
 
 ## Testing conventions
@@ -54,7 +54,7 @@ The built-in **`echo` model** (`createEchoModel` in `src/providers.ts`) is a det
 - `bun:test` with real temp-dir SQLite (`mkdtempSync` + `new Store(path)`); close and `rmSync` in `afterAll`. Never point tests at `data/`.
 - Exercise HTTP via `app.handle(new Request(...))` against `buildApp({ store })`. Nothing binds a port in tests.
 - The inference registry is module-global, so tests call `setRegistry(...)` in `beforeEach` (not just `beforeAll`) to survive interleaving with other test files' mutations. Build fixtures with `Catalog.fromRaw([...])` and `new ProviderRegistry(catalog, { config: { providers: [...] } })`; the `config` option bypasses reading `providers.json` from disk.
-- Fake generation by passing inline async generators to `actor.runText`, or use the `echo` model. Never hit real providers in tests.
+- Fake generation by passing inline async generators to `actor.runText`, or use the `echo` model. Never hit real providers in tests. Network code (`loadCatalog`, discovery) takes an injectable `fetchImpl`; tests mock it with `okFetch`-style helpers rather than intercepting globals.
 - SSE assertions parse frames manually (`event:`/`id:`/`data:` blocks split on blank lines, skipping `:` comment keepalives). Copy the existing `readSse` helper rather than adding a dependency.
 - `store.claimExpiredExclusive` + `actor.runText` + `store.markDone` in a test is the standard way to play the role of the drive loop.
 

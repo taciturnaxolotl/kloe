@@ -3,7 +3,9 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import type { LanguageModel } from "ai";
 import { existsSync, readFileSync } from "node:fs";
-import type { Catalog, ProviderType } from "./catalog";
+import type { Catalog, CatalogModel, ProviderType } from "./catalog";
+import { parseModel } from "./catalog";
+import { discoverModels, enrichModels } from "./discover";
 
 /**
  * Ops config for one *enabled* provider — the deployment-specific layer. An
@@ -30,6 +32,31 @@ interface OpsFile {
     apiEndpoint?: string;
     maxConcurrency?: number;
     minIntervalMs?: number;
+    /**
+     * Adapter type for providers the catalog doesn't know (else "openai-compat"
+     * is assumed). Also selects the discovery enricher ("hyper", ...).
+     */
+    type?: string;
+    /**
+     * Only for providers the catalog doesn't know (e.g. Hyper): the model list
+     * inline, in raw catwalk shape. May be omitted when `type` is set — models
+     * are then discovered live from `{apiEndpoint}/models` and enriched (see
+     * src/discover.ts). Explicit entries always win over discovered ones.
+     */
+    models?: Array<{
+      id: string;
+      name?: string;
+      context_window?: number;
+      default_max_tokens?: number;
+      can_reason?: boolean;
+      reasoning_levels?: string[];
+      supports_attachments?: boolean;
+    }>;
+    /**
+     * Opt in/out of live model discovery explicitly. Default: discover when
+     * no inline models were given, skip when they were (crush convention).
+     */
+    discoverModels?: boolean;
   }>;
 }
 
@@ -75,31 +102,56 @@ interface CachedFactory {
   factory: ModelFactory;
 }
 
+/** A provider declared entirely in the ops file, not backed by the catalog. */
+interface InlineProvider {
+  type: ProviderType;
+  models: CatalogModel[];
+  /** Models not yet fetched; `discover()` fills them in. */
+  needsDiscovery: boolean;
+}
+
 /**
  * Registry of *enabled* providers: joins the local ops config against the
  * catalog. Construction fails loudly if an enabled provider isn't in the
- * catalog, so misconfiguration surfaces at startup, not at claim time.
+ * catalog and can't stand on its own (no endpoint, and neither inline models
+ * nor live discovery), so misconfiguration surfaces at startup, not at claim
+ * time.
  */
 export class ProviderRegistry {
   private readonly configs = new Map<string, ProviderConfig>();
   private readonly factories = new Map<string, CachedFactory>();
   private readonly catalog: Catalog;
+  private readonly inline = new Map<string, InlineProvider>();
+  private readonly fetchImpl?: typeof fetch;
 
   constructor(
     catalog: Catalog,
-    opts: { configPath?: string; config?: OpsFile } = {},
+    opts: { configPath?: string; config?: OpsFile; fetchImpl?: typeof fetch } = {},
   ) {
     this.catalog = catalog;
+    this.fetchImpl = opts.fetchImpl;
     const ops = opts.config ?? this.loadFile(opts.configPath ?? "providers.json");
     for (const p of ops.providers) {
       if (p.id === "echo") continue; // built-in, not catalog-backed
       if (!catalog.getProvider(p.id)) {
-        throw new Error(
-          `enabled provider "${p.id}" is not in the catalog (available: ${catalog
-            .listProviders()
-            .map((c) => c.id)
-            .join(", ")})`,
-        );
+        const models = (p.models ?? []).map(parseModel);
+        // Crush convention: an empty model list implies discovery; an inline
+        // list opts out unless `discoverModels` forces it. `type` only selects
+        // the adapter and the enricher.
+        const wantsDiscovery = p.discoverModels ?? models.length === 0;
+        if (!p.apiEndpoint) {
+          throw new Error(
+            `enabled provider "${p.id}" is not in the catalog (available: ${catalog
+              .listProviders()
+              .map((c) => c.id)
+              .join(", ")}) and has no "apiEndpoint" to stand on its own`,
+          );
+        }
+        this.inline.set(p.id, {
+          type: p.type ?? "openai-compat",
+          models,
+          needsDiscovery: wantsDiscovery,
+        });
       }
       this.configs.set(p.id, {
         id: p.id,
@@ -109,6 +161,48 @@ export class ProviderRegistry {
         minIntervalMs: p.minIntervalMs ?? DEFAULTS.minIntervalMs,
       });
     }
+  }
+
+  /**
+   * Live model discovery for non-catalog providers that opted in: list
+   * `{apiEndpoint}/models`, then run the type's enricher. Runs after
+   * construction (before serving) and fails soft: a provider that yields
+   * nothing stays enabled but resolves nothing, loudly logged.
+   */
+  async discover(opts: { timeoutMs?: number } = {}): Promise<void> {
+    const jobs: Promise<void>[] = [];
+    for (const [id, inline] of this.inline) {
+      if (!inline.needsDiscovery) continue;
+      const config = this.configs.get(id)!;
+      const baseUrl = resolveEnv(config.apiEndpoint);
+      if (!baseUrl) continue;
+      jobs.push(
+        (async () => {
+          const cfg = {
+            id,
+            baseUrl,
+            apiKey: resolveEnv(config.apiKey),
+            fetchImpl: this.fetchImpl,
+            timeoutMs: opts.timeoutMs,
+          };
+          const { models: discovered0, raw } = await discoverModels(cfg);
+          const discovered = await enrichModels(inline.type, cfg, discovered0, raw);
+          inline.needsDiscovery = false;
+          // Explicit inline entries win; discovered models append after.
+          const known = new Set(inline.models.map((m) => m.id));
+          inline.models = [
+            ...inline.models,
+            ...discovered.filter((m) => !known.has(m.id)),
+          ];
+          if (inline.models.length === 0) {
+            console.warn(
+              `discover: provider "${id}" yielded no models; it stays enabled but resolves nothing`,
+            );
+          }
+        })(),
+      );
+    }
+    await Promise.all(jobs);
   }
 
   private loadFile(path: string): OpsFile {
@@ -135,15 +229,16 @@ export class ProviderRegistry {
 
   /**
    * All models available to the UI: every model of every enabled provider,
-   * from the catalog, plus the echo mock. This is the settings/admin view;
-   * curation (which subset the chat UI shows) is layered on top elsewhere.
+   * from the catalog (or the ops file for inline providers), plus the echo
+   * mock. This is the settings/admin view; curation (which subset the chat UI
+   * shows) is layered on top elsewhere.
    */
   listModels(): ModelInfo[] {
     const out: ModelInfo[] = [ECHO_MODEL];
     for (const id of this.configs.keys()) {
-      const provider = this.catalog.getProvider(id);
-      if (!provider) continue;
-      for (const m of provider.models) {
+      const models =
+        this.catalog.getProvider(id)?.models ?? this.inline.get(id)?.models ?? [];
+      for (const m of models) {
         out.push({
           ref: `${id}/${m.id}`,
           providerId: id,
@@ -185,7 +280,10 @@ export class ProviderRegistry {
         `provider "${providerId}" is not enabled (enabled: ${this.listProviders().join(", ")})`,
       );
     }
-    if (!this.catalog.getModel(providerId, modelId)) {
+    const known =
+      this.catalog.getModel(providerId, modelId) ??
+      this.inline.get(providerId)?.models.find((m) => m.id === modelId);
+    if (!known) {
       throw new Error(`unknown model "${modelId}" for provider "${providerId}"`);
     }
 
@@ -199,21 +297,26 @@ export class ProviderRegistry {
    * process doesn't keep serving a stale key.
    */
   private factoryFor(providerId: string, config: ProviderConfig): ModelFactory {
-    const catProvider = this.catalog.getProvider(providerId)!;
+    const catProvider = this.catalog.getProvider(providerId);
+    const inline = this.inline.get(providerId);
     const apiKey = resolveEnv(config.apiKey);
     if (!apiKey) {
       throw new Error(
         `provider "${providerId}" requires an API key (config: ${config.apiKey})`,
       );
     }
-    const baseURL = resolveEnv(config.apiEndpoint) ?? resolveEnv(catProvider.apiEndpoint);
+    // Inline providers are required (at construction) to have an apiEndpoint,
+    // so it always wins here via config.apiEndpoint.
+    const baseURL =
+      resolveEnv(config.apiEndpoint) ?? resolveEnv(catProvider?.apiEndpoint);
 
     const cached = this.factories.get(providerId);
     if (cached && cached.apiKey === apiKey && cached.baseURL === baseURL) {
       return cached.factory;
     }
 
-    const factory = buildFactory(providerId, catProvider.type, apiKey, baseURL);
+    const type = catProvider?.type ?? inline?.type ?? "openai-compat";
+    const factory = buildFactory(providerId, type, apiKey, baseURL);
     this.factories.set(providerId, { apiKey, baseURL, factory });
     return factory;
   }

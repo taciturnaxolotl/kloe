@@ -11,6 +11,14 @@
       "apiKey": "$ANTHROPIC_API_KEY",
       "maxConcurrency": 4,
       "minIntervalMs": 0
+    },
+    {
+      "id": "hyper",
+      "apiKey": "$HYPER_API_KEY",
+      "apiEndpoint": "https://hyper.charm.land/v1",
+      "type": "hyper",
+      "maxConcurrency": 4,
+      "minIntervalMs": 0
     }
   ]
 }

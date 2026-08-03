@@ -57,9 +57,9 @@ export interface CatalogProvider {
 }
 
 /** Raw catwalk JSON (snake_case), as served by the API and the vendored seed. */
-interface RawModel {
+export interface RawModel {
   id: string;
-  name: string;
+  name?: string;
   cost_per_1m_in?: number;
   cost_per_1m_out?: number;
   cost_per_1m_in_cached?: number;
@@ -89,7 +89,12 @@ function reqStr(value: unknown, field: string): string {
   return value;
 }
 
-function parseModel(m: RawModel): CatalogModel {
+/**
+ * Parses one model entry from raw catwalk JSON (snake_case). Exported so
+ * `providers.json` can carry inline model lists for providers that aren't in
+ * the catalog.
+ */
+export function parseModel(m: RawModel): CatalogModel {
   const id = reqStr(m.id, "model.id");
   return {
     id,
