@@ -1,6 +1,6 @@
 # AGENTS.md
 
-kloe is a server-authoritative LLM chat backend: generation is decoupled from client connections, each conversation is a single-writer actor over an append-only event log, and clients ride SSE down / HTTP POST up. Bun + Elysia + `bun:sqlite` + the Vercel AI SDK. `spec.md` is the design document and is authoritative for intent; when a change feels ambiguous, read it before deciding.
+kloe is a server-authoritative LLM chat backend: generation is decoupled from client connections, each conversation is a single-writer actor over an append-only event log, and clients ride SSE down / HTTP POST up. Bun + native `routes` (no web framework) + `bun:sqlite` + the Vercel AI SDK. `spec.md` is the design document and is authoritative for intent; when a change feels ambiguous, read it before deciding.
 
 ## Commands
 
@@ -17,16 +17,18 @@ No lint or format tooling is configured. Do not add any.
 
 ## Runtime invariants
 
-- **Single writer per conversation.** At most one run executes for a conversation at a time. Enforced twice: in SQL (`Store.claimExpiredExclusive` refuses to claim while another job for the conversation holds a live lease) and in-process (`activeRuns` set in `server.ts`'s drive loop). Any new execution path must respect this.
-- **Durable write before fan-out.** Every persisted event is inserted synchronously into SQLite before being emitted to SSE subscribers. Actors keep no durable state of their own; seq is recovered from `Store.lastSeq` on construction, so evicting an actor never loses events.
-- **Jobs, not requests.** `POST /prompt` enqueues a job and returns 202 immediately. Execution happens later in the drive loop (server) or `worker.ts`, which poll `claimExpiredExclusive` every second. Anything you add to run execution belongs in the claim/run/checkpoint path, not the HTTP handler.
+- **Single writer per conversation.** At most one run executes for a conversation at a time. Enforced twice: in SQL (`Store.claimExpiredExclusive` refuses to claim while another job for the conversation holds a live lease) and in-process (the `activeRuns` set in `src/drive.ts`). Any new execution path must respect this.
+- **Durable write before fan-out.** Every persisted event is inserted synchronously into SQLite before being emitted to SSE subscribers. Actors keep no durable state of their own; seq is recovered from `Store.lastSeq` on construction, so evicting an actor never loses events. Idle eviction only touches actors with **no subscribers**: an SSE stream is pinned to its actor instance, and evicting it would orphan the stream from every future run.
+- **Jobs, not requests.** `POST /api/conversations/:id/prompt` enqueues a job and returns 202 immediately. Execution happens later via `JobDriver` (`src/drive.ts`), polled by the server's inline loop and/or `worker.ts`. Anything you add to run execution belongs in `src/drive.ts`, not the HTTP handler.
 
 ## Request/event flow
 
-1. `POST /conversations/:id/prompt` validates the model against the registry, appends a `user-message` event through the actor, enqueues a job, returns 202 with `{jobId, runId, messageId}`. The user message and the run share one `runId` on purpose so clients can correlate them.
-2. The drive loop claims the job, calls `actor.runText(runId, messageId, steps, onProgress)`, which persists `run-started` → `message-start` → batched `text-delta`s → `message-end` (and `cancelled`/`run-error` when applicable). `onProgress` fires after each durable delta flush and is used to advance the job's `checkpoint_seq` and lease heartbeat.
-3. `GET /conversations/:id/stream` is a long-lived SSE connection that survives individual runs. Resume works via `Last-Event-ID`; the header carries the full `<conversationId>:<seq>` id and the server extracts the seq (`readLastEventId`), replaying strictly after it. SSE comments (`: keepalive`) go out every 15s.
-4. `POST .../cancel` sets a cancel flag on the actor (scoped to a runId when known, or deferred to the next run to cover the cancel-before-claim race); `POST .../steer` cancels and enqueues a redirect in one call.
+All API routes live under `/api/` (the `/` and `/settings` HTML routes are separate).
+
+1. `POST /api/conversations/:id/prompt` validates the model against the registry, appends a `user-message` event through the actor, enqueues a job, returns 202 with `{jobId, runId, messageId}`. The user message and the run share one `runId` on purpose so clients can correlate them. `/steer` is the same flow with `cancel: true`.
+2. `JobDriver.driveOnce` claims the job and calls `actor.runText(runId, messageId, steps, onProgress)`, which persists `run-started` → `message-start` → batched `text-delta`s → `message-end` (and `cancelled`/`run-error` when applicable). `onProgress` fires after each durable delta flush and is used to advance the job's `checkpoint_seq` and lease heartbeat; the driver also heartbeats the lease on its own timer so a slow first token never expires it.
+3. `GET /api/conversations/:id/stream` is a long-lived SSE connection that survives individual runs. Resume works via `Last-Event-ID`; the header carries the full `<conversationId>:<seq>` id and the server extracts the seq (`readLastEventId`), replaying strictly after it. A cursor for a *different* conversation is treated as no cursor (replay all), never applied. SSE comments (`: keepalive`) go out every 15s.
+4. `POST .../cancel` sets a cancel flag on the actor (scoped to a runId when known, or deferred to the next run to cover the cancel-before-claim race).
 
 Event names (`src/events.ts`) follow AG-UI conventions (`message-start`, `text-delta`, `run-started`, ...) and payloads always carry `threadId`/`runId`. Keep new event types in that vocabulary.
 
@@ -34,14 +36,17 @@ Event names (`src/events.ts`) follow AG-UI conventions (`message-start`, `text-d
 
 1. **Catalog** (`src/catalog.ts`): read-only metadata about what models exist, fetched live from catwalk with two fallbacks: disk cache (`.cache/catwalk.json`) then vendored seed (`vendor/catwalk.seed.json`). Raw payloads are snake_case and parsed into camelCase here; never let raw catwalk shapes leak past `Catalog.fromRaw`.
 2. **Ops config** (`providers.json`, parsed in `src/providers.ts`): which providers this deployment enables, plus secrets and rate limits. An entry in this file means "enabled". `apiKey`/`apiEndpoint` may be `"$ENV_VAR"` interpolation strings. A provider listed here but missing from the catalog must carry `apiEndpoint`; if it also has no inline `models` list, models are **discovered live** from `{apiEndpoint}/models` at startup (`initInference` awaits `registry.discover()`), then enriched by the type's enricher in `src/discover.ts`. Crush convention: empty model list ⇒ discover, explicit list ⇒ skip (unless `discoverModels: true`). Explicit inline entries always win over discovered duplicates. `type` selects both the AI SDK adapter and the enricher (`"hyper"`, ...; default `"openai-compat"`).
-3. **Curation** (`model_settings` table, `PATCH /models`): which models the chat UI shows. **Opt-in: a model with no row is hidden.** `/models` is the admin view (all models + curation state), `/models/chat` is the curated view.
+3. **Curation** (`model_settings` table, `PATCH /api/models`): which models the chat UI shows. **Opt-in: a model with no row is hidden.** `/api/models` is the admin view (all models + curation state), `/api/models/chat` is the curated view.
 
 The built-in **`echo` model** (`createEchoModel` in `src/providers.ts`) is a deterministic streaming mock that bypasses all three layers. It exists so the whole pipeline runs with zero network access; tests and the smoke script rely on it. Refs are `provider/model`; `echo` is the one bare ref allowed.
 
 ## Code layout
 
-- `server.ts` — Elysia app (`buildApp`, pure: all side effects gated behind `import.meta.main`) plus the inline drive loop and actor map with idle eviction.
-- `worker.ts` — alternative standalone driver with the same claim/checkpoint protocol; kept for crash isolation. If you change claim/run logic, keep both in sync.
+- `server.ts` — web entrypoint (side effects gated behind `import.meta.main`): serves the HTML page routes + `apiRoutes`, runs the inline drive loop and the reaper/idle-eviction timer.
+- `src/http.ts` — the framework-free API layer: `apiRoutes(deps)` returns a Bun `routes` object, plus the actor map with idle eviction, the SSE stream plumbing, and request-body validation via `withBody` (valibot schemas in `src/schemas.ts`, Standard-Schema glue in `src/validate.ts`). Tests import `apiRoutes` directly, so importing `src/http` never triggers frontend bundling.
+- `src/drive.ts` — `JobDriver`: the one claim → run → heartbeat/checkpoint → done implementation, shared by the server and `worker.ts`. Change run-execution logic here and both drivers change with it.
+- `worker.ts` — standalone driver entrypoint running `JobDriver` on the same job table; kept for crash isolation.
+- `src/client/` — the web frontend (vanilla JS + CSS, no build step; Bun transpiles/bundles it when serving `index.html`/`settings.html`).
 - `src/actor.ts` — `ConversationActor`: seq management, subscriber fan-out, cancel flags, delta batching.
 - `src/store.ts` — SQLite schema and all prepared statements. Column names are snake_case; TS interfaces camelCase; `rowToSetting`-style converters bridge them. Follow that pattern for new tables.
 - `src/inference.ts` — module-level registry (`initInference`/`getRegistry`/`setRegistry`) and `run()`, which wraps `streamText`.
@@ -52,21 +57,22 @@ The built-in **`echo` model** (`createEchoModel` in `src/providers.ts`) is a det
 ## Testing conventions
 
 - `bun:test` with real temp-dir SQLite (`mkdtempSync` + `new Store(path)`); close and `rmSync` in `afterAll`. Never point tests at `data/`.
-- Exercise HTTP via `app.handle(new Request(...))` against `buildApp({ store })`. Nothing binds a port in tests.
+- Exercise HTTP by starting a real server on an ephemeral port: `Bun.serve({ port: 0, routes: apiRoutes({ store }) })`, then `fetch` against `server.url.origin`. `apiRoutes` carries no HTML routes, so tests never trigger frontend bundling. Stop servers and `rmSync` temp dirs in `afterAll`.
 - The inference registry is module-global, so tests call `setRegistry(...)` in `beforeEach` (not just `beforeAll`) to survive interleaving with other test files' mutations. Build fixtures with `Catalog.fromRaw([...])` and `new ProviderRegistry(catalog, { config: { providers: [...] } })`; the `config` option bypasses reading `providers.json` from disk.
 - Fake generation by passing inline async generators to `actor.runText`, or use the `echo` model. Never hit real providers in tests. Network code (`loadCatalog`, discovery) takes an injectable `fetchImpl`; tests mock it with `okFetch`-style helpers rather than intercepting globals.
 - SSE assertions parse frames manually (`event:`/`id:`/`data:` blocks split on blank lines, skipping `:` comment keepalives). Copy the existing `readSse` helper rather than adding a dependency.
-- `store.claimExpiredExclusive` + `actor.runText` + `store.markDone` in a test is the standard way to play the role of the drive loop.
+- `JobDriver` (`src/drive.ts`) in a test plays the role of the drive loop end-to-end; for finer control, `store.claimExpiredExclusive` + `actor.runText` + `store.markDone` is the manual equivalent.
 
 ## Gotchas
 
 - `scripts/smoke.ts` sleeps (e.g. 1200ms for claim) assume the 1s drive-loop polling interval and the `ECHO_DELAY_MS` it sets; if you change either, re-check the cancel timing.
 - `.env.example` documents only the real env surface: `PORT`, `KLOE_DB`, `CATWALK_URL`, `CATWALK_CACHE`, `CATWALK_SEED`, `ECHO_DELAY_MS`, plus whatever `$ENV_VAR` interpolations `providers.json` names.
 - `Store` creates the db's parent directory on construction, and treats `:memory:` specially. Keep both behaviors if you touch the constructor.
-- Unknown-model validation at the HTTP edge (422) exists so jobs never fail silently at claim time. Any new endpoint that takes a model ref needs the same `knownModelRefs()` check.
+- Unknown-model validation at the HTTP edge (422) exists so jobs never fail silently at claim time. Any new endpoint that takes a model ref starts with `requireKnownModel()` in `src/http.ts`.
+- Job params are parsed in exactly one place (`parseJobParams` in `src/store.ts`); a corrupt row is marked `failed` immediately rather than re-claimed forever. Don't re-parse `row.params` ad hoc.
 - Delta batching means resume granularity is the batch boundary (`BATCH_MAX_DELTAS` / `BATCH_FLUSH_MS`), not the token. The live tail between flushes is only in memory; that is intentional per the spec's write-amplification recipe.
-- `GET /conversations/:id/events` replays from seq 0 through the actor and will spin up an actor for any id, same as every other route; there is no auth yet (the `TODO(auth)` in `server.ts` is the only reference).
-- There is no frontend in this repo despite the spec describing one.
+- `GET /api/conversations/:id/events` replays from seq 0 through the actor and will spin up an actor for any id, same as every other route; there is no auth yet (the `TODO(auth)` in `src/http.ts` is the only reference).
+- The frontend (`src/client/`) is intentionally framework-free vanilla JS with no build step; Bun's HTML route handling does the bundling. Keep it dependency-light (the one vendored lib is `streaming-markdown`) and don't introduce a bundler.
 
 ## Style
 
