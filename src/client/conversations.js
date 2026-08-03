@@ -5,12 +5,15 @@
  * with the chat SPA; opening a row or "New chat" hands off via /?c= and /?new.
  */
 import { mountSidebar } from "./sidebar.js";
+import { mountConfirm } from "./confirm.js";
 
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
-  var rows = $("rows"), search = $("search");
-  var selectBtn = $("selectBtn"), deleteBtn = $("deleteBtn");
+  var rows = $("rows"), search = $("search"), clearSearch = $("clearSearch");
+  var selectBtn = $("selectBtn"), deleteBtn = $("deleteBtn"), selCount = $("selCount"), selectAllBtn = $("selectAllBtn");
+  var askConfirm = mountConfirm();
+  var CONV_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/></svg>';
 
   var sidebar = mountSidebar({
     onSelect: function (id) { window.location.href = "/?c=" + encodeURIComponent(id); },
@@ -41,10 +44,16 @@ import { mountSidebar } from "./sidebar.js";
       .map(function (c) { return c.closest(".chatrow").dataset.id; });
   }
   // Delete only appears once something is actually selected.
+  function allChecked() {
+    var cs = checks();
+    return cs.length > 0 && cs.every(function (c) { return c.checked; });
+  }
   function updateDeleteBtn() {
     var n = selectedIds().length;
     deleteBtn.hidden = n === 0;
-    deleteBtn.textContent = "Delete (" + n + ")";
+    deleteBtn.textContent = "Delete";
+    selCount.textContent = n + " selected";
+    selectAllBtn.textContent = allChecked() ? "Deselect all" : "Select all";
   }
   function setSelectMode(on) {
     selectMode = on;
@@ -66,7 +75,13 @@ import { mountSidebar } from "./sidebar.js";
   async function deleteIds(ids) {
     if (!ids.length) return;
     var plural = ids.length > 1 ? "s" : "";
-    if (!confirm("Delete " + ids.length + " conversation" + plural + "? This can't be undone.")) return;
+    var ok = await askConfirm({
+      title: "Delete " + ids.length + " conversation" + plural + "?",
+      body: "This can't be undone.",
+      ok: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
     await Promise.all(ids.map(function (id) {
       return fetch("/api/conversations/" + encodeURIComponent(id), { method: "DELETE" }).catch(function () {});
     }));
@@ -120,7 +135,9 @@ import { mountSidebar } from "./sidebar.js";
       menu.appendChild(selOpt); menu.appendChild(delOpt);
       end.appendChild(date); end.appendChild(more); end.appendChild(menu);
 
-      row.appendChild(cb); row.appendChild(main); row.appendChild(end);
+      var icon = document.createElement("span");
+      icon.className = "chaticon"; icon.innerHTML = CONV_ICON;
+      row.appendChild(cb); row.appendChild(icon); row.appendChild(main); row.appendChild(end);
 
       row.addEventListener("click", function () {
         if (selectMode) { cb.checked = !cb.checked; updateDeleteBtn(); }
@@ -168,11 +185,21 @@ import { mountSidebar } from "./sidebar.js";
   }
 
   selectBtn.addEventListener("click", function () { setSelectMode(!selectMode); });
+  selectAllBtn.addEventListener("click", function () {
+    var check = !allChecked();
+    checks().forEach(function (c) { c.checked = check; });
+    updateDeleteBtn();
+  });
   deleteBtn.addEventListener("click", function () { deleteIds(selectedIds()); });
+  function syncClear() { clearSearch.hidden = search.value.length === 0; }
   search.addEventListener("input", function () {
+    syncClear();
     clearTimeout(searchTimer);
     var q = search.value.trim();
     searchTimer = setTimeout(function () { loadMain(q); }, 160);
+  });
+  clearSearch.addEventListener("click", function () {
+    search.value = ""; syncClear(); search.focus(); loadMain("");
   });
   document.addEventListener("click", function () { closeMenus(); });
 

@@ -36,6 +36,7 @@ var RAIL_HTML =
   '</a>';
 
 var RECENTS = 8;
+var CONV_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/></svg>';
 
 /**
  * config:
@@ -68,7 +69,10 @@ export function mountSidebar(config) {
     conversations.slice(0, RECENTS).forEach(function (c) {
       var b = document.createElement("button");
       b.className = "conv"; b.type = "button";
-      b.textContent = c.title || "Untitled";
+      b.innerHTML = CONV_ICON;
+      var name = document.createElement("span");
+      name.className = "convname"; name.textContent = c.title || "Untitled";
+      b.appendChild(name);
       if (c.id === active) b.setAttribute("aria-current", "true");
       b.onclick = function () { closeRail(); config.onSelect(c.id, c.title); };
       railList.appendChild(b);

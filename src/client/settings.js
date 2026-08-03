@@ -18,6 +18,14 @@
     return by;
   }
 
+  // Flash the row's inline indicator: "saved" (green) or "failed" (red).
+  function flash(el, ok) {
+    if (!el) return;
+    el.textContent = ok ? "saved" : "failed";
+    el.classList.toggle("failed", !ok);
+    el.classList.add("show");
+    setTimeout(function () { el.classList.remove("show"); }, ok ? 900 : 2200);
+  }
   async function patch(ref, field, value, savedEl) {
     var body = { ref: ref };
     body[field] = value;
@@ -28,9 +36,9 @@
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(String(res.status));
-      if (savedEl) { savedEl.classList.add("show"); setTimeout(function () { savedEl.classList.remove("show"); }, 900); }
+      flash(savedEl, true);
     } catch (e) {
-      alert("Save failed: " + e.message);
+      flash(savedEl, false);
     }
   }
 
