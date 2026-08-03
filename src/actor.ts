@@ -115,9 +115,9 @@ export class ConversationActor {
     }));
   }
 
-  /** Current tail seq, used for Last-Event-ID resume cursor arithmetic. */
-  lastCommittedSeq(): number {
-    return this.seq;
+  /** True while at least one SSE stream is attached to this actor. */
+  hasSubscribers(): boolean {
+    return this.subscribers.size > 0;
   }
 
   /**

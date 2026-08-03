@@ -88,7 +88,7 @@ async function readUntil(
 }
 
 // 1. POST a prompt
-const res = await fetch(`${base}/conversations/${conv}/prompt`, {
+const res = await fetch(`${base}/api/conversations/${conv}/prompt`, {
   method: "POST",
   headers: { "content-type": "application/json" },
   body: JSON.stringify({ content: "hello", model: "echo" }),
@@ -96,7 +96,7 @@ const res = await fetch(`${base}/conversations/${conv}/prompt`, {
 console.log("prompt status:", res.status, await res.text());
 
 // 2. Open SSE and read until message-end
-const es = await fetch(`${base}/conversations/${conv}/stream`);
+const es = await fetch(`${base}/api/conversations/${conv}/stream`);
 const frames = await readUntil(es, (f) => f.some((x) => x.event === "message-end"));
 console.log("stream events:", frames.map((f) => f.event).join(", "));
 const delta = frames.find((f) => f.event === "text-delta")!.data.delta;
@@ -109,7 +109,7 @@ console.log("last id:", lastId);
 await Bun.sleep(100); // let the previous connection fully close
 let resumed: Frame[] = [];
 try {
-  const es2 = await fetch(`${base}/conversations/${conv}/stream`, {
+  const es2 = await fetch(`${base}/api/conversations/${conv}/stream`, {
     headers: { "last-event-id": lastId },
   });
   resumed = await readUntil(es2, () => false, 500);
@@ -120,18 +120,18 @@ try {
 console.log("resume-at-tail frames:", resumed.length, "(expect 0)");
 
 // 4. Cancel path: prompt a second run then cancel before it finishes.
-const res2 = await fetch(`${base}/conversations/${conv}/prompt`, {
+const res2 = await fetch(`${base}/api/conversations/${conv}/prompt`, {
   method: "POST",
   headers: { "content-type": "application/json" },
   body: JSON.stringify({ content: "cancel me", model: "echo" }),
 });
 console.log("prompt2 status:", res2.status);
 await Bun.sleep(1200); // let the drive loop claim + start the run
-const res3 = await fetch(`${base}/conversations/${conv}/cancel`, { method: "POST" });
+const res3 = await fetch(`${base}/api/conversations/${conv}/cancel`, { method: "POST" });
 console.log("cancel status:", res3.status, await res3.text());
 
 // Re-read stream to see cancellation
-const es3 = await fetch(`${base}/conversations/${conv}/stream`);
+const es3 = await fetch(`${base}/api/conversations/${conv}/stream`);
 const frames3 = await readUntil(es3, (f) => f.some((x) => x.event === "cancelled"));
 console.log("post-cancel stream:", frames3.map((f) => f.event).join(", "));
 

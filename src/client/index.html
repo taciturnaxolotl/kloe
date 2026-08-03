@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>kloe</title>
+<link rel="stylesheet" href="./app.css">
+</head>
+<body>
+  <div class="app">
+    <nav class="rail" id="rail" aria-label="Conversations">
+      <button class="new" id="new">+ New conversation</button>
+      <div id="railList"></div>
+      <div class="spacer"></div>
+      <div class="railfoot"><a href="/settings">Settings →</a></div>
+    </nav>
+
+    <div class="main">
+      <header class="head">
+        <button class="menu" id="menu" aria-label="Conversations">≡</button>
+        <span class="title" id="title">New conversation</span>
+        <span class="connstat" id="status" data-state="connected" role="status" aria-live="polite"><span class="conn" id="conn"></span></span>
+      </header>
+
+      <div class="scroll" id="scroll">
+        <div class="thread" id="thread"></div>
+        <button class="jump" id="jump">↓ latest</button>
+      </div>
+
+      <div class="dock">
+        <div class="dockinner">
+          <div class="banner">offline — the stream dropped. Reconnecting; your place is kept and replays on return.</div>
+
+          <form class="card" id="composer">
+            <textarea id="input" rows="1" placeholder="Reply, or ask something new…" aria-label="Message"></textarea>
+            <div class="tools">
+              <a class="icon" href="/settings" aria-label="Settings" title="Settings">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+              </a>
+              <div class="right">
+                <span class="ctx hidden" id="ctx" title="Approximate context window used">
+                  <span class="bar" id="ctxbar"></span>
+                  <span class="pct" id="ctxpct"></span>
+                </span>
+                <span class="pickwrap">
+                  <button class="pill" id="pill" type="button" aria-haspopup="listbox" aria-expanded="false" disabled>
+                    <span class="m" id="pillModel">No models</span>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+                  </button>
+                  <div class="picker" id="picker" role="listbox" hidden></div>
+                </span>
+                <button class="send" id="send" type="submit" aria-label="Send" disabled></button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -12,8 +12,10 @@
     "@ai-sdk/anthropic": "^4.0.27",
     "@ai-sdk/openai": "^4.0.27",
     "@ai-sdk/openai-compatible": "^3.0.20",
+    "@standard-schema/spec": "^1.1.0",
     "ai": "^7.0.48",
-    "elysia": "^1.4.29"
+    "streaming-markdown": "^0.2.15",
+    "valibot": "^1.4.2"
   },
   "devDependencies": {
     "@types/bun": "^1.2.2"

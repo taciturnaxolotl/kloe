@@ -15,7 +15,6 @@ export const Event = {
   RunStart: "run-started",
   RunErr: "run-error",
   Cancelled: "cancelled",
-  Steer: "steer",
 } as const;
 export type EventName = (typeof Event)[keyof typeof Event];
 
@@ -87,12 +86,6 @@ export interface CancelledData {
   runId: string;
 }
 
-export interface SteerData {
-  threadId: string;
-  runId: string;
-  message: string;
-}
-
 export type EventData =
   | UserMessageData
   | RunStartedData
@@ -102,8 +95,7 @@ export type EventData =
   | ToolResultData
   | MessageEndData
   | RunErrorData
-  | CancelledData
-  | SteerData;
+  | CancelledData;
 
 export interface ParsedEvent {
   id: string;
@@ -113,10 +105,6 @@ export interface ParsedEvent {
 
 export function makeId(conversationId: string, seq: number): string {
   return `${conversationId}:${seq}`;
-}
-
-export function isEventName(v: unknown): v is EventName {
-  return typeof v === "string" && (Object.values(Event) as string[]).includes(v);
 }
 
 export function parseEventId(id: string): {

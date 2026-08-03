@@ -19,10 +19,34 @@ export interface EnqueueParams {
   model: string;
 }
 
+/**
+ * Decodes a job's params blob — the inverse of `enqueue`, and the only place
+ * job params are parsed. Throws on a corrupt or incomplete row; callers mark
+ * the job failed rather than re-claiming it forever.
+ */
+export function parseJobParams(params: string): EnqueueParams {
+  const p = JSON.parse(params) as Record<string, unknown>;
+  for (const key of ["conversationId", "runId", "messageId", "prompt", "model"] as const) {
+    if (typeof p[key] !== "string") {
+      throw new Error(`malformed job params: bad or missing "${key}"`);
+    }
+  }
+  return p as unknown as EnqueueParams;
+}
+
 export interface StoredEvent {
   seq: number;
   event: string;
   data: unknown;
+}
+
+/** A conversation as shown in the chat rail: id, age, and a derived title. */
+export interface ConversationSummary {
+  id: string;
+  createdAt: number;
+  lastSeq: number;
+  /** First user message, truncated — null for a conversation with no prompt yet. */
+  title: string | null;
 }
 
 /**
@@ -105,11 +129,13 @@ export class Store {
   private insertConversationStmt: ReturnType<Database["prepare"]>;
   private upsertConversationStmt: ReturnType<Database["prepare"]>;
   private enqueueStmt: ReturnType<Database["prepare"]>;
-  private claimStmt: ReturnType<Database["prepare"]>;
+  private claimExclusiveStmt: ReturnType<Database["prepare"]>;
   private heartbeatStmt: ReturnType<Database["prepare"]>;
   private checkpointStmt: ReturnType<Database["prepare"]>;
   private reapStmt: ReturnType<Database["prepare"]>;
+  private requeueStmt: ReturnType<Database["prepare"]>;
   private finishStmt: ReturnType<Database["prepare"]>;
+  private listConversationsStmt: ReturnType<Database["prepare"]>;
   private listSettingsStmt: ReturnType<Database["prepare"]>;
   private getSettingStmt: ReturnType<Database["prepare"]>;
   private upsertSettingStmt: ReturnType<Database["prepare"]>;
@@ -145,10 +171,24 @@ export class Store {
     this.enqueueStmt = this.db.prepare(
       `INSERT INTO jobs (id, conversation_id, status, params) VALUES (?, ?, 'queued', ?)`,
     );
-    this.claimStmt = this.db.prepare(
+    // The hot claim query: queued or expired-lease jobs, but only for
+    // conversations with no other live running job. Enforces the single-writer
+    // invariant (one active run per conversation) atomically in SQL.
+    this.claimExclusiveStmt = this.db.prepare(
       `UPDATE jobs
        SET status = 'running', lease_until = ?
-       WHERE id = (SELECT id FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1)
+       WHERE id = (
+         SELECT j.id FROM jobs j
+         WHERE (j.status = 'queued'
+                  OR (j.status = 'running' AND j.lease_until < ?))
+           AND NOT EXISTS (
+             SELECT 1 FROM jobs j2
+             WHERE j2.conversation_id = j.conversation_id
+               AND j2.status = 'running'
+               AND j2.lease_until >= ?
+           )
+         ORDER BY j.id LIMIT 1
+       )
        RETURNING id, conversation_id, status, lease_until, checkpoint_seq, params`,
     );
     this.heartbeatStmt = this.db.prepare(
@@ -160,8 +200,22 @@ export class Store {
     this.reapStmt = this.db.prepare(
       `UPDATE jobs SET status = 'queued' WHERE status = 'running' AND lease_until < ?`,
     );
+    this.requeueStmt = this.db.prepare(
+      `UPDATE jobs SET status = 'queued', lease_until = 0 WHERE id = ?`,
+    );
     this.finishStmt = this.db.prepare(
       `UPDATE jobs SET status = ?, lease_until = 0 WHERE id = ?`,
+    );
+
+    this.listConversationsStmt = this.db.prepare(
+      `SELECT c.id AS id, c.created_at AS created_at, c.last_seq AS last_seq,
+              (SELECT e.data FROM events e
+               WHERE e.conversation_id = c.id AND e.event = 'user-message'
+               ORDER BY e.seq ASC LIMIT 1) AS first_user,
+              COALESCE((SELECT MAX(e.created_at) FROM events e
+                        WHERE e.conversation_id = c.id), c.created_at) AS last_activity
+       FROM conversations c
+       ORDER BY last_activity DESC`,
     );
 
     this.listSettingsStmt = this.db.prepare(
@@ -179,6 +233,33 @@ export class Store {
          display_name = excluded.display_name,
          sort_order = excluded.sort_order`,
     );
+  }
+
+  /**
+   * All conversations, most recently active first (by newest event, so a
+   * conversation that gets activity again rises to the top), each with a title
+   * derived from its first user message. Used by the chat rail. The title
+   * subquery pulls the earliest `user-message` event's content per conversation.
+   */
+  listConversations(): ConversationSummary[] {
+    const rows = this.listConversationsStmt.all() as Array<{
+      id: string;
+      created_at: number;
+      last_seq: number;
+      first_user: string | null;
+    }>;
+    return rows.map((r) => {
+      let title: string | null = null;
+      if (r.first_user) {
+        try {
+          const content = (JSON.parse(r.first_user) as { content?: string }).content;
+          if (typeof content === "string") title = content.slice(0, 80);
+        } catch {
+          // malformed row: leave title null rather than crash the list
+        }
+      }
+      return { id: r.id, createdAt: r.created_at, lastSeq: r.last_seq, title };
+    });
   }
 
   /** All curation rows (models with no row are hidden by default). */
@@ -221,28 +302,6 @@ export class Store {
     })();
   }
 
-  append(
-    conversationId: string,
-    seq: number,
-    eventName: string,
-    data: unknown,
-  ): void {
-    const id = `${conversationId}:${seq}`;
-    this.insertEventStmt.run(
-      id,
-      conversationId,
-      seq,
-      eventName,
-      JSON.stringify(data),
-      Date.now(),
-    );
-  }
-
-  /** Marks a delta against `conversation_id`; called when a delta batch flushes. */
-  bumpSeq(conversationId: string, seq: number): void {
-    this.upsertConversationStmt.run(conversationId, Date.now(), seq);
-  }
-
   /** The last seq durable for a conversation (0 if none). */
   lastSeq(conversationId: string): number {
     const row = this.db
@@ -265,53 +324,14 @@ export class Store {
     this.enqueueStmt.run(jobId, conversationId, JSON.stringify(params));
   }
 
-  /** Atomic race-free claim; returns the job or null. */
-  claim(now: number): JobRow | null {
-    return this.claimStmt.get(now) as JobRow | null;
-  }
-
   /**
    * Returns a job that needs running (queued, or an expired running lease the
-   * original worker may have died with), claiming it atomically.
-   */
-  claimExpired(now: number): JobRow | null {
-    return this.db
-      .prepare(
-        `UPDATE jobs
-         SET status = 'running', lease_until = ?
-         WHERE id = (SELECT id FROM jobs
-                     WHERE status = 'queued'
-                        OR (status = 'running' AND lease_until < ?)
-                     ORDER BY id LIMIT 1)
-         RETURNING id, conversation_id, status, lease_until, checkpoint_seq, params`,
-      )
-      .get(now, now) as JobRow | null;
-  }
-
-  /**
-   * Like claimExpired, but only for conversations with no other running job.
-   * Enforces the single-writer invariant: one active run per conversation.
+   * original worker may have died with) for a conversation with no other live
+   * run, claiming it atomically. The returned row is claimed (status
+   * 'running') — the caller owns it until markDone/markFailed.
    */
   claimExpiredExclusive(now: number): JobRow | null {
-    return this.db
-      .prepare(
-        `UPDATE jobs
-         SET status = 'running', lease_until = ?
-         WHERE id = (
-           SELECT j.id FROM jobs j
-           WHERE (j.status = 'queued'
-                    OR (j.status = 'running' AND j.lease_until < ?))
-             AND NOT EXISTS (
-               SELECT 1 FROM jobs j2
-               WHERE j2.conversation_id = j.conversation_id
-                 AND j2.status = 'running'
-                 AND j2.lease_until >= ?
-             )
-           ORDER BY j.id LIMIT 1
-         )
-         RETURNING id, conversation_id, status, lease_until, checkpoint_seq, params`,
-      )
-      .get(now, now, now) as JobRow | null;
+    return this.claimExclusiveStmt.get(now, now, now) as JobRow | null;
   }
 
   heartbeat(id: string, leaseUntil: number): void {
@@ -325,6 +345,11 @@ export class Store {
   /** All running jobs with expired leases are re-queued (safe re-claim). */
   reap(now: number): number {
     return this.reapStmt.run(now).changes;
+  }
+
+  /** Voluntarily hand a claimed job back without running it. */
+  requeue(id: string): void {
+    this.requeueStmt.run(id);
   }
 
   markDone(id: string): void {

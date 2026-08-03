@@ -16,16 +16,3 @@ export function truncateUtf8(s: string, n: number = MAX_SSE_FIELD_BYTES): string
 export function sseBlock(e: { id: string; event: string; data: unknown }): string {
   return `event: ${e.event}\nid: ${e.id}\ndata: ${JSON.stringify(e.data)}\n\n`;
 }
-
-/**
- * Wraps a feed of typed events as SSE-formatted strings. The feed must
- * implement the async-iterator protocol with strict sequential `next()` calls
- * (e.g. a ReadableStream's reader guarantees this).
- */
-export async function* sseBlocks(
-  events: AsyncIterable<{ id: string; event: string; data: unknown }>,
-): AsyncGenerator<string> {
-  for await (const e of events) {
-    yield sseBlock(e);
-  }
-}
