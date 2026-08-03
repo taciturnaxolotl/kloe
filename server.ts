@@ -35,6 +35,20 @@ if (import.meta.main) {
     evictIdleActors();
   }, REAP_INTERVAL_MS);
 
+  // The favicon <link>s and the manifest are bundled straight from the HTML
+  // heads (Bun hashes them and rewrites the hrefs). The manifest's own icons
+  // and the OG image, though, are referenced only by absolute path (manifest
+  // JSON and og:image/twitter:image meta), so the bundler never sees them —
+  // serve those from ./public at the paths they name.
+  const publicDir = new URL("./public/", import.meta.url);
+  const file = (name: string) => () => new Response(Bun.file(new URL(name, publicDir)));
+  const staticRoutes = {
+    "/icon-192.png": file("icon-192.png"),
+    "/icon-512.png": file("icon-512.png"),
+    "/icon-512-maskable.png": file("icon-512-maskable.png"),
+    "/og-image.png": file("og-image.png"),
+  };
+
   const port = Number(process.env.PORT ?? 3000);
   // The SSE stream is intentionally long-lived and can sit idle between
   // generations. Bun's default idleTimeout is 10s — shorter than our 15s
@@ -49,6 +63,7 @@ if (import.meta.main) {
       "/": indexHTML,
       "/settings": settingsHTML,
       "/conversations": conversationsHTML,
+      ...staticRoutes,
       ...apiRoutes({ store }),
     },
   });
