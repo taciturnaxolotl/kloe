@@ -1,49 +1,62 @@
 /*
- * Reusable in-app confirm dialog, shared across pages. mountConfirm() injects
- * the markup once and returns askConfirm(opts) -> Promise<boolean>.
- *   opts: { title, body, ok, danger }
- * The OK button is focused so Enter confirms; Esc / backdrop / Cancel resolve
- * false. Styling lives in app.css (.confirm*).
+ * Reusable in-app dialogs, shared across pages. mountDialogs() injects the
+ * markup once and returns { confirm, prompt }:
+ *   confirm({ title, body, ok, danger }) -> Promise<boolean>
+ *   prompt({ title, value, placeholder, ok, danger }) -> Promise<string|null>
+ * OK is focused (confirm) / the field is focused+selected (prompt); Enter
+ * commits, Esc / backdrop / Cancel resolve false / null. Styling: app.css.
  */
 var HTML =
   '<div class="confirm-back"></div>' +
-  '<div class="confirm-card" role="alertdialog" aria-modal="true">' +
+  '<div class="confirm-card" role="dialog" aria-modal="true">' +
     '<div class="confirm-title"></div>' +
     '<div class="confirm-body"></div>' +
+    '<input class="confirm-input" type="text" autocomplete="off" spellcheck="false" hidden>' +
     '<div class="confirm-actions">' +
       '<button class="btn confirm-cancel" type="button">Cancel</button>' +
       '<button class="btn confirm-ok" type="button">Confirm</button>' +
     '</div>' +
   '</div>';
 
-export function mountConfirm() {
+export function mountDialogs() {
   var el = document.createElement("div");
   el.className = "confirm"; el.hidden = true; el.innerHTML = HTML;
   document.body.appendChild(el);
 
   var title = el.querySelector(".confirm-title"), body = el.querySelector(".confirm-body"),
-      ok = el.querySelector(".confirm-ok"), cancel = el.querySelector(".confirm-cancel"),
-      back = el.querySelector(".confirm-back");
-  var resolve = null;
-  function close(result) {
+      input = el.querySelector(".confirm-input"), ok = el.querySelector(".confirm-ok"),
+      cancel = el.querySelector(".confirm-cancel"), back = el.querySelector(".confirm-back");
+  var resolve = null, isPrompt = false;
+
+  function done(committed) {
     if (el.hidden) return;
     el.hidden = true;
     var r = resolve; resolve = null;
-    if (r) r(result);
+    if (!r) return;
+    r(isPrompt ? (committed ? input.value.trim() : null) : committed);
   }
-  ok.addEventListener("click", function () { close(true); });
-  cancel.addEventListener("click", function () { close(false); });
-  back.addEventListener("click", function () { close(false); });
-  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && !el.hidden) close(false); });
+  ok.addEventListener("click", function () { done(true); });
+  cancel.addEventListener("click", function () { done(false); });
+  back.addEventListener("click", function () { done(false); });
+  input.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); done(true); } });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && !el.hidden) done(false); });
 
-  return function askConfirm(opts) {
+  function open(opts, prompt) {
     opts = opts || {};
-    title.textContent = opts.title || "Are you sure?";
+    isPrompt = prompt;
+    title.textContent = opts.title || "";
     body.textContent = opts.body || "";
-    ok.textContent = opts.ok || "Confirm";
+    body.hidden = !opts.body;
+    ok.textContent = opts.ok || (prompt ? "Save" : "Confirm");
     ok.className = "btn confirm-ok " + (opts.danger ? "danger" : "primary");
+    input.hidden = !prompt;
+    if (prompt) { input.value = opts.value || ""; input.placeholder = opts.placeholder || ""; }
     el.hidden = false;
-    ok.focus();
+    if (prompt) { input.focus(); input.select(); } else { ok.focus(); }
     return new Promise(function (r) { resolve = r; });
+  }
+  return {
+    confirm: function (opts) { return open(opts, false); },
+    prompt: function (opts) { return open(opts, true); },
   };
 }

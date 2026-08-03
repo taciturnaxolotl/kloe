@@ -25,6 +25,12 @@ export type PromptBody = v.InferOutput<typeof PromptBody>;
 export const SteerBody = PromptBody;
 export type SteerBody = PromptBody;
 
+/** PATCH /api/conversations/:id — set a custom title (empty string clears it). */
+export const RenameBody = v.object({
+	title: v.pipe(v.string(), v.maxLength(200)),
+});
+export type RenameBody = v.InferOutput<typeof RenameBody>;
+
 /**
  * PATCH /api/models — partial curation update. `displayName: null` clears the
  * override; omitted fields keep their stored value (merge happens in the handler).

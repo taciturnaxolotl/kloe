@@ -5,7 +5,7 @@ import { getRegistry } from "./inference";
 import { sseBlock } from "./sse";
 import { parseEventId } from "./events";
 import { withBody } from "./validate";
-import { PromptBody, SteerBody, ModelPatchBody } from "./schemas";
+import { PromptBody, SteerBody, ModelPatchBody, RenameBody } from "./schemas";
 import { ACTOR_IDLE_TTL_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
 
 /**
@@ -329,6 +329,10 @@ export function apiRoutes(deps: { store: Store }) {
         actors.delete(req.params.id); // drop the in-memory actor so it can't resurrect the log
         return Response.json({ ok: true });
       },
+      PATCH: withBody(RenameBody, (data, req: Bun.BunRequest<"/api/conversations/:id">) => {
+        store.renameConversation(req.params.id, data.title);
+        return Response.json({ ok: true });
+      }),
     },
   };
 }

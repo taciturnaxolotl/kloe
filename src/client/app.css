@@ -3,7 +3,7 @@
   --mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
   --bg:#ffffff; --bg-sunk:#f6f6f7; --bg-raise:#ffffff; --ink:#17181a;
   --ink-muted:#6a6d73; --ink-faint:#9a9da3; --rule:#e6e7e9; --rule-strong:#d9dade;
-  --accent:#0a66d6; --ok:#3f8f5f; --warn:#b07d1a; --err:#c0392b; --measure:72ch;
+  --accent:#5577a3; --ok:#3f8f5f; --warn:#b07d1a; --err:#c0392b; --measure:72ch;
   --danger:#b33535; /* red for destructive action buttons */
   /* Rounding scale — theme-independent, used everywhere instead of ad-hoc px. */
   --radius-xs: 4px;   /* chips, inline code */
@@ -16,17 +16,20 @@
 @media (prefers-color-scheme: dark) {
   :root { --bg:#121315; --bg-sunk:#1b1c1f; --bg-raise:#1a1b1e; --ink:#e8e9ea;
     --ink-muted:#9a9da3; --ink-faint:#6a6d73; --rule:#2a2c2f; --rule-strong:#3a3d42;
-    --accent:#4c9aff; --ok:#5bb37f; --warn:#d0a044; --err:#e06c5e; }
+    --accent:#5577a3; --ok:#5bb37f; --warn:#d0a044; --err:#e06c5e; }
 }
 [data-theme="light"] { --bg:#ffffff; --bg-sunk:#f6f6f7; --bg-raise:#ffffff; --ink:#17181a;
   --ink-muted:#6a6d73; --ink-faint:#9a9da3; --rule:#e6e7e9; --rule-strong:#d9dade;
-  --accent:#0a66d6; --ok:#3f8f5f; --warn:#b07d1a; --err:#c0392b; }
+  --accent:#5577a3; --ok:#3f8f5f; --warn:#b07d1a; --err:#c0392b; }
 [data-theme="dark"] { --bg:#121315; --bg-sunk:#1b1c1f; --bg-raise:#1a1b1e; --ink:#e8e9ea;
   --ink-muted:#9a9da3; --ink-faint:#6a6d73; --rule:#2a2c2f; --rule-strong:#3a3d42;
-  --accent:#4c9aff; --ok:#5bb37f; --warn:#d0a044; --err:#e06c5e; }
+  --accent:#5577a3; --ok:#5bb37f; --warn:#d0a044; --err:#e06c5e; }
 
 * { box-sizing: border-box; }
 html, body { height: 100%; }
+/* Reserve the scrollbar's space so content never shifts when a scrollbar
+   appears/disappears (e.g. when an overlay opens). */
+html { scrollbar-gutter: stable; }
 body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans);
   font-size: 15.5px; line-height: 1.6; -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility; display: flex; flex-direction: column; }
@@ -81,15 +84,14 @@ a { color: var(--accent); }
 .railfoot svg { width: 16px; height: 16px; }
 
 /* ---- conversations page ------------------------------------------------ */
-.chatscroll { flex: 1; overflow-y: auto; min-height: 0; }
+.chatscroll { flex: 1; overflow-y: auto; min-height: 0; scrollbar-gutter: stable; }
 /* Constrain the page to a comfortable width (like settings), header + list
    centered together so they stay aligned. */
 .chatspage { max-width: 920px; margin: 0 auto; padding: 10px 14px 60px; width: 100%; }
 /* The header reuses the chat `.head` bar so the toggle lands in the exact same
    place across pages; it wraps its actions on narrow screens and drops the
    under-bar divider (the list carries its own between-row rules). */
-.head.chatshead { flex-wrap: wrap; row-gap: 8px; border-bottom: 0;
-  width: 100%; max-width: 920px; align-self: center; }
+.head.chatshead { flex-wrap: wrap; row-gap: 8px; border-bottom: 0; }
 .head.chatshead .title { font-size: 16px; }
 .chatsactions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 /* When the header wraps, the search field spans the full width to the edge. */
@@ -174,20 +176,23 @@ body.selecting #selectBtn { order: 4; }
 .chatmore { position: absolute; right: 0; top: 50%; transform: translateY(-50%); opacity: 0;
   display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
   border-radius: var(--radius-sm); border: 0; background: none; color: var(--ink-faint); cursor: pointer; padding: 0; }
-.chatrow:hover .chatmore, .chatrow.menuopen .chatmore { opacity: 1; }
-.chatrow:hover .chatdate, .chatrow.menuopen .chatdate { opacity: 0; }
+.chatrow:hover .chatmore { opacity: 1; }
+.chatrow:hover .chatdate { opacity: 0; }
 @media (hover: none) { .chatmore { opacity: 1; } .chatrow .chatdate { opacity: 0; } }
 .chatmore:hover { background: color-mix(in srgb, var(--ink) 9%, transparent); color: var(--ink); }
 .chatmore svg { width: 17px; height: 17px; }
-.chatmenu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 10; min-width: 132px;
+/* Floating right-click / ⋮ context menu (ctxmenu.js). */
+.ctxmenu { position: fixed; z-index: 70; min-width: 120px; padding: 4px;
   background: var(--bg-raise); border: 1px solid var(--rule-strong); border-radius: var(--radius-md);
-  box-shadow: 0 10px 30px rgba(0,0,0,.2); padding: 4px; display: flex; flex-direction: column; }
-.chatmenu[hidden] { display: none; }
-.chatmenu button { text-align: left; font: inherit; font-size: 13px; color: var(--ink); background: none;
-  border: 0; border-radius: var(--radius-sm); padding: 7px 10px; cursor: pointer; }
-.chatmenu button:hover { background: var(--bg-sunk); }
-.chatmenu button.danger { color: var(--err); }
-.chatmenu button.danger:hover { background: color-mix(in srgb, var(--err) 12%, transparent); }
+  box-shadow: 0 10px 30px rgba(0,0,0,.2); display: flex; flex-direction: column; }
+.ctxmenu button { display: flex; align-items: center; gap: 9px; text-align: left; font: inherit; font-size: 13px;
+  color: var(--ink); background: none; border: 0; border-radius: var(--radius-sm); padding: 7px 10px; cursor: pointer; }
+.ctxmenu .ctxicon { width: 15px; height: 15px; flex: none; display: inline-flex; color: var(--ink-muted); }
+.ctxmenu .ctxicon svg { width: 15px; height: 15px; }
+.ctxmenu button:hover { background: color-mix(in srgb, var(--ink) 7%, transparent); }
+.ctxmenu button.danger { color: var(--err); }
+.ctxmenu button.danger .ctxicon { color: var(--err); }
+.ctxmenu button.danger:hover { background: color-mix(in srgb, var(--err) 12%, transparent); }
 
 /* In-app confirm dialog (replaces window.confirm). */
 .confirm { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 16px; }
@@ -198,6 +203,11 @@ body.selecting #selectBtn { order: 4; }
   box-shadow: 0 24px 64px rgba(0,0,0,.32); }
 .confirm-title { font-size: 16px; font-weight: 600; color: var(--ink); }
 .confirm-body { font-size: 13.5px; color: var(--ink-muted); margin-top: 6px; }
+.confirm-input { width: 100%; margin-top: 14px; font: inherit; font-size: 14px; color: var(--ink);
+  background: var(--bg-sunk); border: 1px solid var(--rule-strong); border-radius: var(--radius-md);
+  padding: 9px 11px; outline: none; }
+.confirm-input:focus { border-color: color-mix(in srgb, var(--accent) 45%, var(--rule-strong)); }
+.confirm-input[hidden] { display: none; }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 
 .railhead .railx { display: inline-flex; } /* the toggle lives inside the sidebar */
@@ -213,14 +223,11 @@ body.selecting #selectBtn { order: 4; }
 }
 @media (prefers-reduced-motion: reduce) { .rail, .scrim { transition: none; } }
 
-.main { position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-/* On wide screens the conversations header centers with the list, but the
-   collapsed-sidebar toggle stays pinned in the corner rather than following it.
-   (Below this width the header is full-width, so the toggle sits in flow.) */
-@media (min-width: 960px) {
-  .head.chatshead .menu { position: absolute; left: 14px; top: 11px; }
-}
-.head { border-bottom: 1px solid var(--rule); padding: 9px 14px; display: flex; align-items: center; gap: 8px; }
+.main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+/* Fixed header height so it never grows/shifts when the collapsed-sidebar
+   toggle appears in it. */
+.head { border-bottom: 1px solid var(--rule); padding: 6px 14px; min-height: 48px;
+  display: flex; align-items: center; gap: 8px; }
 .head .title { font-size: 14.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The toggle lives in the sidebar; this header copy only appears to REOPEN the
    sidebar when it's hidden (collapsed on desktop, closed overlay on mobile). */
@@ -235,7 +242,7 @@ body.selecting #selectBtn { order: 4; }
 .head .connstat[data-state="reconnecting"] .conn,
 .head .connstat[data-state="offline"] .conn { display: inline; }
 
-.scroll { flex: 1; overflow-y: auto; min-height: 0; position: relative; }
+.scroll { flex: 1; overflow-y: auto; min-height: 0; position: relative; scrollbar-gutter: stable; }
 .thread { max-width: var(--measure); margin: 0 auto; padding: 22px 20px 32px; }
 .turn { padding: 18px 0; border-top: 1px solid var(--rule); }
 .turn:first-child { border-top: 0; }

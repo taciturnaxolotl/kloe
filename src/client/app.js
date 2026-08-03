@@ -20,6 +20,7 @@
  */
 import * as smd from "streaming-markdown";
 import { mountSidebar } from "./sidebar.js";
+import { mountDialogs } from "./confirm.js";
 
 (function () {
   "use strict";
@@ -451,10 +452,13 @@ import { mountSidebar } from "./sidebar.js";
   // The sidebar (recents list, nav, collapse/overlay toggle) is shared with the
   // Conversations page; this page just tells it how to open/create a chat.
   var conversations = [];
+  var dialogs = mountDialogs();
   var sidebar = mountSidebar({
     onSelect: function (id, t) { selectConversation(id, t); },
     onNew: function () { newConversation(); },
     activeId: function () { return convId; },
+    dialogs: dialogs,
+    reload: function () { loadConversations(); },
   });
   function hasConversation(id) { return conversations.some(function (c) { return c.id === id; }); }
   async function loadConversations() {

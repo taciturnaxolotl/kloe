@@ -4,8 +4,11 @@
  * source of truth, renders the Recents list, and wires the nav + collapse/
  * overlay toggle. The host page supplies what "open a conversation" and "new
  * chat" mean (SPA navigation vs a full page load) and which conversation is
- * active. The panel toggle (#menu) lives in each page's own header.
+ * active. The panel toggle (#menu) lives in each page's own header. When the
+ * host passes `dialogs`, right-clicking a recent opens the Rename/Delete menu.
  */
+import { openChatMenu } from "./chatmenu.js";
+
 var RAIL_HTML =
   '<div class="railhead">' +
     '<span class="brand">kloe</span>' +
@@ -75,6 +78,14 @@ export function mountSidebar(config) {
       b.appendChild(name);
       if (c.id === active) b.setAttribute("aria-current", "true");
       b.onclick = function () { closeRail(); config.onSelect(c.id, c.title); };
+      if (config.dialogs) {
+        b.oncontextmenu = function (e) {
+          e.preventDefault();
+          openChatMenu(e.clientX, e.clientY, {
+            id: c.id, title: c.title, dialogs: config.dialogs, reload: config.reload,
+          });
+        };
+      }
       railList.appendChild(b);
     });
   }

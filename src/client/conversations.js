@@ -5,14 +5,15 @@
  * with the chat SPA; opening a row or "New chat" hands off via /?c= and /?new.
  */
 import { mountSidebar } from "./sidebar.js";
-import { mountConfirm } from "./confirm.js";
+import { mountDialogs } from "./confirm.js";
+import { openChatMenu } from "./chatmenu.js";
 
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
   var rows = $("rows"), search = $("search"), clearSearch = $("clearSearch");
   var selectBtn = $("selectBtn"), deleteBtn = $("deleteBtn"), selCount = $("selCount"), selectAllBtn = $("selectAllBtn");
-  var askConfirm = mountConfirm();
+  var dialogs = mountDialogs();
   var CONV_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/></svg>';
 
   var sidebar = mountSidebar({
@@ -20,6 +21,8 @@ import { mountConfirm } from "./confirm.js";
     onNew: function () { window.location.href = "/?new=1"; },
     onOpenList: function () { search.focus(); },
     active: "conversations",
+    dialogs: dialogs,
+    reload: function () { reloadAll(); },
   });
 
   var conversations = []; // full list (for the sidebar recents)
@@ -63,19 +66,14 @@ import { mountConfirm } from "./confirm.js";
     updateDeleteBtn();
   }
 
-  function closeMenus() {
-    Array.prototype.forEach.call(rows.querySelectorAll(".chatmenu"), function (m) {
-      m.hidden = true;
-      var r = m.closest(".chatrow"); if (r) r.classList.remove("menuopen");
-    });
-  }
-
   var MORE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>';
+
+  async function reloadAll() { await loadSidebar(); loadMain(search.value.trim()); }
 
   async function deleteIds(ids) {
     if (!ids.length) return;
     var plural = ids.length > 1 ? "s" : "";
-    var ok = await askConfirm({
+    var ok = await dialogs.confirm({
       title: "Delete " + ids.length + " conversation" + plural + "?",
       body: "This can't be undone.",
       ok: "Delete",
@@ -86,8 +84,7 @@ import { mountConfirm } from "./confirm.js";
       return fetch("/api/conversations/" + encodeURIComponent(id), { method: "DELETE" }).catch(function () {});
     }));
     setSelectMode(false);
-    await loadSidebar();
-    loadMain(search.value.trim());
+    reloadAll();
   }
 
   function renderRows(list, q) {
@@ -126,39 +123,31 @@ import { mountConfirm } from "./confirm.js";
       var more = document.createElement("button");
       more.className = "chatmore"; more.type = "button";
       more.setAttribute("aria-label", "Conversation options"); more.innerHTML = MORE;
-      var menu = document.createElement("div");
-      menu.className = "chatmenu"; menu.hidden = true;
-      var selOpt = document.createElement("button");
-      selOpt.type = "button"; selOpt.textContent = "Select";
-      var delOpt = document.createElement("button");
-      delOpt.type = "button"; delOpt.className = "danger"; delOpt.textContent = "Delete";
-      menu.appendChild(selOpt); menu.appendChild(delOpt);
-      end.appendChild(date); end.appendChild(more); end.appendChild(menu);
+      end.appendChild(date); end.appendChild(more);
 
       var icon = document.createElement("span");
       icon.className = "chaticon"; icon.innerHTML = CONV_ICON;
       row.appendChild(cb); row.appendChild(icon); row.appendChild(main); row.appendChild(end);
 
+      function openMenu(x, y) {
+        openChatMenu(x, y, {
+          id: c.id, title: c.title, dialogs: dialogs, reload: reloadAll,
+          extra: [{ label: "Select", onClick: function () {
+            if (!selectMode) setSelectMode(true);
+            cb.checked = true; updateDeleteBtn();
+          } }],
+        });
+      }
       row.addEventListener("click", function () {
         if (selectMode) { cb.checked = !cb.checked; updateDeleteBtn(); }
         else window.location.href = "/?c=" + encodeURIComponent(c.id);
       });
+      row.addEventListener("contextmenu", function (ev) { ev.preventDefault(); openMenu(ev.clientX, ev.clientY); });
       cb.addEventListener("click", function (ev) { ev.stopPropagation(); updateDeleteBtn(); });
       more.addEventListener("click", function (ev) {
         ev.stopPropagation();
-        var open = menu.hidden;
-        closeMenus();
-        menu.hidden = !open;
-        row.classList.toggle("menuopen", open);
-      });
-      selOpt.addEventListener("click", function (ev) {
-        ev.stopPropagation(); menu.hidden = true; row.classList.remove("menuopen");
-        if (!selectMode) setSelectMode(true);
-        cb.checked = true; updateDeleteBtn();
-      });
-      delOpt.addEventListener("click", function (ev) {
-        ev.stopPropagation(); menu.hidden = true; row.classList.remove("menuopen");
-        deleteIds([c.id]);
+        var r = more.getBoundingClientRect();
+        openMenu(r.right, r.bottom + 4);
       });
 
       rows.appendChild(row);
@@ -201,7 +190,6 @@ import { mountConfirm } from "./confirm.js";
   clearSearch.addEventListener("click", function () {
     search.value = ""; syncClear(); search.focus(); loadMain("");
   });
-  document.addEventListener("click", function () { closeMenus(); });
 
   (async function () {
     await loadSidebar();

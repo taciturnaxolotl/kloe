@@ -353,6 +353,44 @@ test("search escapes LIKE wildcards so a query matches literally", async () => {
   expect(miss.conversations.map((c) => c.id)).not.toContain("search-literal");
 });
 
+test("PATCH /api/conversations/:id sets a custom title (overriding the derived one)", async () => {
+  const conv = "rename-me";
+  getActor(conv, store).appendUser("original first message", "r-rn");
+  // Derived title is the first message.
+  const before = (await (await fetch(`${base}/api/conversations`)).json()) as {
+    conversations: Array<{ id: string; title: string | null }>;
+  };
+  expect(before.conversations.find((c) => c.id === conv)!.title).toBe("original first message");
+
+  const res = await fetch(`${base}/api/conversations/${conv}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title: "My renamed chat" }),
+  });
+  expect(res.status).toBe(200);
+
+  const after = (await (await fetch(`${base}/api/conversations`)).json()) as {
+    conversations: Array<{ id: string; title: string | null }>;
+  };
+  expect(after.conversations.find((c) => c.id === conv)!.title).toBe("My renamed chat");
+  // Searchable by the new title.
+  const hit = (await (await fetch(`${base}/api/conversations?q=renamed`)).json()) as {
+    conversations: Array<{ id: string }>;
+  };
+  expect(hit.conversations.map((c) => c.id)).toContain(conv);
+
+  // Empty title clears the override back to the derived one.
+  await fetch(`${base}/api/conversations/${conv}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title: "  " }),
+  });
+  const cleared = (await (await fetch(`${base}/api/conversations`)).json()) as {
+    conversations: Array<{ id: string; title: string | null }>;
+  };
+  expect(cleared.conversations.find((c) => c.id === conv)!.title).toBe("original first message");
+});
+
 test("DELETE /api/conversations/:id removes the conversation and its events", async () => {
   const conv = "delete-me";
   getActor(conv, store).appendUser("scratch this", "del-1");

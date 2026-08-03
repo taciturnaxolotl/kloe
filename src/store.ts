@@ -100,11 +100,15 @@ interface ConversationRow {
   last_activity: number;
   last_seq: number;
   first_user: string | null;
+  custom_title: string | null;
 }
 
 function rowToSummary(r: ConversationRow): ConversationSummary {
   let title: string | null = null;
-  if (r.first_user) {
+  // A user-set title wins; otherwise derive from the first message.
+  if (typeof r.custom_title === "string" && r.custom_title.trim() !== "") {
+    title = r.custom_title;
+  } else if (r.first_user) {
     try {
       const content = (JSON.parse(r.first_user) as { content?: string }).content;
       if (typeof content === "string") title = content.slice(0, 80);
@@ -161,7 +165,8 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY,
   created_at INTEGER NOT NULL,
-  last_seq INTEGER NOT NULL DEFAULT 0
+  last_seq INTEGER NOT NULL DEFAULT 0,
+  custom_title TEXT
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -234,6 +239,13 @@ export class Store {
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA synchronous = FULL");
     this.db.exec(SCHEMA);
+    // Migration for DBs created before custom_title existed. Ignore the error
+    // when the column is already present.
+    try {
+      this.db.exec("ALTER TABLE conversations ADD COLUMN custom_title TEXT");
+    } catch {
+      // column already exists
+    }
 
     this.readStmt = this.db.prepare(
       `SELECT seq, event, data FROM events
@@ -294,7 +306,7 @@ export class Store {
     );
 
     this.listConversationsStmt = this.db.prepare(
-      `SELECT c.id AS id, c.created_at AS created_at, c.last_seq AS last_seq,
+      `SELECT c.id AS id, c.created_at AS created_at, c.last_seq AS last_seq, c.custom_title AS custom_title,
               (SELECT e.data FROM events e
                WHERE e.conversation_id = c.id AND e.event = 'user-message'
                ORDER BY e.seq ASC LIMIT 1) AS first_user,
@@ -308,7 +320,7 @@ export class Store {
     // query. `match_text` grabs the first matching message so the UI can show an
     // excerpt of WHY it matched (title matches surface the first message).
     this.searchConversationsStmt = this.db.prepare(
-      `SELECT c.id AS id, c.created_at AS created_at, c.last_seq AS last_seq,
+      `SELECT c.id AS id, c.created_at AS created_at, c.last_seq AS last_seq, c.custom_title AS custom_title,
               (SELECT e.data FROM events e
                WHERE e.conversation_id = c.id AND e.event = 'user-message'
                ORDER BY e.seq ASC LIMIT 1) AS first_user,
@@ -321,7 +333,8 @@ export class Store {
                    OR (e.event = 'text-delta'   AND json_extract(e.data, '$.delta')   LIKE ? ESCAPE '\\'))
                ORDER BY e.seq ASC LIMIT 1) AS match_text
        FROM conversations c
-       WHERE EXISTS (
+       WHERE c.custom_title LIKE ? ESCAPE '\\'
+          OR EXISTS (
          SELECT 1 FROM events e
          WHERE e.conversation_id = c.id
            AND ((e.event = 'user-message' AND json_extract(e.data, '$.content') LIKE ? ESCAPE '\\')
@@ -386,13 +399,21 @@ export class Store {
    */
   searchConversations(query: string): ConversationSearchResult[] {
     const like = `%${escapeLike(query)}%`;
-    const rows = this.searchConversationsStmt.all(like, like, like, like) as Array<
+    const rows = this.searchConversationsStmt.all(like, like, like, like, like) as Array<
       ConversationRow & { match_text: string | null }
     >;
     return rows.map((r) => ({
       ...rowToSummary(r),
       snippet: r.match_text ? snippetAround(r.match_text, query) : null,
     }));
+  }
+
+  /** Sets a conversation's custom title (empty/whitespace clears it back to the derived one). */
+  renameConversation(id: string, title: string): void {
+    const trimmed = title.trim();
+    this.db
+      .prepare("UPDATE conversations SET custom_title = ? WHERE id = ?")
+      .run(trimmed === "" ? null : trimmed, id);
   }
 
   /** Permanently removes a conversation and everything scoped to it. */
