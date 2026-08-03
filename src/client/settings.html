@@ -8,13 +8,24 @@
 <link rel="stylesheet" href="./app.css">
 </head>
 <body>
-  <div class="settings">
-    <a class="back" href="/">← Back to chat</a>
-    <h1>Settings</h1>
-    <h2 class="shead">Models</h2>
-    <p class="lede">Choose which models appear in the chat picker, and give them display names.
-      Chat is opt-in — nothing shows until you enable it here.</p>
-    <div id="content">Loading…</div>
+  <div class="app" id="app">
+    <div class="scrim" id="scrim" aria-hidden="true"></div>
+    <nav class="rail" id="rail" aria-label="Conversations"></nav>
+    <div class="main">
+      <header class="head">
+        <button class="icon menu" id="menu" type="button" aria-label="Toggle sidebar" title="Toggle sidebar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>
+        </button>
+        <span class="title">Settings</span>
+      </header>
+      <div class="chatscroll">
+        <div class="setpage">
+          <h2 class="shead">Models</h2>
+          <p class="lede">Turn models on to add them to the chat picker, drag the enabled ones to set their order (⌘-click to move several at once), and give them display names.</p>
+          <div id="content">Loading…</div>
+        </div>
+      </div>
+    </div>
   </div>
   <script type="module" src="./settings.js"></script>
 </body>

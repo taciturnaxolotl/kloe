@@ -381,31 +381,74 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
 .queue .qtext { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---- settings ---------------------------------------------------------- */
-.settings { max-width: 860px; margin: 0 auto; padding: 28px 24px 60px; width: 100%; }
-.settings h1 { font-size: 20px; margin: 0 0 18px; }
-.settings .shead { font-size: 15px; font-weight: 600; margin: 0 0 4px; color: var(--ink); }
-.settings .lede { color: var(--ink-muted); font-size: 14px; margin: 0 0 24px; }
-.settings .back { font-family: var(--mono); font-size: 12px; color: var(--ink-muted); text-decoration: none; }
-.settings .back:hover { color: var(--ink); }
-.mtable { width: 100%; border-collapse: collapse; font-size: 14px; }
-.mtable th { text-align: left; font-family: var(--mono); font-size: 11px; text-transform: uppercase;
-  letter-spacing: .06em; color: var(--ink-faint); font-weight: 500; padding: 8px 10px; border-bottom: 1px solid var(--rule); }
-.mtable td { padding: 10px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
-.mtable tr:hover td { background: var(--bg-sunk); }
-.mtable .ref { font-family: var(--mono); font-size: 12px; color: var(--ink-muted); }
-.mtable .cap { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
-.mtable input[type="text"] { font: inherit; font-size: 13px; color: var(--ink); background: var(--bg);
-  border: 1px solid var(--rule-strong); border-radius: var(--radius-sm); padding: 4px 8px; width: 140px; }
-.mtable input[type="number"] { font: inherit; font-size: 13px; color: var(--ink); background: var(--bg);
-  border: 1px solid var(--rule-strong); border-radius: var(--radius-sm); padding: 4px 6px; width: 56px; }
-.mtable .prov { font-weight: 600; font-size: 13px; padding-top: 20px; color: var(--ink-muted); }
-.toggle { appearance: none; width: 34px; height: 20px; border-radius: var(--radius-pill); background: var(--rule-strong);
-  position: relative; cursor: pointer; transition: background .12s ease; flex: none; }
+.setpage { max-width: 760px; margin: 0 auto; padding: 14px 16px 60px; width: 100%; }
+.setpage .shead { font-size: 15px; font-weight: 600; margin: 6px 0 4px; color: var(--ink); }
+.setpage .lede { color: var(--ink-muted); font-size: 13.5px; margin: 0 0 18px; max-width: 62ch; }
+.setpage code { font-family: var(--mono); font-size: 0.9em; background: var(--bg-sunk);
+  border: 1px solid var(--rule); border-radius: var(--radius-xs); padding: 0.05em 0.35em; }
+
+.seclabel { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--ink-faint); font-weight: 500; margin: 22px 0 8px; }
+.seclabel:first-child { margin-top: 2px; }
+.modellist { display: flex; flex-direction: column; gap: 6px; }
+.modelempty { padding: 14px; font-size: 13px; color: var(--ink-faint);
+  border: 1px dashed var(--rule); border-radius: var(--radius-md); }
+.modelrow { display: flex; align-items: center; gap: 11px; padding: 9px 12px 9px 3px;
+  background: var(--bg-raise); border: 1px solid var(--rule); border-radius: var(--radius-md);
+  user-select: none; }
+.modelrow .mrename { user-select: text; }
+.modelrow .dragspace { width: 26px; flex: none; }
+.modelrow.selected { border-color: color-mix(in srgb, var(--accent) 55%, var(--rule-strong));
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-raise)); }
+.modelrow.off { opacity: .5; }
+/* While dragging: the grabbed row stays in flow (visibility-hidden, so the
+   browser doesn't abort the drag) and becomes the single dashed drop slot; the
+   rest of the selection leaves the flow entirely. The drag image (a stacked
+   card + count) carries the visual. */
+.modelrow.dragging { display: none; }
+.modelrow.dropslot { background: color-mix(in srgb, var(--accent) 8%, var(--bg-sunk));
+  border: 1px dashed color-mix(in srgb, var(--accent) 55%, var(--rule-strong)); }
+.modelrow.dropslot > * { visibility: hidden; }
+
+/* Off-screen drag image: the lead card, backed by faint offset cards and a
+   count badge when several rows move together (macOS-Finder style). */
+.dragghost { position: fixed; top: -1000px; left: -1000px; width: 236px; height: 64px; pointer-events: none; }
+.dragghost .ghostback, .dragghost .ghostcard { position: absolute; box-sizing: border-box;
+  width: 220px; height: 44px; border-radius: var(--radius-md); }
+.dragghost .ghostcard { left: 0; top: 8px; display: flex; align-items: center; padding: 0 13px;
+  background: var(--bg-raise); border: 1px solid var(--rule-strong); box-shadow: 0 10px 24px rgba(0,0,0,.28);
+  font-size: 13px; font-weight: 500; color: var(--ink); white-space: nowrap; overflow: hidden; }
+.dragghost .ghostback { left: 5px; top: 13px; background: var(--bg-sunk); border: 1px solid var(--rule); }
+.dragghost .ghostbadge { position: absolute; left: 206px; top: 2px; height: 20px; min-width: 20px; padding: 0 6px;
+  box-sizing: border-box; display: flex; align-items: center; justify-content: center;
+  background: var(--accent); color: #fff; border-radius: 10px; font-size: 12px; font-weight: 600;
+  box-shadow: 0 2px 6px rgba(0,0,0,.3); }
+.modellist-enabled .modelrow { cursor: grab; }
+.modellist-enabled .modelrow:active { cursor: grabbing; }
+.modellist-enabled .modelrow .toggle,
+.modellist-enabled .modelrow .mrename { cursor: auto; }
+.modelrow .drag { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 30px;
+  flex: none; color: var(--ink-faint); background: none; border: 0; padding: 0; cursor: grab; border-radius: var(--radius-sm); }
+.modelrow .drag:hover { color: var(--ink-muted); }
+.modelrow .drag svg { width: 16px; height: 16px; }
+.modelmain { flex: 1; min-width: 0; }
+.mname { font-size: 14px; font-weight: 500; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mmeta { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); margin-top: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mrename { flex: none; width: 150px; font: inherit; font-size: 13px; color: var(--ink); background: var(--bg-sunk);
+  border: 1px solid var(--rule-strong); border-radius: var(--radius-sm); padding: 5px 9px; }
+.mrename:focus { outline: none; border-color: color-mix(in srgb, var(--accent) 45%, var(--rule-strong)); }
+.mrename::placeholder { color: var(--ink-faint); }
+@media (max-width: 560px) { .mrename { width: 108px; } }
+
+.toggle { appearance: none; -webkit-appearance: none; width: 34px; height: 20px; border-radius: var(--radius-pill);
+  background: var(--rule-strong); position: relative; cursor: pointer; transition: background .12s ease; flex: none; }
 .toggle:checked { background: var(--accent); }
 .toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
   border-radius: 50%; background: #fff; transition: transform .12s ease; }
 .toggle:checked::after { transform: translateX(14px); }
-.saved { font-family: var(--mono); font-size: 11px; color: var(--ok); opacity: 0; transition: opacity .2s; }
+.saved { flex: none; width: 32px; font-family: var(--mono); font-size: 11px; color: var(--ok);
+  opacity: 0; transition: opacity .2s; }
 .saved.show { opacity: 1; }
 .saved.failed { color: var(--err); }
 
