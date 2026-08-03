@@ -23,13 +23,14 @@ import * as smd from "streaming-markdown";
 (function () {
   "use strict";
 
-  var SEND = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>';
+  var SEND = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>';
 
   var $ = function (id) { return document.getElementById(id); };
   var thread = $("thread"), scroll = $("scroll"), jump = $("jump");
   var input = $("input"), send = $("send"), composer = $("composer");
   var title = $("title"), status = $("status"), conn = $("conn");
-  var railList = $("railList"), rail = $("rail");
+  var railList = $("railList"), appEl = $("app"), scrim = $("scrim");
+  var chatsModal = $("chatsModal"), chatsList = $("chatsList"), chatsSearch = $("chatsSearch");
   var pill = $("pill"), pillModel = $("pillModel"), picker = $("picker");
   var ctx = $("ctx"), ctxbar = $("ctxbar"), ctxpct = $("ctxpct");
   var queueEl = $("queue"), queueCount = $("queueCount"), queueItems = $("queueItems");
@@ -457,22 +458,101 @@ import * as smd from "streaming-markdown";
     } catch (_) { conversations = []; }
     renderRail();
   }
+  // The panel toggle: on mobile the sidebar is an overlay (open/close); on
+  // desktop it's a column that collapses to reclaim width. Two independent
+  // classes, each scoped to its breakpoint in CSS, so a stale one from the other
+  // viewport is harmless.
+  var railMql = window.matchMedia("(max-width: 720px)");
+  function toggleRail() {
+    appEl.classList.toggle(railMql.matches ? "rail-open" : "rail-collapsed");
+  }
+  // Close the mobile overlay after navigation; a no-op on desktop (the column
+  // stays put — collapsing is the toggle's job, not navigation's).
+  function closeRail() { appEl.classList.remove("rail-open"); }
+  // The rail shows only the most recent handful; the full, searchable list
+  // lives in the Chats modal.
+  var RECENTS = 8;
+  function convButton(c) {
+    var b = document.createElement("button");
+    b.className = "conv"; b.type = "button";
+    b.textContent = c.title || "Untitled";
+    if (c.id === convId) b.setAttribute("aria-current", "true");
+    b.onclick = function () { selectConversation(c.id, c.title); closeRail(); };
+    return b;
+  }
   function renderRail() {
     railList.innerHTML = "";
-    conversations.forEach(function (c) {
-      var b = document.createElement("button");
-      b.className = "conv";
-      b.textContent = c.title || "Untitled";
-      if (c.id === convId) b.setAttribute("aria-current", "true");
-      b.onclick = function () { selectConversation(c.id, c.title); rail.classList.remove("open"); };
-      railList.appendChild(b);
-    });
+    if (conversations.length === 0) {
+      var empty = document.createElement("div");
+      empty.className = "empty"; empty.textContent = "No conversations yet";
+      railList.appendChild(empty);
+      return;
+    }
+    conversations.slice(0, RECENTS).forEach(function (c) { railList.appendChild(convButton(c)); });
   }
   function selectConversation(id, t) { title.textContent = t || "Conversation"; openStream(id); renderRail(); }
   function newConversation() {
     var id = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
     title.textContent = "New conversation";
-    openStream(id); renderRail(); input.focus();
+    openStream(id); renderRail(); closeRail(); input.focus();
+  }
+
+  // ---- chats modal (full, searchable list) -------------------------------
+  // Search hits titles AND message contents (server-side); results carry a
+  // snippet of the matching text. A monotonic token guards against a slow
+  // response overwriting a newer one.
+  var chatsSearchTimer = null, chatsSearchSeq = 0;
+  function openChats() {
+    chatsModal.hidden = false;
+    chatsSearch.value = "";
+    renderChatsList(conversations, ""); // instant from cache
+    // Refresh in the background so a brand-new chat shows without a reload.
+    loadConversations().then(function () {
+      if (!chatsModal.hidden && !chatsSearch.value.trim()) renderChatsList(conversations, "");
+    });
+    closeRail();
+    setTimeout(function () { chatsSearch.focus(); }, 0);
+  }
+  function closeChats() { chatsModal.hidden = true; }
+  function renderChatsList(list, q) {
+    chatsList.innerHTML = "";
+    if (!list.length) {
+      var e = document.createElement("div");
+      e.className = "modalempty";
+      e.textContent = q ? "No conversations match “" + q + "”" : "No conversations yet";
+      chatsList.appendChild(e);
+      return;
+    }
+    list.forEach(function (c) {
+      var b = document.createElement("button");
+      b.className = "modalitem"; b.type = "button";
+      var t = document.createElement("div");
+      t.className = "t"; t.textContent = c.title || "Untitled";
+      b.appendChild(t);
+      if (c.snippet && c.snippet !== c.title) {
+        var s = document.createElement("div");
+        s.className = "s"; s.textContent = c.snippet;
+        b.appendChild(s);
+      }
+      b.onclick = function () { selectConversation(c.id, c.title); closeChats(); };
+      chatsList.appendChild(b);
+    });
+  }
+  async function runChatsSearch(q) {
+    var mine = ++chatsSearchSeq;
+    if (!q) { renderChatsList(conversations, ""); return; }
+    try {
+      var res = await fetch("/api/conversations?q=" + encodeURIComponent(q));
+      var list = ((await res.json()).conversations) || [];
+      if (mine === chatsSearchSeq) renderChatsList(list, q);
+    } catch (_) {
+      if (mine === chatsSearchSeq) renderChatsList([], q);
+    }
+  }
+  function onChatsInput() {
+    clearTimeout(chatsSearchTimer);
+    var q = chatsSearch.value.trim();
+    chatsSearchTimer = setTimeout(function () { runChatsSearch(q); }, 160);
   }
 
   // ---- model picker ------------------------------------------------------
@@ -524,12 +604,21 @@ import * as smd from "streaming-markdown";
   });
   $("stop").addEventListener("click", function () { if (streaming) stop(); });
   $("new").addEventListener("click", newConversation);
-  $("menu").addEventListener("click", function () { rail.classList.toggle("open"); });
+  $("newChat").addEventListener("click", newConversation);
+  $("menu").addEventListener("click", toggleRail);
+  $("railClose").addEventListener("click", closeRail);
+  scrim.addEventListener("click", closeRail);
+  $("chatsBtn").addEventListener("click", openChats);
+  $("searchBtn").addEventListener("click", openChats);
+  $("chatsBack").addEventListener("click", closeChats);
+  chatsSearch.addEventListener("input", onChatsInput);
   pill.addEventListener("click", function () { if (picker.hidden) openPicker(); else closePicker(); });
   document.addEventListener("click", function (e) {
     if (!picker.hidden && !picker.contains(e.target) && e.target !== pill && !pill.contains(e.target)) closePicker();
   });
-  document.addEventListener("keydown", function (e) { if (e.key === "Escape") closePicker(); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") { closePicker(); if (!chatsModal.hidden) closeChats(); }
+  });
   scroll.addEventListener("scroll", function () {
     atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;
     jump.style.display = atBottom ? "none" : "block";

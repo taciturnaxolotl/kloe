@@ -307,6 +307,52 @@ test("GET /api/conversations orders by most recent activity, not creation", asyn
   expect(ids.indexOf("conv-old")).toBeLessThan(ids.indexOf("conv-newer"));
 });
 
+test("GET /api/conversations?q= searches titles and message contents", async () => {
+  // One conversation whose title matches; another that only matches on the
+  // assistant's streamed reply (content search, not just title).
+  const a = getActor("search-title", store);
+  a.appendUser("How do capybaras behave?", "st-1");
+
+  const b = getActor("search-body", store);
+  b.appendUser("Tell me about rodents", "sb-1");
+  await b.runText("sb-r", "sb-m", async function* (_signal) {
+    yield { kind: "text", chunk: "The capybara is the largest living rodent." };
+  });
+
+  const res = await fetch(`${base}/api/conversations?q=${encodeURIComponent("capybara")}`);
+  expect(res.status).toBe(200);
+  const body = (await res.json()) as {
+    conversations: Array<{ id: string; snippet: string | null }>;
+  };
+  const ids = body.conversations.map((c) => c.id);
+  expect(ids).toContain("search-title"); // matched in the title/first message
+  expect(ids).toContain("search-body"); // matched only in the assistant reply
+  // The body hit carries an excerpt of the matching assistant text.
+  const hit = body.conversations.find((c) => c.id === "search-body");
+  expect(hit!.snippet).toContain("capybara");
+
+  // A term nobody used returns nothing.
+  const none = (await (await fetch(`${base}/api/conversations?q=zzznope`)).json()) as {
+    conversations: unknown[];
+  };
+  expect(none.conversations).toEqual([]);
+});
+
+test("search escapes LIKE wildcards so a query matches literally", async () => {
+  const a = getActor("search-literal", store);
+  a.appendUser("100% sure about this", "sl-1");
+
+  // `%` must be treated as a literal, not a wildcard: "50%" must NOT match.
+  const hit = (await (await fetch(`${base}/api/conversations?q=${encodeURIComponent("100%")}`)).json()) as {
+    conversations: Array<{ id: string }>;
+  };
+  expect(hit.conversations.map((c) => c.id)).toContain("search-literal");
+  const miss = (await (await fetch(`${base}/api/conversations?q=${encodeURIComponent("50%")}`)).json()) as {
+    conversations: Array<{ id: string }>;
+  };
+  expect(miss.conversations.map((c) => c.id)).not.toContain("search-literal");
+});
+
 const steerPost = (base: string, conv: string, body: object) =>
   fetch(`${base}/api/conversations/${conv}/steer`, {
     method: "POST",

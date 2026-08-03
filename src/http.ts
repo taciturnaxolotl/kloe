@@ -280,7 +280,12 @@ export function apiRoutes(deps: { store: Store }) {
     "/health": { GET: () => Response.json({ ok: true }) },
 
     "/api/conversations": {
-      GET: () => Response.json({ conversations: store.listConversations() }),
+      // `?q=` searches titles + message contents; no query lists all, newest first.
+      GET: (req: Bun.BunRequest<"/api/conversations">) => {
+        const q = new URL(req.url).searchParams.get("q")?.trim();
+        const conversations = q ? store.searchConversations(q) : store.listConversations();
+        return Response.json({ conversations });
+      },
     },
 
     // Settings/admin view: every available model + its curation state.

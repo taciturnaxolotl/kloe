@@ -85,6 +85,47 @@ export interface ConversationSummary {
   title: string | null;
 }
 
+/** A search hit: a conversation plus an excerpt of the matching message. */
+export interface ConversationSearchResult extends ConversationSummary {
+  /** Text around the match (title match → excerpt of the first message). */
+  snippet: string | null;
+}
+
+/** The row shape returned by the conversation-list / search queries. */
+interface ConversationRow {
+  id: string;
+  created_at: number;
+  last_seq: number;
+  first_user: string | null;
+}
+
+function rowToSummary(r: ConversationRow): ConversationSummary {
+  let title: string | null = null;
+  if (r.first_user) {
+    try {
+      const content = (JSON.parse(r.first_user) as { content?: string }).content;
+      if (typeof content === "string") title = content.slice(0, 80);
+    } catch {
+      // malformed row: leave title null rather than crash the list
+    }
+  }
+  return { id: r.id, createdAt: r.created_at, lastSeq: r.last_seq, title };
+}
+
+/** Escapes LIKE wildcards so a user query matches literally (paired with ESCAPE '\'). */
+function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
+/** A short excerpt of `text` centered on the first (case-insensitive) hit of `query`. */
+function snippetAround(text: string, query: string): string {
+  const i = text.toLowerCase().indexOf(query.toLowerCase());
+  if (i === -1) return text.length > 100 ? `${text.slice(0, 100)}…` : text;
+  const start = Math.max(0, i - 30);
+  const end = Math.min(text.length, i + query.length + 60);
+  return `${start > 0 ? "…" : ""}${text.slice(start, end).trim()}${end < text.length ? "…" : ""}`;
+}
+
 /**
  * Curation of a model for the chat UI. Opt-in: a model with no row (or
  * `visible: false`) is hidden from the chat picker. `displayName` overrides the
@@ -172,6 +213,7 @@ export class Store {
   private requeueStmt: ReturnType<Database["prepare"]>;
   private finishStmt: ReturnType<Database["prepare"]>;
   private listConversationsStmt: ReturnType<Database["prepare"]>;
+  private searchConversationsStmt: ReturnType<Database["prepare"]>;
   private listSettingsStmt: ReturnType<Database["prepare"]>;
   private getSettingStmt: ReturnType<Database["prepare"]>;
   private upsertSettingStmt: ReturnType<Database["prepare"]>;
@@ -258,6 +300,33 @@ export class Store {
        FROM conversations c
        ORDER BY last_activity DESC`,
     );
+    // Full-text-ish search over titles AND message contents: a conversation
+    // matches when any user-message content or assistant text-delta LIKEs the
+    // query. `match_text` grabs the first matching message so the UI can show an
+    // excerpt of WHY it matched (title matches surface the first message).
+    this.searchConversationsStmt = this.db.prepare(
+      `SELECT c.id AS id, c.created_at AS created_at, c.last_seq AS last_seq,
+              (SELECT e.data FROM events e
+               WHERE e.conversation_id = c.id AND e.event = 'user-message'
+               ORDER BY e.seq ASC LIMIT 1) AS first_user,
+              COALESCE((SELECT MAX(e.created_at) FROM events e
+                        WHERE e.conversation_id = c.id), c.created_at) AS last_activity,
+              (SELECT COALESCE(json_extract(e.data, '$.content'), json_extract(e.data, '$.delta'))
+               FROM events e
+               WHERE e.conversation_id = c.id
+                 AND ((e.event = 'user-message' AND json_extract(e.data, '$.content') LIKE ? ESCAPE '\\')
+                   OR (e.event = 'text-delta'   AND json_extract(e.data, '$.delta')   LIKE ? ESCAPE '\\'))
+               ORDER BY e.seq ASC LIMIT 1) AS match_text
+       FROM conversations c
+       WHERE EXISTS (
+         SELECT 1 FROM events e
+         WHERE e.conversation_id = c.id
+           AND ((e.event = 'user-message' AND json_extract(e.data, '$.content') LIKE ? ESCAPE '\\')
+             OR (e.event = 'text-delta'   AND json_extract(e.data, '$.delta')   LIKE ? ESCAPE '\\'))
+       )
+       ORDER BY last_activity DESC
+       LIMIT 100`,
+    );
 
     this.listSettingsStmt = this.db.prepare(
       `SELECT model_ref, visible, display_name, sort_order FROM model_settings`,
@@ -303,24 +372,24 @@ export class Store {
    * subquery pulls the earliest `user-message` event's content per conversation.
    */
   listConversations(): ConversationSummary[] {
-    const rows = this.listConversationsStmt.all() as Array<{
-      id: string;
-      created_at: number;
-      last_seq: number;
-      first_user: string | null;
-    }>;
-    return rows.map((r) => {
-      let title: string | null = null;
-      if (r.first_user) {
-        try {
-          const content = (JSON.parse(r.first_user) as { content?: string }).content;
-          if (typeof content === "string") title = content.slice(0, 80);
-        } catch {
-          // malformed row: leave title null rather than crash the list
-        }
-      }
-      return { id: r.id, createdAt: r.created_at, lastSeq: r.last_seq, title };
-    });
+    return (this.listConversationsStmt.all() as ConversationRow[]).map(rowToSummary);
+  }
+
+  /**
+   * Conversations whose title or any message (user prompt or assistant text)
+   * contains `query`, most recently active first. Each carries a `snippet`
+   * around the match. Wildcards in the query are escaped so it matches
+   * literally. Capped at 100 hits.
+   */
+  searchConversations(query: string): ConversationSearchResult[] {
+    const like = `%${escapeLike(query)}%`;
+    const rows = this.searchConversationsStmt.all(like, like, like, like) as Array<
+      ConversationRow & { match_text: string | null }
+    >;
+    return rows.map((r) => ({
+      ...rowToSummary(r),
+      snippet: r.match_text ? snippetAround(r.match_text, query) : null,
+    }));
   }
 
   /** All curation rows (models with no row are hidden by default). */

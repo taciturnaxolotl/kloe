@@ -25,34 +25,86 @@ body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--s
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
 a { color: var(--accent); }
 
-.app { flex: 1; display: grid; grid-template-columns: 232px 1fr; min-height: 0; }
+.app { flex: 1; display: grid; grid-template-columns: 244px 1fr; min-height: 0; }
 @media (max-width: 720px) { .app { grid-template-columns: 1fr; } }
+/* Desktop: the panel toggle collapses the sidebar to reclaim width. */
+@media (min-width: 721px) {
+  .app.rail-collapsed { grid-template-columns: 0 1fr; }
+  .app.rail-collapsed .rail { display: none; }
+  .app:not(.rail-collapsed) .head .headnew { display: none; }
+}
 
-.rail { border-right: 1px solid var(--rule); min-height: 0; overflow-y: auto;
-  padding: 10px 8px; display: flex; flex-direction: column; gap: 2px; }
-@media (max-width: 720px) { .rail { display: none; } .rail.open { display: flex;
-  position: fixed; inset: 0 30% 0 0; z-index: 20; background: var(--bg); } }
-.rail .new { text-align: left; font: inherit; color: var(--ink); background: none;
-  border: 1px solid var(--rule-strong); border-radius: 6px; padding: 7px 10px; cursor: pointer; margin-bottom: 8px; }
-.rail .new:hover { background: var(--bg-sunk); }
-.rail .conv { text-align: left; font: inherit; font-size: 14px; color: var(--ink-muted);
-  background: none; border: 0; border-radius: 6px; padding: 7px 10px; cursor: pointer;
+/* ---- sidebar ----------------------------------------------------------- */
+.rail { background: var(--bg); border-right: 1px solid var(--rule);
+  min-height: 0; display: flex; flex-direction: column; }
+.railhead { display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 8px 8px 15px; }
+.railhead .brand { font-weight: 700; font-size: 15px; letter-spacing: -0.02em; color: var(--ink); }
+.railactions { display: flex; align-items: center; gap: 2px; }
+
+.railnav { padding: 4px 8px 2px; display: flex; flex-direction: column; gap: 1px; }
+.navrow { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 9px;
+  border: 0; border-radius: 8px; background: none; color: var(--ink); font: inherit; font-size: 13px;
+  cursor: pointer; text-align: left; text-decoration: none; }
+.navrow:hover { background: var(--bg-sunk); }
+.navrow svg { width: 17px; height: 17px; color: var(--ink-muted); flex: none; }
+
+.raillabel { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--ink-faint); padding: 12px 14px 5px; }
+.raillist { flex: 1; overflow-y: auto; min-height: 0; padding: 0 8px 10px;
+  display: flex; flex-direction: column; gap: 1px; }
+.raillist .empty { padding: 6px 12px; font-size: 12.5px; color: var(--ink-faint); }
+.conv { text-align: left; font: inherit; font-size: 13px; color: var(--ink-muted);
+  background: none; border: 0; border-radius: 7px; padding: 6px 10px; cursor: pointer;
   width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rail .conv:hover { background: var(--bg-sunk); color: var(--ink); }
-.rail .conv[aria-current="true"] { background: var(--bg-sunk); color: var(--ink); font-weight: 500; }
-.rail .group { font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint);
-  text-transform: uppercase; letter-spacing: .08em; padding: 12px 10px 4px; }
-.rail .spacer { flex: 1; }
-.rail .railfoot { padding: 8px 10px; }
-.rail .railfoot a { font-family: var(--mono); font-size: 12px; color: var(--ink-muted); text-decoration: none; }
-.rail .railfoot a:hover { color: var(--ink); }
+.conv:hover { background: var(--bg-sunk); color: var(--ink); }
+.conv[aria-current="true"] { background: color-mix(in srgb, var(--accent) 12%, var(--bg-raise));
+  color: var(--ink); font-weight: 500; }
+.railfoot { display: flex; align-items: center; gap: 9px; padding: 11px 15px;
+  border-top: 1px solid var(--rule); color: var(--ink-muted); text-decoration: none; font-size: 13px; }
+.railfoot:hover { color: var(--ink); background: var(--bg-sunk); }
+.railfoot svg { width: 16px; height: 16px; }
+
+/* ---- chats search modal ------------------------------------------------ */
+.modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: flex-start;
+  justify-content: center; padding: 12vh 16px 16px; }
+.modal[hidden] { display: none; }
+.modalback { position: absolute; inset: 0; background: rgba(0,0,0,.44); }
+.modalcard { position: relative; width: 100%; max-width: 560px; max-height: 68vh;
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--bg-raise); border: 1px solid var(--rule-strong); border-radius: 14px;
+  box-shadow: 0 24px 64px rgba(0,0,0,.32); }
+.modalsearch { display: flex; align-items: center; gap: 10px; padding: 13px 15px;
+  border-bottom: 1px solid var(--rule); }
+.modalsearch svg { width: 18px; height: 18px; color: var(--ink-faint); flex: none; }
+.modalsearch input { flex: 1; border: 0; background: none; color: var(--ink); font: inherit;
+  font-size: 15px; outline: none; }
+.modalsearch input::placeholder { color: var(--ink-faint); }
+.modallist { overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 1px; }
+.modalitem { display: block; width: 100%; text-align: left; border: 0; background: none; cursor: pointer;
+  padding: 9px 11px; border-radius: 9px; color: var(--ink); font: inherit; }
+.modalitem:hover { background: var(--bg-sunk); }
+.modalitem .t { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.modalitem .s { font-size: 12px; color: var(--ink-muted); margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.modalempty { padding: 22px; text-align: center; color: var(--ink-faint); font-size: 13px; }
+
+.railhead .railx { display: none; }
+.scrim { display: none; }
+@media (max-width: 720px) {
+  .rail { position: fixed; top: 0; bottom: 0; left: 0; width: 84%; max-width: 320px; z-index: 30;
+    transform: translateX(-100%); transition: transform .2s ease; box-shadow: 8px 0 34px rgba(0,0,0,.22); }
+  .app.rail-open .rail { transform: translateX(0); }
+  .railhead .railx { display: inline-flex; }
+  .scrim { display: block; position: fixed; inset: 0; z-index: 25; background: rgba(0,0,0,.42);
+    opacity: 0; pointer-events: none; transition: opacity .2s ease; }
+  .app.rail-open .scrim { opacity: 1; pointer-events: auto; }
+}
+@media (prefers-reduced-motion: reduce) { .rail, .scrim { transition: none; } }
 
 .main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-.head { border-bottom: 1px solid var(--rule); padding: 10px 16px; display: flex; align-items: baseline; gap: 10px; }
+.head { border-bottom: 1px solid var(--rule); padding: 9px 14px; display: flex; align-items: center; gap: 8px; }
 .head .title { font-size: 14.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.head .menu { display: none; }
-@media (max-width: 720px) { .head .menu { display: inline-flex; font: inherit; background: none;
-  border: 1px solid var(--rule-strong); border-radius: 6px; padding: 4px 9px; cursor: pointer; color: var(--ink); } }
 .head .connstat { margin-left: auto; font-family: var(--mono); font-size: 11.5px; }
 .head .connstat .conn { display: none; }
 .head .connstat[data-state="reconnecting"] .conn { display: inline; color: var(--warn); }
