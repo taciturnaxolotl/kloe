@@ -1,4 +1,4 @@
-import { streamText, type LanguageModel } from "ai";
+import { streamText, type LanguageModel, type ModelMessage } from "ai";
 import { ProviderRegistry } from "./providers";
 import { RateLimiter } from "./ratelimit";
 import { loadCatalog, type LoadCatalogOptions } from "./catalog";
@@ -92,13 +92,13 @@ export interface RunOptions {
 }
 
 export async function* run(
-  prompt: string,
+  messages: ModelMessage[],
   opts: RunOptions,
 ): AsyncGenerator<RunStep> {
   const model = resolveModel(opts.model);
   const result = streamText({
     model,
-    prompt,
+    messages,
     temperature: opts.temperature ?? 0.7,
     abortSignal: opts.abortSignal,
   });

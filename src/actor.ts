@@ -1,6 +1,16 @@
 import { randomUUID } from "node:crypto";
+import type { ModelMessage } from "ai";
 import { Store } from "./store";
-import { Event, makeId, type EventData, type EventName, type TokenUsage } from "./events";
+import {
+  Event,
+  makeId,
+  type EventData,
+  type EventName,
+  type TokenUsage,
+  type UserMessageData,
+  type TextDeltaData,
+  type MessageEndData,
+} from "./events";
 import { truncateUtf8 } from "./sse";
 import { BATCH_FLUSH_MS, BATCH_MAX_DELTAS } from "./config";
 
@@ -125,6 +135,48 @@ export class ConversationActor {
 
   isCancelled(): boolean {
     return this.currentRunId !== null && this.cancelRunId === this.currentRunId;
+  }
+
+  /**
+   * Reconstructs the durable log as a model-ready message list — the context a
+   * run is generated against. `user-message` events become user turns; streamed
+   * assistant text (grouped by messageId) becomes assistant turns. Consecutive
+   * same-role turns are merged with a blank line, so a flushed steer batch reads
+   * as one user turn and providers that require strict role alternation stay
+   * valid. The still-unsent steer queue (`queued-message`) and control events
+   * are excluded; empty assistant turns (e.g. a stop before the first token) are
+   * dropped.
+   */
+  history(): ModelMessage[] {
+    const out: ModelMessage[] = [];
+    const assistantText = new Map<string, string>();
+    const append = (role: "user" | "assistant", content: string): void => {
+      if (content.length === 0) return;
+      const last = out[out.length - 1];
+      if (last && last.role === role && typeof last.content === "string") {
+        last.content = `${last.content}\n\n${content}`;
+      } else if (role === "user") {
+        out.push({ role: "user", content });
+      } else {
+        out.push({ role: "assistant", content });
+      }
+    };
+    for (const e of this.store.replay(this.conversationId, 0)) {
+      if (e.event === Event.User) {
+        append("user", (e.data as UserMessageData).content);
+      } else if (e.event === Event.TextDelta) {
+        const d = e.data as TextDeltaData;
+        assistantText.set(d.messageId, (assistantText.get(d.messageId) ?? "") + d.delta);
+      } else if (e.event === Event.MsgEnd) {
+        const d = e.data as MessageEndData;
+        const text = assistantText.get(d.messageId);
+        if (text !== undefined) {
+          append("assistant", text);
+          assistantText.delete(d.messageId);
+        }
+      }
+    }
+    return out;
   }
 
   /** Replay the durable log strictly after `afterSeq`, oldest first. */

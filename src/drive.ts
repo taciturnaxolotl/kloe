@@ -4,11 +4,14 @@ import { ConversationActor } from "./actor";
 import { run } from "./inference";
 import { LEASE_GRACE_MS, HEARTBEAT_INTERVAL_MS } from "./config";
 
-/** The fields a runnable generation needs, whatever its source. */
+/**
+ * The fields a runnable generation needs, whatever its source. The prompt is
+ * NOT here: the run is generated against the actor's full history (rebuilt from
+ * the log), which already ends with the triggering user message(s).
+ */
 interface RunSpec {
   runId: string;
   messageId: string;
-  prompt: string;
   model: string;
 }
 
@@ -103,18 +106,20 @@ export class JobDriver {
     await this.runSpec(jobId, actor, {
       runId: msgs[0]!.runId,
       messageId: randomUUID(),
-      prompt: msgs.map((m) => m.content).join("\n\n"),
       model: msgs[msgs.length - 1]!.model,
     });
   }
 
   /** Streams one generation through the actor, checkpointing as it goes. */
   private async runSpec(jobId: string, actor: ConversationActor, spec: RunSpec): Promise<void> {
+    // Snapshot the conversation (the promoted user messages are already in the
+    // log) so the generation carries full context, not just the last message.
+    const messages = actor.history();
     await actor.runText(
       spec.runId,
       spec.messageId,
       (signal) =>
-        run(spec.prompt, { runId: spec.runId, model: spec.model, abortSignal: signal }),
+        run(messages, { runId: spec.runId, model: spec.model, abortSignal: signal }),
       (seq) => {
         // Advance the job's durable checkpoint + lease on each flush so a
         // crash mid-run is re-claimed from the last flushed seq.

@@ -91,6 +91,40 @@ test("cancel resets between runs", async () => {
   expect(events).not.toContain("cancelled");
 });
 
+test("history reconstructs prior turns as alternating user/assistant messages", async () => {
+  const a = new ConversationActor("t-history", store);
+  a.appendUser("first question");
+  await a.runText("r1", "m1", async function* (_signal) {
+    yield { kind: "text", chunk: "first " };
+    yield { kind: "text", chunk: "answer" };
+  });
+  a.appendUser("second question"); // the next run's triggering message
+
+  expect(a.history()).toEqual([
+    { role: "user", content: "first question" },
+    { role: "assistant", content: "first answer" },
+    { role: "user", content: "second question" },
+  ]);
+});
+
+test("history merges consecutive user turns (a flushed steer batch) into one", async () => {
+  const a = new ConversationActor("t-history-batch", store);
+  a.appendUser("part one", "r-a");
+  a.appendUser("part two", "r-b");
+  expect(a.history()).toEqual([{ role: "user", content: "part one\n\npart two" }]);
+});
+
+test("history drops an assistant turn that produced no text (stopped before first token)", async () => {
+  const a = new ConversationActor("t-history-empty", store);
+  a.appendUser("hi");
+  a.requestCancel("r1"); // cancel this run before it starts
+  await a.runText("r1", "m1", async function* (_signal) {
+    yield { kind: "text", chunk: "never" };
+  });
+  // Only the user turn survives — no empty assistant message.
+  expect(a.history()).toEqual([{ role: "user", content: "hi" }]);
+});
+
 test("cancel mid-token aborts the stream at once and finishes aborted, not error", async () => {
   const a = new ConversationActor("t-abort", store);
   const events: WireEvent[] = [];
