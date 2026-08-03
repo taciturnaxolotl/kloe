@@ -77,7 +77,7 @@ a { color: var(--accent); }
 .conv:hover { background: var(--bg-sunk); color: var(--ink); }
 .conv[aria-current="true"] { background: color-mix(in srgb, var(--accent) 12%, var(--bg-raise));
   color: var(--ink); font-weight: 500; }
-.conv[aria-current="true"] svg { color: var(--accent); }
+.conv[aria-current="true"] svg { color: var(--ink); }
 .railfoot { display: flex; align-items: center; gap: 9px; padding: 11px 15px;
   border-top: 1px solid var(--rule); color: var(--ink-muted); text-decoration: none; font-size: 13px; }
 .railfoot:hover { color: var(--ink); background: var(--bg-sunk); }

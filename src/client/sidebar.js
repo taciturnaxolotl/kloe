@@ -45,7 +45,8 @@ var CONV_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
  * config:
  *   onSelect(id, title)  — open a conversation
  *   onNew()              — start a new chat
- *   activeId()           — id of the open conversation (for the highlight), optional
+ *   activeId()           — id of the open conversation; highlights its recent,
+ *                          or "New chat" when the id isn't saved yet. Optional.
  *   onOpenList()         — what search/Conversations do; defaults to navigating to /conversations
  *   active               — "conversations" marks that nav row current
  */
@@ -62,32 +63,38 @@ export function mountSidebar(config) {
 
   function render(conversations) {
     railList.innerHTML = "";
+    var active = config.activeId ? config.activeId() : null;
     if (!conversations.length) {
       var e = document.createElement("div");
       e.className = "empty"; e.textContent = "No conversations yet";
       railList.appendChild(e);
-      return;
+    } else {
+      conversations.slice(0, RECENTS).forEach(function (c) {
+        var b = document.createElement("button");
+        b.className = "conv"; b.type = "button";
+        b.innerHTML = CONV_ICON;
+        var name = document.createElement("span");
+        name.className = "convname"; name.textContent = c.title || "Untitled";
+        b.appendChild(name);
+        if (c.id === active) b.setAttribute("aria-current", "true");
+        b.onclick = function () { closeRail(); config.onSelect(c.id, c.title); };
+        if (config.dialogs) {
+          b.oncontextmenu = function (e) {
+            e.preventDefault();
+            openChatMenu(e.clientX, e.clientY, {
+              id: c.id, title: c.title, dialogs: config.dialogs, reload: config.reload,
+            });
+          };
+        }
+        railList.appendChild(b);
+      });
     }
-    var active = config.activeId ? config.activeId() : null;
-    conversations.slice(0, RECENTS).forEach(function (c) {
-      var b = document.createElement("button");
-      b.className = "conv"; b.type = "button";
-      b.innerHTML = CONV_ICON;
-      var name = document.createElement("span");
-      name.className = "convname"; name.textContent = c.title || "Untitled";
-      b.appendChild(name);
-      if (c.id === active) b.setAttribute("aria-current", "true");
-      b.onclick = function () { closeRail(); config.onSelect(c.id, c.title); };
-      if (config.dialogs) {
-        b.oncontextmenu = function (e) {
-          e.preventDefault();
-          openChatMenu(e.clientX, e.clientY, {
-            id: c.id, title: c.title, dialogs: config.dialogs, reload: config.reload,
-          });
-        };
-      }
-      railList.appendChild(b);
-    });
+    // Highlight "New chat" while the open conversation is brand new — it has an
+    // id but isn't in the saved list yet (nothing persisted). Not on the
+    // Conversations page, which has its own active nav row.
+    var isNewChat = config.active !== "conversations" && !!active &&
+      !conversations.some(function (c) { return c.id === active; });
+    $("new").classList.toggle("active", isNewChat);
   }
 
   $("menu").addEventListener("click", toggleRail);
