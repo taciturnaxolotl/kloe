@@ -11,7 +11,9 @@ export interface JobRow {
   params: string;
 }
 
-export interface EnqueueParams {
+export interface RunJobParams {
+  /** Absent for plain runs; present as `"flush"` on steer-queue flush jobs. */
+  kind?: undefined;
   conversationId: string;
   runId: string;
   messageId: string;
@@ -20,18 +22,52 @@ export interface EnqueueParams {
 }
 
 /**
- * Decodes a job's params blob — the inverse of `enqueue`, and the only place
- * job params are parsed. Throws on a corrupt or incomplete row; callers mark
- * the job failed rather than re-claiming it forever.
+ * A flush job: no prompt of its own. At claim time the driver promotes the
+ * conversation's pending steer queue and runs it as one batched generation.
  */
-export function parseJobParams(params: string): EnqueueParams {
+export interface FlushJobParams {
+  kind: "flush";
+  conversationId: string;
+}
+
+export type JobParams = RunJobParams | FlushJobParams;
+
+/** A steered message still waiting to be flushed into a run. */
+export interface PendingMessage {
+  runId: string;
+  content: string;
+  model: string;
+}
+
+/**
+ * Decodes a job's params blob — the inverse of `enqueue`, and the only place
+ * job params are parsed. Rows without a `kind` are plain runs (the original
+ * shape); `kind: "flush"` marks a steer-queue flush. Throws on a corrupt or
+ * incomplete row; callers mark the job failed rather than re-claiming it
+ * forever.
+ */
+export function parseJobParams(params: string): JobParams {
   const p = JSON.parse(params) as Record<string, unknown>;
+  if (p.kind === "flush") {
+    if (typeof p.conversationId !== "string") {
+      throw new Error('malformed job params: bad or missing "conversationId"');
+    }
+    return { kind: "flush", conversationId: p.conversationId };
+  }
   for (const key of ["conversationId", "runId", "messageId", "prompt", "model"] as const) {
     if (typeof p[key] !== "string") {
       throw new Error(`malformed job params: bad or missing "${key}"`);
     }
   }
-  return p as unknown as EnqueueParams;
+  // Rebuild the object explicitly (rather than casting the blob) so a change to
+  // RunJobParams' shape is a compile error here, not a silent mismatch.
+  return {
+    conversationId: p.conversationId as string,
+    runId: p.runId as string,
+    messageId: p.messageId as string,
+    prompt: p.prompt as string,
+    model: p.model as string,
+  };
 }
 
 export interface StoredEvent {
@@ -139,6 +175,8 @@ export class Store {
   private listSettingsStmt: ReturnType<Database["prepare"]>;
   private getSettingStmt: ReturnType<Database["prepare"]>;
   private upsertSettingStmt: ReturnType<Database["prepare"]>;
+  private pendingQueueStmt: ReturnType<Database["prepare"]>;
+  private hasPendingFlushStmt: ReturnType<Database["prepare"]>;
 
   constructor(databasePath: string = process.env.KLOE_DB ?? "data/kloe.db") {
     // Ensure the parent directory exists so a fresh checkout (where `data/` is
@@ -173,7 +211,10 @@ export class Store {
     );
     // The hot claim query: queued or expired-lease jobs, but only for
     // conversations with no other live running job. Enforces the single-writer
-    // invariant (one active run per conversation) atomically in SQL.
+    // invariant (one active run per conversation) atomically in SQL. Ordered by
+    // `rowid` (insertion order) so a conversation's jobs claim strictly FIFO —
+    // a steer's flush must never run ahead of the prompt it followed. (`id` is
+    // a random UUID, so ordering by it would be nondeterministic.)
     this.claimExclusiveStmt = this.db.prepare(
       `UPDATE jobs
        SET status = 'running', lease_until = ?
@@ -187,7 +228,7 @@ export class Store {
                AND j2.status = 'running'
                AND j2.lease_until >= ?
            )
-         ORDER BY j.id LIMIT 1
+         ORDER BY j.rowid LIMIT 1
        )
        RETURNING id, conversation_id, status, lease_until, checkpoint_seq, params`,
     );
@@ -232,6 +273,26 @@ export class Store {
          visible = excluded.visible,
          display_name = excluded.display_name,
          sort_order = excluded.sort_order`,
+    );
+
+    // The steer queue, derived from the log: `queued-message` events that no
+    // `user-message` with the same runId has promoted yet. Single source of
+    // truth — nothing to keep in sync, crash-safe by construction.
+    this.pendingQueueStmt = this.db.prepare(
+      `SELECT e.data FROM events e
+       WHERE e.conversation_id = ? AND e.event = 'queued-message'
+         AND NOT EXISTS (
+           SELECT 1 FROM events u
+           WHERE u.conversation_id = e.conversation_id AND u.event = 'user-message'
+             AND json_extract(u.data, '$.runId') = json_extract(e.data, '$.runId')
+         )
+       ORDER BY e.seq ASC`,
+    );
+    // Is a flush job already queued for this conversation? One flush drains
+    // the whole steer queue, so a second is redundant.
+    this.hasPendingFlushStmt = this.db.prepare(
+      `SELECT 1 FROM jobs WHERE conversation_id = ? AND status = 'queued'
+       AND json_extract(params, '$.kind') = 'flush' LIMIT 1`,
     );
   }
 
@@ -320,7 +381,7 @@ export class Store {
     return rows.map((r) => ({ ...r, data: JSON.parse(r.data) }));
   }
 
-  enqueue(jobId: string, conversationId: string, params: EnqueueParams): void {
+  enqueue(jobId: string, conversationId: string, params: JobParams): void {
     this.enqueueStmt.run(jobId, conversationId, JSON.stringify(params));
   }
 
@@ -358,5 +419,31 @@ export class Store {
 
   markFailed(id: string): void {
     this.finishStmt.run("failed", id);
+  }
+
+  /** True if a flush job is already queued for this conversation. */
+  hasPendingFlush(conversationId: string): boolean {
+    return this.hasPendingFlushStmt.get(conversationId) != null;
+  }
+
+  /**
+   * Steered messages waiting to be flushed into a run, oldest first. Derived
+   * from the event log: a `queued-message` is pending until a `user-message`
+   * with the same runId promotes it. Malformed rows are skipped, never fatal.
+   */
+  pendingQueue(conversationId: string): PendingMessage[] {
+    const rows = this.pendingQueueStmt.all(conversationId) as Array<{ data: string }>;
+    const out: PendingMessage[] = [];
+    for (const r of rows) {
+      try {
+        const d = JSON.parse(r.data) as Record<string, unknown>;
+        if (typeof d.runId === "string" && typeof d.content === "string" && typeof d.model === "string") {
+          out.push({ runId: d.runId, content: d.content, model: d.model });
+        }
+      } catch {
+        // malformed row: skip it rather than poison the flush
+      }
+    }
+    return out;
   }
 }

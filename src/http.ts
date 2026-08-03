@@ -204,23 +204,16 @@ function openStream(conversationId: string, req: Request, store: Store): Respons
 
 /**
  * Starts a generation run: appends the user message through the actor and
- * enqueues a job (with `cancel: true` for /steer, any current run is aborted
- * first). Rejects unknown models up front (422): otherwise the job is
+ * enqueues a job. Rejects unknown models up front (422): otherwise the job is
  * accepted and fails silently in the drive loop at resolve time. The user
  * message and the run share `runId` so the client can correlate the
  * optimistic echo.
  */
-function startRun(
-  conversationId: string,
-  data: PromptBody,
-  opts: { cancel: boolean },
-  store: Store,
-): Response {
+function startRun(conversationId: string, data: PromptBody, store: Store): Response {
   const rejected = requireKnownModel(data.model);
   if (rejected) return rejected;
 
   const actor = getActor(conversationId, store);
-  if (opts.cancel) actor.requestCancel();
   const runId = data.runId ?? randomUUID();
   const messageId = randomUUID();
   actor.appendUser(data.content, runId);
@@ -232,6 +225,32 @@ function startRun(
   // separately and receives message-start/text-deltas/message-end as the drive
   // loop (possibly in another process) executes the job.
   return Response.json({ jobId, runId, messageId }, { status: 202 });
+}
+
+/**
+ * Steers mid-run WITHOUT interrupting: parks the message in the steer queue
+ * (a durable `queued-message` event, so every device sees it immediately) and
+ * enqueues one flush job if none is already queued for the conversation. When
+ * the current run finishes, the drive loop promotes the WHOLE pending queue
+ * and runs it as a single batched generation.
+ */
+function startSteer(conversationId: string, data: SteerBody, store: Store): Response {
+  const rejected = requireKnownModel(data.model);
+  if (rejected) return rejected;
+
+  const actor = getActor(conversationId, store);
+  const runId = data.runId ?? randomUUID();
+  actor.queueSteer(data.content, data.model, runId);
+
+  // One flush job is enough to drain the whole queue; skip it when one is
+  // already waiting (it drains everything queued by the time it runs).
+  if (!store.hasPendingFlush(conversationId)) {
+    store.enqueue(`${conversationId}:${randomUUID()}`, conversationId, {
+      kind: "flush",
+      conversationId,
+    });
+  }
+  return Response.json({ ok: true, runId }, { status: 202 });
 }
 
 /** Partial curation update; `displayName: null` clears an override. */
@@ -281,7 +300,7 @@ export function apiRoutes(deps: { store: Store }) {
     },
     "/api/conversations/:id/prompt": {
       POST: withBody(PromptBody, (data, req: Bun.BunRequest<"/api/conversations/:id/prompt">) =>
-        startRun(req.params.id, data, { cancel: false }, store)),
+        startRun(req.params.id, data, store)),
     },
     "/api/conversations/:id/cancel": {
       POST: (req: Bun.BunRequest<"/api/conversations/:id/cancel">) => {
@@ -291,7 +310,9 @@ export function apiRoutes(deps: { store: Store }) {
     },
     "/api/conversations/:id/steer": {
       POST: withBody(SteerBody, (data, req: Bun.BunRequest<"/api/conversations/:id/steer">) =>
-        startRun(req.params.id, data, { cancel: true }, store)),
+        startSteer(req.params.id, data, store)),
+      GET: (req: Bun.BunRequest<"/api/conversations/:id/steer">) =>
+        Response.json({ queued: store.pendingQueue(req.params.id) }),
     },
     "/api/conversations/:id/events": {
       GET: (req: Bun.BunRequest<"/api/conversations/:id/events">) =>

@@ -16,12 +16,14 @@ export const PromptBody = v.object({
 });
 export type PromptBody = v.InferOutput<typeof PromptBody>;
 
-/** POST /api/conversations/:id/steer */
-export const SteerBody = v.object({
-	content: v.string(),
-	model: v.pipe(v.string(), v.minLength(1, "model is required")),
-});
-export type SteerBody = v.InferOutput<typeof SteerBody>;
+/**
+ * POST /api/conversations/:id/steer — queues the message; flushed as one
+ * batched run when the current run finishes. A steer carries the same payload
+ * as a prompt (content + model + optional runId), so it reuses that schema
+ * rather than a byte-identical copy that could drift.
+ */
+export const SteerBody = PromptBody;
+export type SteerBody = PromptBody;
 
 /**
  * PATCH /api/models — partial curation update. `displayName: null` clears the

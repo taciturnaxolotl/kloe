@@ -29,8 +29,13 @@ afterAll(() => {
 
 // A minimal registry so model validation resolves (echo is always known).
 // Set per-test to survive interleaving with other files' registry mutations.
+// Also clear the jobs table: the store is shared across tests and the claim is
+// global (oldest job, whatever conversation), so a job one test leaves queued
+// would otherwise be claimed by another test's driveOnce(). Events are left
+// intact — they're scoped per conversation and every test uses a fresh one.
 beforeEach(() => {
   setRegistry(new ProviderRegistry(Catalog.fromRaw([]), { config: { providers: [] } }));
+  store.db.exec("DELETE FROM jobs");
 });
 
 interface Frame {
@@ -145,6 +150,7 @@ test("prompt → SSE stream emits user-message, message-start, deltas, message-e
   const row = store.claimExpiredExclusive(Date.now());
   expect(row).not.toBeNull();
   const params = parseJobParams(row!.params);
+  if (params.kind === "flush") throw new Error("expected a run job");
   const actor = getActor(conv, store);
   await actor.runText(params.runId, params.messageId, async function* (_signal) {
     yield { kind: "text", chunk: `echo: ${params.prompt}` };
@@ -299,4 +305,127 @@ test("GET /api/conversations orders by most recent activity, not creation", asyn
   };
   const ids = body.conversations.map((c) => c.id);
   expect(ids.indexOf("conv-old")).toBeLessThan(ids.indexOf("conv-newer"));
+});
+
+const steerPost = (base: string, conv: string, body: object) =>
+  fetch(`${base}/api/conversations/${conv}/steer`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+test("steer queues the message (durable event) and enqueues exactly one flush job", async () => {
+  const conv = "steer-queue";
+  const res1 = await steerPost(base, conv, { content: "also this", model: "echo", runId: "sq-1" });
+  expect(res1.status).toBe(202);
+  const res2 = await steerPost(base, conv, { content: "and this", model: "echo", runId: "sq-2" });
+  expect(res2.status).toBe(202);
+
+  // Both steers are durable `queued-message` events (the queue IS the log).
+  const events = getActor(conv, store).replay(0);
+  expect(events.filter((e) => e.event === "queued-message").map((e) => (e.data as { runId: string }).runId))
+    .toEqual(["sq-1", "sq-2"]);
+
+  // One flush job drains the whole queue; a second steer must not add another.
+  const flushJobs = store.db
+    .prepare(
+      `SELECT count(*) AS n FROM jobs WHERE conversation_id = ? AND status = 'queued'
+       AND json_extract(params, '$.kind') = 'flush'`,
+    )
+    .get(conv) as { n: number };
+  expect(flushJobs.n).toBe(1);
+
+  // The pending queue is readable over HTTP.
+  const listed = (await (await fetch(`${base}/api/conversations/${conv}/steer`)).json()) as {
+    queued: Array<{ runId: string; content: string }>;
+  };
+  expect(listed.queued.map((q) => q.runId)).toEqual(["sq-1", "sq-2"]);
+});
+
+test("the flush promotes the WHOLE steer queue as one batched run", async () => {
+  const conv = "steer-flush";
+  await steerPost(base, conv, { content: "first steer", model: "echo", runId: "sf-1" });
+  await steerPost(base, conv, { content: "second steer", model: "echo", runId: "sf-2" });
+
+  const driver = new JobDriver(store, (id) => getActor(id, store));
+  await driver.driveOnce();
+
+  const events = getActor(conv, store).replay(0);
+  // Both steers promoted to user-messages, keeping their steer runIds.
+  const users = events.filter((e) => e.event === "user-message");
+  expect(users.map((e) => (e.data as { runId: string }).runId)).toEqual(["sf-1", "sf-2"]);
+  // Exactly ONE run covered both messages: one message-end carrying the first
+  // steer's runId, and its deltas contain the joined prompt.
+  const ends = events.filter((e) => e.event === "message-end");
+  expect(ends).toHaveLength(1);
+  expect((ends[0]!.data as { runId: string }).runId).toBe("sf-1");
+  const text = events
+    .filter((e) => e.event === "text-delta")
+    .map((e) => (e.data as { delta: string }).delta)
+    .join("");
+  expect(text).toBe("echo: first steer\n\nsecond steer");
+  // Queue is drained.
+  const body = (await (await fetch(`${base}/api/conversations/${conv}/steer`)).json()) as { queued: unknown[] };
+  expect(body.queued).toEqual([]);
+});
+
+test("a stale flush job with an empty queue completes as a no-op", async () => {
+  const conv = "steer-stale";
+  store.enqueue(`${conv}:stale`, conv, { kind: "flush", conversationId: conv });
+  await new JobDriver(store, (id) => getActor(id, store)).driveOnce();
+  // Empty queue → the flush promotes nothing, writes no events, and just
+  // completes (covers a crash between promote and completion).
+  expect(getActor(conv, store).replay(0)).toEqual([]);
+  const status = (store.db.prepare("SELECT status FROM jobs WHERE id = ?")
+    .get(`${conv}:stale`) as { status: string }).status;
+  expect(status).toBe("done");
+});
+
+test("steers mid-run wait for it to end, then flush together", async () => {
+  const conv = "steer-mid";
+  const actor = getActor(conv, store);
+
+  // Start a run inline (as the drive loop would) that blocks on a gate.
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => (release = r));
+  const running = actor.runText("r-mid", "m-mid", async function* (_signal) {
+    yield { kind: "text", chunk: "working" };
+    await gate;
+    yield { kind: "text", chunk: "done" };
+  });
+
+  // Steer twice while it's running: both queue, nothing executes yet.
+  await steerPost(base, conv, { content: "mid one", model: "echo", runId: "sm-1" });
+  await steerPost(base, conv, { content: "mid two", model: "echo", runId: "sm-2" });
+  expect(getActor(conv, store).replay(0).filter((e) => e.event === "user-message")).toHaveLength(0);
+
+  release();
+  await running;
+
+  await new JobDriver(store, (id) => getActor(id, store)).driveOnce();
+  const events = getActor(conv, store).replay(0);
+  expect(events.filter((e) => e.event === "user-message").map((e) => (e.data as { runId: string }).runId))
+    .toEqual(["sm-1", "sm-2"]);
+  expect(events.filter((e) => e.event === "message-end")).toHaveLength(2); // the mid run + the flush batch
+});
+
+test("a reconnecting stream replays queued-message events (and their promotion)", async () => {
+  const conv = "steer-reconnect";
+  await steerPost(base, conv, { content: "waiting steer", model: "echo", runId: "sr-1" });
+
+  // Connect fresh (simulates a client that was offline when the steer landed):
+  // it must see the queued-message, then the promotion on flush.
+  await new JobDriver(store, (id) => getActor(id, store)).driveOnce();
+  const frames = await readSse(
+    await fetch(`${base}/api/conversations/${conv}/stream`),
+    (f) => f.some((x) => x.event === "message-end"),
+  );
+  const names = frames.map((f) => f.event);
+  expect(names).toContain("queued-message");
+  expect(names).toContain("user-message"); // promotion, same runId
+  expect(names.indexOf("queued-message")).toBeLessThan(names.indexOf("user-message"));
+  const q = frames.find((f) => f.event === "queued-message")!.data as { runId: string };
+  const u = frames.find((f) => f.event === "user-message")!.data as { runId: string };
+  expect(q.runId).toBe("sr-1");
+  expect(u.runId).toBe("sr-1");
 });

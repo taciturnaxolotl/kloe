@@ -43,6 +43,8 @@ export class ConversationActor {
   private subscribers: Set<Subscriber> = new Set();
   private cancelRunId: string | null = null;
   private cancelNext = false;
+  /** Aborts the in-flight provider stream; set only while a run is streaming. */
+  private currentAbort: (() => void) | null = null;
   private currentRunId: string | null = null;
   private seq = 0;
   lastActivity = Date.now();
@@ -83,6 +85,23 @@ export class ConversationActor {
   }
 
   /**
+   * Parks a steered message in the steer queue (a durable `queued-message`
+   * event) instead of interrupting the current run. The drive loop promotes
+   * the whole pending queue into `user-message` events and runs it as one
+   * batched generation when the current run finishes. The queue is derived
+   * from the log, so the event itself is the durable state.
+   */
+  queueSteer(content: string, model: string, runId: string = randomUUID()): string {
+    this.persist(Event.Queued, {
+      threadId: this.conversationId,
+      runId,
+      content: truncateUtf8(content),
+      model,
+    });
+    return runId;
+  }
+
+  /**
    * Requests cancellation. With no argument: aborts the currently running run
    * if there is one, otherwise defers to the next run (covers the
    * `/cancel`-before-claim race). With a runId: cancels that specific run even
@@ -92,13 +111,16 @@ export class ConversationActor {
   requestCancel(runId?: string): void {
     if (runId !== undefined) {
       this.cancelRunId = runId;
-      return;
-    }
-    if (this.currentRunId !== null) {
+    } else if (this.currentRunId !== null) {
       this.cancelRunId = this.currentRunId;
     } else {
       this.cancelNext = true;
     }
+    // If the run being cancelled is the one in flight, abort its provider
+    // stream now — don't wait for the loop to notice between tokens (a slow
+    // model can sit mid-token for seconds). The loop's own isCancelled check
+    // still covers the between-steps case.
+    if (this.currentAbort && this.isCancelled()) this.currentAbort();
   }
 
   isCancelled(): boolean {
@@ -173,6 +195,7 @@ export class ConversationActor {
     this.lastActivity = Date.now();
 
     const abortController = new AbortController();
+    this.currentAbort = () => abortController.abort();
 
     this.persist(Event.RunStart, { runId, threadId: this.conversationId, messageId });
     this.persist(Event.MsgStart, { runId, threadId: this.conversationId, messageId, type: "text" });
@@ -225,14 +248,19 @@ export class ConversationActor {
         }
       }
     } catch (err) {
-      errored = true;
-      this.persist(Event.RunErr, {
-        runId,
-        threadId: this.conversationId,
-        error: String(err),
-      });
+      // Aborting mid-token (via requestCancel) surfaces here as a rejection —
+      // that's a clean stop, not an error. Anything else is a real failure.
+      if (!this.isCancelled()) {
+        errored = true;
+        this.persist(Event.RunErr, {
+          runId,
+          threadId: this.conversationId,
+          error: String(err),
+        });
+      }
     } finally {
       clearInterval(tick);
+      this.currentAbort = null;
     }
 
     flushDelta();

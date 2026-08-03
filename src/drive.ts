@@ -1,13 +1,27 @@
-import { Store, parseJobParams, type EnqueueParams } from "./store";
+import { randomUUID } from "node:crypto";
+import { Store, parseJobParams, type JobParams } from "./store";
 import { ConversationActor } from "./actor";
 import { run } from "./inference";
 import { LEASE_GRACE_MS, HEARTBEAT_INTERVAL_MS } from "./config";
+
+/** The fields a runnable generation needs, whatever its source. */
+interface RunSpec {
+  runId: string;
+  messageId: string;
+  prompt: string;
+  model: string;
+}
 
 /**
  * The job drive loop, shared by the server (inline driver) and worker.ts
  * (standalone process). Both used to copy-paste this body, so claim/run/
  * checkpoint logic could drift between the two; this is the single canonical
  * implementation.
+ *
+ * Two job kinds: a plain run (POST /prompt), and a `flush` (POST /steer) that
+ * promotes the conversation's pending steer queue into the transcript and
+ * runs it as ONE batched generation — all queued messages go out together,
+ * never one by one.
  *
  * Single-writer per conversation is enforced twice: in SQL
  * (`claimExpiredExclusive` refuses a second claim while a lease is live) and
@@ -26,11 +40,10 @@ export class JobDriver {
   }
 
   /**
-   * Claim one job and run it to completion: stream provider steps through the
-   * conversation actor, advancing the durable checkpoint and lease on each
-   * flush so a crash mid-run is re-claimed from the last flushed seq.
-   * Corrupt job params mark the job failed immediately instead of letting it
-   * sit claimed until the lease expires.
+   * Claim one job and run it to completion, advancing the durable checkpoint
+   * and lease on each flush so a crash mid-run is re-claimed from the last
+   * flushed seq. Corrupt job params mark the job failed immediately instead
+   * of letting it sit claimed until the lease expires.
    */
   async driveOnce(): Promise<void> {
     const row = this.store.claimExpiredExclusive(Date.now());
@@ -43,7 +56,7 @@ export class JobDriver {
       return;
     }
 
-    let params: EnqueueParams;
+    let params: JobParams;
     try {
       params = parseJobParams(row.params);
     } catch {
@@ -59,18 +72,11 @@ export class JobDriver {
       this.store.heartbeat(row.id, Date.now() + LEASE_GRACE_MS);
     }, HEARTBEAT_INTERVAL_MS);
     try {
-      await actor.runText(
-        params.runId,
-        params.messageId,
-        (signal) =>
-          run(params.prompt, { runId: params.runId, model: params.model, abortSignal: signal }),
-        (seq) => {
-          // Advance the job's durable checkpoint + lease on each flush so a
-          // crash mid-run is re-claimed from the last flushed seq.
-          this.store.checkpoint(row.id, seq);
-          this.store.heartbeat(row.id, Date.now() + LEASE_GRACE_MS);
-        },
-      );
+      if (params.kind === "flush") {
+        await this.flushQueue(row.id, actor);
+      } else {
+        await this.runSpec(row.id, actor, params);
+      }
       this.store.markDone(row.id);
     } catch {
       this.store.markFailed(row.id);
@@ -78,5 +84,43 @@ export class JobDriver {
       clearInterval(leaseRefresh);
       this.activeRuns.delete(row.conversation_id);
     }
+  }
+
+  /**
+   * Promotes the conversation's pending steer queue into the transcript and
+   * runs it as one batched generation: every queued message becomes a
+   * `user-message` (keeping its original steer runId so clients reconcile),
+   * the run sees them joined, and the batch carries the first message's
+   * runId. The newest message's model wins. An empty queue is a no-op (a
+   * stale flush job — e.g. after a crash between promote and completion —
+   * just completes).
+   */
+  private async flushQueue(jobId: string, actor: ConversationActor): Promise<void> {
+    const msgs = this.store.pendingQueue(actor.conversationId);
+    if (msgs.length === 0) return;
+
+    for (const m of msgs) actor.appendUser(m.content, m.runId);
+    await this.runSpec(jobId, actor, {
+      runId: msgs[0]!.runId,
+      messageId: randomUUID(),
+      prompt: msgs.map((m) => m.content).join("\n\n"),
+      model: msgs[msgs.length - 1]!.model,
+    });
+  }
+
+  /** Streams one generation through the actor, checkpointing as it goes. */
+  private async runSpec(jobId: string, actor: ConversationActor, spec: RunSpec): Promise<void> {
+    await actor.runText(
+      spec.runId,
+      spec.messageId,
+      (signal) =>
+        run(spec.prompt, { runId: spec.runId, model: spec.model, abortSignal: signal }),
+      (seq) => {
+        // Advance the job's durable checkpoint + lease on each flush so a
+        // crash mid-run is re-claimed from the last flushed seq.
+        this.store.checkpoint(jobId, seq);
+        this.store.heartbeat(jobId, Date.now() + LEASE_GRACE_MS);
+      },
+    );
   }
 }

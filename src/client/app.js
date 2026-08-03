@@ -24,7 +24,6 @@ import * as smd from "streaming-markdown";
   "use strict";
 
   var SEND = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>';
-  var STOP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="3.4"/></svg>';
 
   var $ = function (id) { return document.getElementById(id); };
   var thread = $("thread"), scroll = $("scroll"), jump = $("jump");
@@ -33,6 +32,7 @@ import * as smd from "streaming-markdown";
   var railList = $("railList"), rail = $("rail");
   var pill = $("pill"), pillModel = $("pillModel"), picker = $("picker");
   var ctx = $("ctx"), ctxbar = $("ctxbar"), ctxpct = $("ctxpct");
+  var queueEl = $("queue"), queueCount = $("queueCount"), queueItems = $("queueItems");
 
   // ---- state -------------------------------------------------------------
   var convId = null;          // current conversation id
@@ -42,6 +42,7 @@ import * as smd from "streaming-markdown";
   var models = [], selected = null;
   var msgs = Object.create(null);      // messageId -> assistant render record
   var pending = Object.create(null);   // runId -> optimistic user turn awaiting echo
+  var queued = Object.create(null);    // runId -> queued steer content (staging panel only)
   var flushHandle = null;
   var lastUsage = null;                // real token usage from the last completed turn
 
@@ -127,10 +128,11 @@ import * as smd from "streaming-markdown";
     ctx.title = used.toLocaleString() + " / " + selected.contextWindow.toLocaleString() + " tokens";
   }
   function updateSend() {
-    if (streaming) {
-      send.innerHTML = STOP; send.className = "send stop"; send.disabled = false;
-      send.setAttribute("aria-label", "Stop"); return;
-    }
+    // One button in the action slot: Stop while a run streams, Send otherwise.
+    // Mid-run you still queue by pressing Enter (submit() steers when streaming);
+    // the panel above the composer shows what's staged.
+    $("stop").style.display = streaming ? "inline-flex" : "none";
+    send.style.display = streaming ? "none" : "inline-flex";
     send.innerHTML = SEND;
     var has = input.value.trim().length > 0 && selected;
     send.className = "send" + (has ? " ready" : "");
@@ -151,6 +153,8 @@ import * as smd from "streaming-markdown";
     thread.innerHTML = "";
     msgs = Object.create(null);
     pending = Object.create(null);
+    queued = Object.create(null);
+    renderQueue();
     streaming = false;
     lastUsage = null;
     if (flushHandle) { cancelAnimationFrame(flushHandle); flushHandle = null; }
@@ -168,18 +172,27 @@ import * as smd from "streaming-markdown";
 
   function optimisticUser(content, runId) {
     var t = makeTurn("You", "pending");
-    t.dataset.runId = runId;
     renderStaticMd(t.querySelector(".body"), content);
     autoScroll();
     pending[runId] = { turn: t, content: content };
   }
   function confirmUser(runId, content) {
+    // A queued steer being promoted by the flush: drop it from the staging
+    // panel — it now enters the thread as a real turn (rendered fresh below,
+    // the first time it appears there).
+    if (queued[runId] !== undefined) { delete queued[runId]; renderQueue(); }
     var p = pending[runId];
     if (p) { p.turn.classList.remove("pending", "failed"); delete pending[runId]; return; }
-    // Not ours (history, or another device): render fresh.
+    // Not ours (history, another device, or a promoted steer): render fresh.
     var t = makeTurn("You");
     renderStaticMd(t.querySelector(".body"), content);
     autoScroll();
+  }
+  function confirmQueued(runId, content) {
+    // Staging only: queued steers never enter the thread until promoted. The
+    // panel is the single view of the pending queue.
+    queued[runId] = content;
+    renderQueue();
   }
   function failUser(runId) {
     var p = pending[runId];
@@ -220,7 +233,8 @@ import * as smd from "streaming-markdown";
     var stripped = finalize(rec.renderer);
     rec.turn.classList.remove("generating");
     if (finishReason === "aborted") {
-      rec.meta.textContent = "stopped";
+      rec.meta.textContent = "";
+      canceledMark(rec.body);
     } else if (finishReason === "error") {
       rec.turn.classList.add("failed"); failbar(rec.body, "generation failed"); rec.meta.textContent = "error";
     } else {
@@ -247,6 +261,15 @@ import * as smd from "streaming-markdown";
     fb.className = "failbar"; fb.textContent = msg;
     bodyEl.appendChild(fb);
   }
+  // Italic "canceled" under a stopped turn. As a block it sits on its own line
+  // below whatever text streamed; when nothing streamed it's the only child, so
+  // the :not(:first-child) margin drops out and there's no leading blank line.
+  function canceledMark(bodyEl) {
+    if (bodyEl.querySelector(".canceled")) return; // idempotent across replays
+    var el = document.createElement("div");
+    el.className = "canceled"; el.textContent = "canceled";
+    bodyEl.appendChild(el);
+  }
   function lastAssistant() {
     var keys = Object.keys(msgs);
     return keys.length ? msgs[keys[keys.length - 1]] : null;
@@ -256,6 +279,9 @@ import * as smd from "streaming-markdown";
     switch (name) {
       case "user-message":
         confirmUser(data.runId, data.content);
+        break;
+      case "queued-message":
+        confirmQueued(data.runId, data.content);
         break;
       case "message-start":
         streaming = true;
@@ -274,6 +300,9 @@ import * as smd from "streaming-markdown";
         var r = msgs[data.messageId];
         if (r) endAssistant(r, data.finishReason, data.usage);
         updateSend();
+        // The flush's promotions arrive as their own user-message events
+        // (confirmUser drops each from the panel), so there's nothing to
+        // reconcile here — the event stream keeps the queue in sync.
         break;
       }
       case "run-error": {
@@ -296,9 +325,11 @@ import * as smd from "streaming-markdown";
     if (connTimer) { clearTimeout(connTimer); connTimer = null; }
     clearThread();
     convId = id;
+    // The stream replays from seq 0 on a fresh EventSource, so the queued-message
+    // events reconstruct the steer queue on their own — no separate fetch needed.
     var es = new EventSource("/api/conversations/" + encodeURIComponent(id) + "/stream");
     source = es;
-    ["user-message", "run-started", "message-start", "text-delta",
+    ["user-message", "queued-message", "run-started", "message-start", "text-delta",
      "message-end", "run-error", "cancelled"].forEach(function (nm) {
       es.addEventListener(nm, function (ev) {
         var data; try { data = JSON.parse(ev.data); } catch (_) { return; }
@@ -328,9 +359,12 @@ import * as smd from "streaming-markdown";
   }
   function submit() {
     var content = input.value.trim();
-    if (!content || !selected || streaming) return;
+    if (!content || !selected) return;
     input.value = ""; autosize();
     var runId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
+    // While a run is in flight the message joins the steer queue; otherwise it
+    // starts a run.
+    if (streaming) { doSteer(content, runId); return; }
     doSend(content, runId);
   }
   // Optimistic apply now, POST after: the user's turn is on screen before the
@@ -358,8 +392,59 @@ import * as smd from "streaming-markdown";
       failUser(runId);
     }
   }
+  // Steer mid-run: the message joins the staging queue above the composer and
+  // flushes with the whole queue as one batched run when the current run ends.
+  // It enters the thread only once the flush promotes it (its user-message echo).
+  async function doSteer(content, runId) {
+    queued[runId] = content;
+    renderQueue();
+    try {
+      var res = await fetch("/api/conversations/" + encodeURIComponent(convId) + "/steer", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: content, model: selected.ref, runId: runId }),
+      });
+      if (!res.ok) {
+        var err = await res.json().catch(function () { return {}; });
+        if (queued[runId] !== undefined) { delete queued[runId]; renderQueue(); }
+        if (err.error) console.warn("steer rejected:", err.error);
+      }
+    } catch (e) {
+      if (queued[runId] !== undefined) { delete queued[runId]; renderQueue(); }
+    }
+  }
   function stop() {
+    if (!streaming) return;
+    // Acknowledge the click immediately: leave the streaming state and mark the
+    // live turn "stopping…" rather than waiting for the aborted message-end to
+    // round-trip. endAssistant reconciles to the final "stopped" when it lands.
+    streaming = false; updateSend();
+    var rec = lastAssistant();
+    if (rec && rec.turn.classList.contains("generating")) {
+      rec.turn.classList.remove("generating");
+      rec.meta.textContent = "stopping…";
+    }
     fetch("/api/conversations/" + encodeURIComponent(convId) + "/cancel", { method: "POST" }).catch(function () {});
+  }
+
+  // ---- steer queue -------------------------------------------------------
+  // The staging panel above the composer is the ONLY view of pending steers,
+  // and the `queued` map is its single source of truth. The event stream keeps
+  // it honest: queued-message adds, user-message (promotion) removes. On
+  // (re)connect the stream replays from seq 0, so the queue rebuilds itself —
+  // no separate fetch, no reconciliation with in-thread turns.
+  function renderQueue() {
+    var ids = Object.keys(queued);
+    queueEl.classList.toggle("hidden", ids.length === 0);
+    queueCount.textContent = ids.length;
+    queueItems.innerHTML = "";
+    ids.forEach(function (runId) {
+      var li = document.createElement("li");
+      var text = document.createElement("span");
+      text.className = "qtext"; text.textContent = queued[runId];
+      li.appendChild(text);
+      queueItems.appendChild(li);
+    });
   }
 
   // ---- conversation rail -------------------------------------------------
@@ -432,11 +517,12 @@ import * as smd from "streaming-markdown";
   function closePicker() { picker.hidden = true; pill.setAttribute("aria-expanded", "false"); }
 
   // ---- wiring ------------------------------------------------------------
-  composer.addEventListener("submit", function (e) { e.preventDefault(); if (streaming) stop(); else submit(); });
+  composer.addEventListener("submit", function (e) { e.preventDefault(); submit(); });
   input.addEventListener("input", function () { autosize(); updateSend(); });
   input.addEventListener("keydown", function (e) {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!streaming) submit(); }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
   });
+  $("stop").addEventListener("click", function () { if (streaming) stop(); });
   $("new").addEventListener("click", newConversation);
   $("menu").addEventListener("click", function () { rail.classList.toggle("open"); });
   pill.addEventListener("click", function () { if (picker.hidden) openPicker(); else closePicker(); });

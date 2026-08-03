@@ -7,6 +7,7 @@ import { ParseError } from "./errors";
  */
 export const Event = {
   User: "user-message",
+  Queued: "queued-message",
   MsgStart: "message-start",
   TextDelta: "text-delta",
   ToolCall: "tool-call",
@@ -22,6 +23,14 @@ export interface UserMessageData {
   threadId: string;
   runId: string;
   content: string;
+}
+
+/** A steered message parked in the queue until the current run finishes. */
+export interface QueuedMessageData {
+  threadId: string;
+  runId: string;
+  content: string;
+  model: string;
 }
 
 export interface RunStartedData {
@@ -88,6 +97,7 @@ export interface CancelledData {
 
 export type EventData =
   | UserMessageData
+  | QueuedMessageData
   | RunStartedData
   | MessageStartData
   | TextDeltaData

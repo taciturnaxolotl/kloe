@@ -68,8 +68,8 @@ The conversation is an **append-only event log**. Each event:
 ```
 {
   id:    "<conversationId>:<seq>",  // monotonic; drives Last-Event-ID resume
-  event: "user-message" | "run-started" | "message-start" | "text-delta" |
-         "message-end" | "run-error" | "cancelled" |
+  event: "user-message" | "queued-message" | "run-started" | "message-start" |
+         "text-delta" | "message-end" | "run-error" | "cancelled" |
          "tool-call" | "tool-result",
   data:  { ... }                    // event-specific payload
 }
@@ -140,8 +140,14 @@ questions).
 - `POST /api/conversations/:id/cancel` — sets the cancel flag; the run checks it
   between token batches and aborts upstream. **A dropped connection is NOT a cancel**
   (resume is in play), so cancellation must be explicit and out-of-band.
-- `POST /api/conversations/:id/steer` — hard steer: cancel the current run and
-  enqueue the redirect as a new one.
+- `POST /api/conversations/:id/steer` — queues a message for the next run,
+  WITHOUT interrupting the current one. It appends a durable `queued-message`
+  event (visible on every device) and enqueues one flush job. When the current
+  run ends, the whole pending queue is promoted to `user-message` events and
+  run as ONE batched generation — all queued messages go out together, never
+  one at a time.
+- `GET /api/conversations/:id/steer` — the pending steer queue (derived from
+  the log: `queued-message` events with no matching `user-message` yet).
 - `GET /api/conversations` — the rail: ids ordered by most recent activity,
   each with a title derived from its first user message.
 - `GET /api/conversations/:id/events` — full replay of the durable log.
@@ -407,9 +413,10 @@ buy *reconciliation*, which most of a chat UI never needs.
 - Compaction: raw deltas are currently kept forever (resume granularity is the
   batch boundary). When/if to compact them into a final message, and what
   keep-alive window to keep raw deltas resumable after `message-end`.
-- Steering: today steer = cancel the current run and enqueue the redirect as a
-  user message. Does mid-run steer instead append a redirect the model sees
-  mid-completion?
+- Steering: steer queues messages (no interrupt) and flushes them together
+  when the current run ends. Open: should an explicit "interrupt now" variant
+  also exist (cancel + immediate flush), and how should the model be told the
+  queued messages are mid-run redirects rather than a fresh turn?
 - Multi-tab on one device: dedupe optimistic append when the same user's second
   tab receives the server echo of a message it didn't originate.
 - Where the actor lives at scale (sticky in-proc vs. Durable Object) and the

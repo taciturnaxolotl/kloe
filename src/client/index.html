@@ -32,6 +32,14 @@
         <div class="dockinner">
           <div class="banner">offline — the stream dropped. Reconnecting; your place is kept and replays on return.</div>
 
+          <div class="queue hidden" id="queue" aria-live="polite">
+            <div class="qhead">
+              <span class="qtitle">Queued</span>
+              <span class="qcount" id="queueCount">0</span>
+            </div>
+            <ul class="qitems" id="queueItems"></ul>
+          </div>
+
           <form class="card" id="composer">
             <textarea id="input" rows="1" placeholder="Reply, or ask something new…" aria-label="Message"></textarea>
             <div class="tools">
@@ -51,6 +59,9 @@
                   <div class="picker" id="picker" role="listbox" hidden></div>
                 </span>
                 <button class="send" id="send" type="submit" aria-label="Send" disabled></button>
+                <button class="stopbtn" id="stop" type="button" aria-label="Stop" title="Stop the current run">
+                  <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.8"/></svg>
+                </button>
               </div>
             </div>
           </form>

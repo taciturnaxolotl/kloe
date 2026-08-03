@@ -91,6 +91,37 @@ test("cancel resets between runs", async () => {
   expect(events).not.toContain("cancelled");
 });
 
+test("cancel mid-token aborts the stream at once and finishes aborted, not error", async () => {
+  const a = new ConversationActor("t-abort", store);
+  const events: WireEvent[] = [];
+  a.follow({ push: (e) => events.push(e), closed: false });
+
+  // A generator that yields once, then blocks until its signal aborts — the
+  // shape of a provider stream sitting between tokens. requestCancel must
+  // unblock it immediately (not wait for a next token that never comes), and
+  // the resulting rejection must read as a clean stop.
+  let blocked: () => void = () => {};
+  const reachedBlock = new Promise<void>((r) => (blocked = r));
+  const run = a.runText("r1", "m1", async function* (signal) {
+    yield { kind: "text", chunk: "partial" };
+    blocked();
+    await new Promise<void>((_resolve, reject) => {
+      if (signal.aborted) return reject(new DOMException("aborted", "AbortError"));
+      signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    });
+    yield { kind: "text", chunk: "never reached" };
+  });
+
+  await reachedBlock;
+  a.requestCancel();
+  await run;
+
+  const end = events.find((e) => e.event === Event.MsgEnd);
+  expect((end!.data as { finishReason: string }).finishReason).toBe("aborted");
+  expect(events.some((e) => e.event === Event.Cancelled)).toBe(true);
+  expect(events.some((e) => e.event === Event.RunErr)).toBe(false);
+});
+
 test("error sets finishReason to error", async () => {
   const a = new ConversationActor("t3", store);
   const events: WireEvent[] = [];
