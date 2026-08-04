@@ -10,7 +10,8 @@ import {
   type AttachmentRef,
   type UserMessageData,
   type TextDeltaData,
-  type MessageEndData,
+  type ToolCallData,
+  type ToolResultData,
 } from "./events";
 import { truncateUtf8 } from "./sse";
 import { BATCH_FLUSH_MS, BATCH_MAX_DELTAS, ATTACHMENT_INLINE_TEXT_MAX } from "./config";
@@ -37,6 +38,18 @@ function isTextLike(mime: string): boolean {
     mime.startsWith("text/") ||
     /^application\/(json|xml|x-?yaml|javascript|typescript|toml|x-ndjson)$/.test(mime)
   );
+}
+
+/** A tool-call part in a reconstructed assistant message. */
+type ToolCallPart = { type: "tool-call"; toolCallId: string; toolName: string; input: unknown };
+/** An assistant message's content while folding: streamed text + tool calls. */
+type AsstPart = { type: "text"; text: string } | ToolCallPart;
+
+/** Wraps a logged tool output in the AI SDK's typed tool-result output shape. */
+function toolOutput(output: unknown, isError?: boolean) {
+  const text = typeof output === "string";
+  if (isError) return text ? { type: "error-text", value: output } : { type: "error-json", value: output };
+  return text ? { type: "text", value: output } : { type: "json", value: output };
 }
 
 export interface WireEvent {
@@ -215,27 +228,43 @@ export class ConversationActor {
 
   /**
    * Reconstructs the durable log as a model-ready message list — the context a
-   * run is generated against. `user-message` events become user turns; streamed
-   * assistant text (grouped by messageId) becomes assistant turns. Consecutive
-   * same-role turns are merged with a blank line, so a flushed steer batch reads
-   * as one user turn and providers that require strict role alternation stay
-   * valid. The still-unsent steer queue (`queued-message`) and control events
-   * are excluded; empty assistant turns (e.g. a stop before the first token) are
-   * dropped.
+   * run is generated against. Events are processed IN ORDER (not accumulated by
+   * messageId) so tool interactions interleave correctly:
+   *
+   *   `user-message`  → a user turn (text + attachments); consecutive user turns
+   *                     (a flushed steer batch) merge with a blank line.
+   *   `text-delta`    → streamed assistant text; text after a tool result starts
+   *                     a NEW assistant step.
+   *   `tool-call`     → a `{type:"tool-call"}` part on the current assistant msg.
+   *   `tool-result`   → closes the assistant step, then a `tool`-role message.
+   *
+   * Only tool calls that have a matching result are folded (and vice-versa): a
+   * dangling tool-call — e.g. from a run cancelled mid-tool — makes providers
+   * error, so it's dropped. Reasoning, the unsent steer queue, and control
+   * events are excluded; empty assistant turns are dropped.
    */
   async history(opts: HistoryOptions = {}): Promise<ModelMessage[]> {
     const out: ModelMessage[] = [];
-    const assistantText = new Map<string, string>();
-    // Consecutive user turns (e.g. a flushed steer batch) accumulate here and
-    // flush as one turn when an assistant turn arrives — same merge rule as
-    // before, but now over parts so attachments survive.
+
+    // Fold only tool-call/result pairs where both sides exist.
+    const callIds = new Set<string>();
+    const resultIds = new Set<string>();
+    for (const e of this.store.replay(this.conversationId, 0)) {
+      if (e.event === Event.ToolCall) callIds.add((e.data as ToolCallData).toolCallId);
+      else if (e.event === Event.ToolResult) resultIds.add((e.data as ToolResultData).toolCallId);
+    }
+    const paired = new Set([...callIds].filter((id) => resultIds.has(id)));
+
+    // Assembly state, flushed in role order as the transcript alternates.
     let userParts: UserPart[] | null = null;
+    let asstText = "";
+    let asstParts: AsstPart[] = [];
+    let toolResults: Array<{ type: "tool-result"; toolCallId: string; toolName: string; output: unknown }> = [];
+
     const flushUser = (): void => {
       const parts = userParts;
       userParts = null;
       if (!parts || parts.length === 0) return;
-      // Collapse to a plain string when every part is text — preserves the exact
-      // prior shape for text-only turns; array content only when a file rides along.
       if (parts.every((p) => p.type === "text")) {
         const text = parts.map((p) => (p as { text: string }).text).join("\n\n");
         if (text.length > 0) out.push({ role: "user", content: text });
@@ -243,34 +272,59 @@ export class ConversationActor {
         out.push({ role: "user", content: parts } as ModelMessage);
       }
     };
-    const addAssistant = (content: string): void => {
-      if (content.length === 0) return;
-      flushUser();
-      const last = out[out.length - 1];
-      if (last && last.role === "assistant" && typeof last.content === "string") {
-        last.content = `${last.content}\n\n${content}`;
-      } else {
-        out.push({ role: "assistant", content });
-      }
+    const pushAsstText = (): void => {
+      if (asstText.length > 0) { asstParts.push({ type: "text", text: asstText }); asstText = ""; }
     };
+    const flushAsst = (): void => {
+      pushAsstText();
+      if (asstParts.length === 0) return;
+      // Text-only collapses to a string (the prior shape); a tool call makes it an array.
+      if (asstParts.every((p) => p.type === "text")) {
+        out.push({ role: "assistant", content: (asstParts as Array<{ text: string }>).map((p) => p.text).join("\n\n") });
+      } else {
+        out.push({ role: "assistant", content: asstParts } as ModelMessage);
+      }
+      asstParts = [];
+    };
+    const flushTools = (): void => {
+      if (toolResults.length === 0) return;
+      out.push({ role: "tool", content: toolResults } as ModelMessage);
+      toolResults = [];
+    };
+
     for (const e of this.store.replay(this.conversationId, 0)) {
       if (e.event === Event.User) {
+        flushAsst();
+        flushTools();
         const d = e.data as UserMessageData;
         userParts ??= [];
         if (d.content.length > 0) userParts.push({ type: "text", text: d.content });
         for (const a of d.attachments ?? []) userParts.push(await this.renderAttachment(a, opts));
       } else if (e.event === Event.TextDelta) {
-        const d = e.data as TextDeltaData;
-        assistantText.set(d.messageId, (assistantText.get(d.messageId) ?? "") + d.delta);
-      } else if (e.event === Event.MsgEnd) {
-        const d = e.data as MessageEndData;
-        const text = assistantText.get(d.messageId);
-        if (text !== undefined) {
-          addAssistant(text);
-          assistantText.delete(d.messageId);
+        flushUser();
+        if (toolResults.length > 0) flushTools(); // text after a result: new step
+        asstText += (e.data as TextDeltaData).delta;
+      } else if (e.event === Event.ToolCall) {
+        flushUser();
+        const d = e.data as ToolCallData;
+        if (paired.has(d.toolCallId)) {
+          pushAsstText();
+          asstParts.push({ type: "tool-call", toolCallId: d.toolCallId, toolName: d.toolName, input: d.input });
+        }
+      } else if (e.event === Event.ToolResult) {
+        flushUser();
+        const d = e.data as ToolResultData;
+        if (paired.has(d.toolCallId)) {
+          flushAsst(); // close the assistant step (text + calls) before its results
+          toolResults.push({
+            type: "tool-result", toolCallId: d.toolCallId, toolName: d.toolName,
+            output: toolOutput(d.output, d.isError),
+          });
         }
       }
     }
+    flushAsst();
+    flushTools();
     flushUser();
     return out;
   }

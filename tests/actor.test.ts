@@ -311,3 +311,59 @@ test("tool-call and tool-result steps persist as durable, ordered events", async
   const res = events.find((e) => e.event === Event.ToolResult)!.data as { output: { results: unknown[] } };
   expect(res.output.results.length).toBe(1);
 });
+
+test("history folds a tool turn into paired assistant/tool messages", async () => {
+  const a = new ConversationActor("t-tool-hist", store);
+  a.appendUser("what's new");
+  await a.runText("r", "m", async function* (_signal) {
+    yield { kind: "text", chunk: "let me search" };
+    yield { kind: "tool-call", toolCallId: "c1", toolName: "web_search", input: { query: "news" } };
+    yield { kind: "tool-result", toolCallId: "c1", toolName: "web_search", output: { results: [1] } };
+    yield { kind: "text", chunk: "here's what I found" };
+  });
+  expect(await a.history()).toEqual([
+    { role: "user", content: "what's new" },
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "let me search" },
+        { type: "tool-call", toolCallId: "c1", toolName: "web_search", input: { query: "news" } },
+      ],
+    },
+    {
+      role: "tool",
+      content: [
+        { type: "tool-result", toolCallId: "c1", toolName: "web_search", output: { type: "json", value: { results: [1] } } },
+      ],
+    },
+    { role: "assistant", content: "here's what I found" },
+  ]);
+});
+
+test("history drops a tool-call that has no matching result (no dangling call)", async () => {
+  const a = new ConversationActor("t-tool-dangling", store);
+  a.appendUser("q");
+  await a.runText("r", "m", async function* (_signal) {
+    yield { kind: "text", chunk: "calling" };
+    yield { kind: "tool-call", toolCallId: "c1", toolName: "web_search", input: {} };
+    // no tool-result (e.g. cancelled mid-tool)
+  });
+  // The dangling call is dropped; the assistant turn is just its text, no tool message.
+  expect(await a.history()).toEqual([
+    { role: "user", content: "q" },
+    { role: "assistant", content: "calling" },
+  ]);
+});
+
+test("history wraps an errored tool result as error output", async () => {
+  const a = new ConversationActor("t-tool-err", store);
+  a.appendUser("q");
+  await a.runText("r", "m", async function* (_signal) {
+    yield { kind: "tool-call", toolCallId: "c1", toolName: "web_search", input: {} };
+    yield { kind: "tool-result", toolCallId: "c1", toolName: "web_search", output: "boom", isError: true };
+    yield { kind: "text", chunk: "sorry, that failed" };
+  });
+  const h = await a.history();
+  const toolMsg = h.find((m) => m.role === "tool") as { content: Array<{ output: unknown }> };
+  expect(toolMsg.content[0]!.output).toEqual({ type: "error-text", value: "boom" });
+});
