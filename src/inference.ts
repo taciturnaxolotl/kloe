@@ -1,4 +1,4 @@
-import { streamText, type LanguageModel, type ModelMessage } from "ai";
+import { streamText, type LanguageModel, type ModelMessage, type JSONValue } from "ai";
 import { ProviderRegistry } from "./providers";
 import { RateLimiter } from "./ratelimit";
 import { loadCatalog, type LoadCatalogOptions } from "./catalog";
@@ -78,13 +78,18 @@ function limiterFor(providerName: string): RateLimiter | undefined {
   return l;
 }
 
+/** Catalog metadata for a model ref, or undefined if unknown/uninitialized. */
+function modelInfo(modelRef: string) {
+  try {
+    return getRegistry().listModels().find((m) => m.ref === modelRef);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Whether a model can accept image inputs (false for unknown refs). */
 export function modelSupportsImages(modelRef: string): boolean {
-  try {
-    return getRegistry().listModels().find((m) => m.ref === modelRef)?.supportsImages ?? false;
-  } catch {
-    return false;
-  }
+  return modelInfo(modelRef)?.supportsImages ?? false;
 }
 
 /** Resolves a model ref to a rate-limited LanguageModel. */
@@ -107,11 +112,25 @@ export async function* run(
   opts: RunOptions,
 ): AsyncGenerator<RunStep> {
   const model = resolveModel(opts.model);
+  // Per-provider knobs from ops config: an output-token cap, and raw
+  // provider-specific options (e.g. a reasoning/thinking toggle) sent under the
+  // provider's key. Absent for echo/unknown providers.
+  const providerName = opts.model.split("/")[0]!;
+  const cfg = getRegistry().getConfig(providerName);
+  // Output cap: an explicit provider override wins; otherwise fall back to the
+  // model's own default/max from the catalog (e.g. Hyper reports 384K). Sending
+  // it prevents the endpoint's low default from cutting a run off mid-reasoning
+  // (which surfaced as finishReason=length with no answer text).
+  const maxOutputTokens = cfg?.maxOutputTokens || modelInfo(opts.model)?.defaultMaxTokens || undefined;
   const result = streamText({
     model,
     messages,
     temperature: opts.temperature ?? 0.7,
     abortSignal: opts.abortSignal,
+    ...(maxOutputTokens ? { maxOutputTokens } : {}),
+    ...(cfg?.providerOptions
+      ? { providerOptions: { [providerName]: cfg.providerOptions as Record<string, JSONValue> } }
+      : {}),
   });
   // Consume the FULL stream (not just textStream) so reasoning models — whose
   // answer arrives as reasoning parts — come through instead of an empty turn.

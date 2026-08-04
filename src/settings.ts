@@ -47,6 +47,8 @@ const ProviderSchema = v.object({
   type: v.optional(v.string()),
   maxConcurrency: v.optional(v.number()),
   minIntervalMs: v.optional(v.number()),
+  maxOutputTokens: v.optional(v.number()),
+  providerOptions: v.optional(v.record(v.string(), v.unknown())),
   models: v.optional(v.array(ProviderModelSchema)),
   discoverModels: v.optional(v.boolean()),
 });

@@ -23,6 +23,14 @@ export interface ProviderConfig {
   maxConcurrency: number;
   /** Minimum ms between request starts (crude token bucket). */
   minIntervalMs: number;
+  /** Cap on generated (output) tokens per request; unset → the provider default. */
+  maxOutputTokens?: number;
+  /**
+   * Raw provider-specific request options, sent under this provider's key in the
+   * AI SDK `providerOptions` (e.g. `{ "reasoning_effort": "low" }` or a thinking
+   * toggle — whatever the endpoint honors). Escape hatch for per-endpoint knobs.
+   */
+  providerOptions?: Record<string, unknown>;
 }
 
 interface OpsFile {
@@ -32,6 +40,8 @@ interface OpsFile {
     apiEndpoint?: string;
     maxConcurrency?: number;
     minIntervalMs?: number;
+    maxOutputTokens?: number;
+    providerOptions?: Record<string, unknown>;
     /**
      * Adapter type for providers the catalog doesn't know (else "openai-compat"
      * is assumed). Also selects the discovery enricher ("hyper", ...).
@@ -73,6 +83,8 @@ export interface ModelInfo {
   modelId: string;
   name: string;
   contextWindow: number;
+  /** Model's default/max output-token budget (0 if unknown) — used to cap runs. */
+  defaultMaxTokens: number;
   costPer1MIn: number;
   costPer1MOut: number;
   reasoningLevels: string[];
@@ -85,6 +97,7 @@ const ECHO_MODEL: ModelInfo = {
   modelId: "echo",
   name: "Echo (mock)",
   contextWindow: 0,
+  defaultMaxTokens: 0,
   costPer1MIn: 0,
   costPer1MOut: 0,
   reasoningLevels: [],
@@ -161,6 +174,8 @@ export class ProviderRegistry {
         apiEndpoint: p.apiEndpoint,
         maxConcurrency: p.maxConcurrency ?? DEFAULTS.maxConcurrency,
         minIntervalMs: p.minIntervalMs ?? DEFAULTS.minIntervalMs,
+        maxOutputTokens: p.maxOutputTokens,
+        providerOptions: p.providerOptions,
       });
     }
   }
@@ -235,6 +250,7 @@ export class ProviderRegistry {
           modelId: m.id,
           name: m.name,
           contextWindow: m.contextWindow,
+          defaultMaxTokens: m.defaultMaxTokens,
           costPer1MIn: m.costPer1MIn,
           costPer1MOut: m.costPer1MOut,
           reasoningLevels: m.reasoningLevels,

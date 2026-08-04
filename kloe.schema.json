@@ -125,6 +125,16 @@
           "minIntervalMs": {
             "type": "number"
           },
+          "maxOutputTokens": {
+            "type": "number"
+          },
+          "providerOptions": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
           "models": {
             "type": "array",
             "items": {
