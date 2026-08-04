@@ -1,4 +1,6 @@
-import { streamText, type LanguageModel, type ModelMessage, type JSONValue } from "ai";
+import { streamText, stepCountIs, type LanguageModel, type ModelMessage, type JSONValue } from "ai";
+import { toolSet } from "./tools";
+import { MAX_TOOL_STEPS } from "./config";
 import { ProviderRegistry } from "./providers";
 import { RateLimiter } from "./ratelimit";
 import { loadCatalog, type LoadCatalogOptions } from "./catalog";
@@ -131,6 +133,10 @@ export async function* run(
     ...(cfg?.providerOptions
       ? { providerOptions: { [providerName]: cfg.providerOptions as Record<string, JSONValue> } }
       : {}),
+    // Tools + a step cap: streamText runs the agentic loop (call → execute →
+    // feed back), bounded so a runaway can't loop forever.
+    tools: toolSet(),
+    stopWhen: stepCountIs(MAX_TOOL_STEPS),
   });
   // Consume the FULL stream (not just textStream) so reasoning models — whose
   // answer arrives as reasoning parts — come through instead of an empty turn.
@@ -143,6 +149,18 @@ export async function* run(
       yield { kind: "text", chunk: part.text };
     } else if (part.type === "reasoning-delta") {
       yield { kind: "reasoning", chunk: part.text };
+    } else if (part.type === "tool-call") {
+      yield { kind: "tool-call", toolCallId: part.toolCallId, toolName: part.toolName, input: part.input };
+    } else if (part.type === "tool-result") {
+      yield { kind: "tool-result", toolCallId: part.toolCallId, toolName: part.toolName, output: part.output };
+    } else if (part.type === "tool-error") {
+      yield {
+        kind: "tool-result",
+        toolCallId: part.toolCallId,
+        toolName: part.toolName,
+        output: String(part.error),
+        isError: true,
+      };
     } else if (part.type === "error") {
       throw part.error;
     }

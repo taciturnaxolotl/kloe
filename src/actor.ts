@@ -60,12 +60,27 @@ export interface ReasoningStep {
   kind: "reasoning";
   chunk: string;
 }
+/** The model invoked a tool. */
+export interface ToolCallStep {
+  kind: "tool-call";
+  toolCallId: string;
+  toolName: string;
+  input: unknown;
+}
+/** A tool returned (or errored); `isError` marks a thrown/failed execution. */
+export interface ToolResultStep {
+  kind: "tool-result";
+  toolCallId: string;
+  toolName: string;
+  output: unknown;
+  isError?: boolean;
+}
 /** Real provider token usage, yielded once after the text stream drains. */
 export interface UsageStep {
   kind: "usage";
   usage: TokenUsage;
 }
-export type RunStep = TextStep | ReasoningStep | UsageStep;
+export type RunStep = TextStep | ReasoningStep | ToolCallStep | ToolResultStep | UsageStep;
 
 /**
  * One single-writer conversation. Owns the durable event log (via Store), the
@@ -428,6 +443,22 @@ export class ConversationActor {
             flushReasoning();
             rbatch = 0;
           }
+        } else if (step.kind === "tool-call") {
+          // Flush pending text/reasoning first so the durable log stays ordered
+          // (a tool call sits after the text that preceded it). Tool events are
+          // durable (via persist), not batched.
+          flushReasoning();
+          flushDelta();
+          this.persist(Event.ToolCall, {
+            runId, threadId: this.conversationId, messageId,
+            toolCallId: step.toolCallId, toolName: step.toolName, input: step.input,
+          });
+        } else if (step.kind === "tool-result") {
+          this.persist(Event.ToolResult, {
+            runId, threadId: this.conversationId, messageId,
+            toolCallId: step.toolCallId, toolName: step.toolName,
+            output: step.output, isError: step.isError,
+          });
         } else if (step.kind === "usage") {
           usage = step.usage;
         }

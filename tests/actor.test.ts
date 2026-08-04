@@ -284,3 +284,30 @@ test("message-end omits reasoningMs when the turn produced no reasoning", async 
   const end = events.find((e) => e.event === Event.MsgEnd)!.data as { reasoningMs?: number };
   expect(end.reasoningMs).toBeUndefined();
 });
+
+test("tool-call and tool-result steps persist as durable, ordered events", async () => {
+  const a = new ConversationActor("t-tools", store);
+  const events: WireEvent[] = [];
+  a.follow({ push: (e) => events.push(e), closed: false });
+  await a.runText("rt", "mt", async function* (_signal) {
+    yield { kind: "text", chunk: "let me check the time" };
+    yield { kind: "tool-call", toolCallId: "c1", toolName: "get_time", input: { timezone: "UTC" } };
+    yield { kind: "tool-result", toolCallId: "c1", toolName: "get_time", output: { iso: "2026-08-04T00:00:00Z" } };
+    yield { kind: "text", chunk: "it is midnight UTC" };
+  });
+  const names = events.map((e) => e.event);
+  expect(names).toContain(Event.ToolCall);
+  expect(names).toContain(Event.ToolResult);
+  // Ordering: the text preceding the call flushed before it; result follows call.
+  expect(names.indexOf(Event.TextDelta)).toBeLessThan(names.indexOf(Event.ToolCall));
+  expect(names.indexOf(Event.ToolCall)).toBeLessThan(names.indexOf(Event.ToolResult));
+
+  const call = events.find((e) => e.event === Event.ToolCall)!.data as
+    { toolName: string; toolCallId: string; messageId: string; input: { timezone: string } };
+  expect(call.toolName).toBe("get_time");
+  expect(call.toolCallId).toBe("c1");
+  expect(call.messageId).toBe("mt");
+  expect(call.input.timezone).toBe("UTC");
+  const res = events.find((e) => e.event === Event.ToolResult)!.data as { output: { iso: string } };
+  expect(res.output.iso).toBe("2026-08-04T00:00:00Z");
+});

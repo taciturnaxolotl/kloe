@@ -434,6 +434,38 @@ import { mountDialogs } from "./confirm.js";
     smd.parser_end(rc.parser); rc.ended = true;
     enrich(rc.body);
   }
+  // Pretty value for a tool's args/result (JSON, or a string as-is).
+  function toolValue(v) {
+    if (v == null) return "";
+    if (typeof v === "string") return v;
+    try { return JSON.stringify(v, null, 2); } catch (_) { return String(v); }
+  }
+  // A tool call: a timeline step labelled by tool name (shimmering while it
+  // runs), its args in the body. Keyed by toolCallId so the result attaches.
+  function toolStep(rec, data) {
+    rec.tools = rec.tools || Object.create(null);
+    if (rec.tools[data.toolCallId]) return rec.tools[data.toolCallId];
+    var step = makeStep(rec, "tool thinking");
+    step.label.textContent = data.toolName;
+    var args = toolValue(data.input);
+    if (args && args !== "{}") {
+      var a = document.createElement("div"); a.className = "targs"; a.textContent = args;
+      step.body.appendChild(a);
+    }
+    rec.tools[data.toolCallId] = { details: step.details, label: step.label, body: step.body };
+    autoScroll();
+    return rec.tools[data.toolCallId];
+  }
+  function toolResult(rec, data) {
+    var t = (rec.tools && rec.tools[data.toolCallId]) || toolStep(rec, data);
+    t.details.classList.remove("thinking");
+    if (data.isError) { t.details.classList.add("errored"); t.label.textContent = data.toolName + " — failed"; }
+    var out = document.createElement("div");
+    out.className = "tout" + (data.isError ? " err" : "");
+    out.textContent = toolValue(data.output);
+    t.body.appendChild(out);
+    autoScroll();
+  }
   function endAssistant(rec, finishReason, usage, reasoningMs) {
     endReasoning(rec);
     labelThought(rec, reasoningMs);
@@ -507,6 +539,12 @@ import { mountDialogs } from "./confirm.js";
         scheduleFlush();
         break;
       }
+      case "tool-call":
+        toolStep(assistantTurn(data.messageId), data);
+        break;
+      case "tool-result":
+        toolResult(assistantTurn(data.messageId), data);
+        break;
       case "text-delta": {
         var rec = assistantTurn(data.messageId);
         if (!rec.firstDeltaAt) { rec.firstDeltaAt = Date.now(); collapseReasoning(rec); }
@@ -549,7 +587,8 @@ import { mountDialogs } from "./confirm.js";
     var es = new EventSource("/api/conversations/" + encodeURIComponent(id) + "/stream");
     source = es;
     ["user-message", "queued-message", "queued-cancelled", "run-started", "message-start",
-     "reasoning-delta", "text-delta", "message-end", "run-error", "cancelled"].forEach(function (nm) {
+     "reasoning-delta", "tool-call", "tool-result", "text-delta", "message-end", "run-error",
+     "cancelled"].forEach(function (nm) {
       es.addEventListener(nm, function (ev) {
         var data; try { data = JSON.parse(ev.data); } catch (_) { return; }
         applyEvent(nm, data);

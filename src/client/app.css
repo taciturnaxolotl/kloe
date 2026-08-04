@@ -318,6 +318,14 @@ body.selecting #selectBtn { order: 4; }
   color: var(--ink-muted); font-size: 0.9em; }
 .turn .body .timeline .stepbody > :first-child { margin-top: 0; }
 .turn .body .timeline .stepbody > :last-child { margin-bottom: 0; }
+/* Tool step: args + result rendered as compact mono blocks. */
+.turn .body .timeline .step.tool .targs,
+.turn .body .timeline .step.tool .tout { font-family: var(--mono); font-size: 11.5px;
+  line-height: 1.5; white-space: pre-wrap; word-break: break-word; margin: 2px 0; }
+.turn .body .timeline .step.tool .targs { color: var(--ink-faint); }
+.turn .body .timeline .step.tool .tout { color: var(--ink-muted); }
+.turn .body .timeline .step.tool .tout.err { color: var(--err); }
+.turn .body .timeline .step.tool.errored > summary .steplabel { color: var(--err); }
 
 /* KaTeX math. Inline flows with text; display centers on its own line. */
 .turn .body .math-inline { white-space: nowrap; }

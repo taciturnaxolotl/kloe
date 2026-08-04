@@ -84,6 +84,8 @@ export interface ReasoningDeltaData {
 export interface ToolCallData {
   threadId: string;
   runId: string;
+  /** The assistant turn this tool call belongs to (for rendering into its timeline). */
+  messageId: string;
   toolCallId: string;
   toolName: string;
   input: unknown;
@@ -92,8 +94,12 @@ export interface ToolCallData {
 export interface ToolResultData {
   threadId: string;
   runId: string;
+  messageId: string;
   toolCallId: string;
+  toolName: string;
   output: unknown;
+  /** True when the tool threw / errored rather than returning a result. */
+  isError?: boolean;
 }
 
 /** Real token usage reported by the provider (AI SDK LanguageModelUsage). */
