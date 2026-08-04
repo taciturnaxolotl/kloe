@@ -4,7 +4,7 @@
   "type": "module",
   "module": "server.ts",
   "scripts": {
-    "dev": "bun --watch server.ts",
+    "dev": "bun --hot server.ts",
     "start": "bun server.ts",
     "test": "bun test"
   },

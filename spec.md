@@ -370,6 +370,317 @@ the log — both are cheap DOM appends, no diffing.
 Rendering bundle: ~3 KB core (smd) only — Shiki/KaTeX/Mermaid are described
 above as the deferred path but are not built yet.
  
+## Tools, attachments, thinking & sandboxing
+
+> Status: **designed, not built.** The base build streams text only. This section
+> is the one large capability extension the base build was shaped to accept —
+> the event enum already reserves `tool-call`/`tool-result` and
+> `message-start.type` already admits `"tool-call"`. Build it in the sequence at
+> the end; don't land it all at once.
+
+The whole extension rides **one spine**: consume the provider's *full* stream
+(not just text), persist each non-reproducible part durably as its own event,
+and keep bytes out of the log behind a **content-addressed blob store**.
+Attachments, thinking, tool calls, and sandboxed execution are four faces of
+that single change, not four subsystems.
+
+### The full stream
+
+`run()` today consumes only `result.textStream`. Switch to `result.fullStream`
+and demux by part type into `RunStep`s the actor already understands, plus new
+ones:
+
+```
+text-delta        → TextStep        (batched, reproducible — as today)
+reasoning-delta   → ReasoningStep   (batched, reproducible)
+reasoning-end     → carries the signature/providerMetadata (DURABLE)
+tool-call         → ToolCallStep    (DURABLE)
+tool-result       → ToolResultStep  (DURABLE)
+finish            → UsageStep        (as today)
+```
+
+The durability split is the load-bearing rule, and it is the same two-SLA
+classification the write-amplification section already draws: **reproducible
+parts batch** (a crash regenerates them on re-run), **non-reproducible parts
+fsync before the model sees them again** (a crash must not lose or re-run them).
+Text and reasoning *text* batch; tool calls, tool results, and reasoning
+*signatures* are durable events through `persist()`.
+
+### Content parts & the blob store
+
+A message `content` stops being only a string. User messages gain
+`attachments: Attachment[]`; tool results gain `artifacts: Artifact[]`. Both are
+**references, never inlined bytes**:
+
+```
+Attachment/Artifact = { sha256, kind: "image" | "file", mime, name, size }
+```
+
+Bytes live in a **content-addressed blob store**; only the reference rides the
+log. This keeps the durable log small and text-searchable (the whole write-amp
+story assumes small events) and preserves the existing title/search paths, which
+read `content` as text. `content` stays the text; attachments sit beside it.
+
+The store is deliberately **S3-shaped** — `put(bytes) → sha256`,
+`get(sha256)`, `exists`, `delete` — because content-addressing *is* the
+object-store abstraction: immutable keys, no overwrites, dedup is a no-op PUT,
+consistency is free (a sha256's bytes never change).
+
+- **Default backend: local filesystem** (`data/blobs/<sha256>`). Single node
+  wants no network hop, no credentials, no dependency; the OS page cache handles
+  hot blobs. Per the spec's own rule, no infra until a feature demands it.
+- **`BlobStore` is an interface with swappable backends** (mirrors the provider
+  adapters). An `S3BlobStore` — over Bun's native `S3Client`, no `aws-sdk`
+  dependency — ships alongside the fs backend and is selected by
+  `KLOE_BLOB_BACKEND` (`fs` | `s3`), so object storage is a config switch, not a
+  rewrite. Reach for it when the spec's own inflections bite: **multi-node**
+  (local disk isn't shared across worker boxes) or **serving offload**
+  (returning an `S3File` from a `Response` redirects the client to a presigned
+  URL — bytes never proxy through Bun; gate for auth since it bypasses the app's).
+- **When S3, self-host it** (Garage / MinIO / SeaweedFS), never AWS. Sending
+  private conversation data and agent artifacts off-box is the same mistake that
+  rules out Tangled pipelines below. Self-hosted keeps the S3 API and gains
+  replication/backup while staying private by construction.
+- **Bytes never go in the event sqlite** — they bloat the DB holding the hot
+  log and wreck WAL/backup. Refs and metadata in sqlite; bytes on fs/object
+  store.
+- **GC is refcount, driven by kloe**: a blob no live event references is
+  collectable (mark-sweep on a timer + deref on `deleteConversation`). Dedup
+  means deleting one conversation can't yank a blob another still references.
+  S3 lifecycle rules are age-based and can't do this, so kloe drives deletion
+  either way; bucket versioning is a safety net against a buggy sweep.
+- **Big data is touched through tools, not context.** A large dataset is a blob
+  the agent reads/writes via sandbox tools; only summaries or the needed slice
+  enter the prompt. Raw stdout is truncated into the log; only explicit
+  artifacts are blobbed.
+
+`POST /api/blobs` streams to the store while hashing (never buffers in RAM) and
+returns `{sha256, size, mime}`. `GET /api/blobs/:sha256` serves behind the same
+cookie/session auth as everything else, with immutable long-cache headers and a
+`Content-Disposition` from the reference's `name`. Access control is
+single-user today (is this *the* user); per-blob tenant scoping is deferred until
+kloe is actually multi-user.
+
+### Thinking (reasoning)
+
+Reasoning is another stream of durable parts on the assistant turn, not a
+separate feature. The catalog already exposes `reasoning_levels`/`can_reason`
+and the picker already renders a "reasoning" tag.
+
+- **Requesting it is adapter-specific**, so the level map lives where adapter
+  selection already branches on catwalk `type`: normalize kloe's own level
+  (`off | low | medium | high`) once, then map to `providerOptions` —
+  `anthropic.thinking = { type:"enabled", budgetTokens }`,
+  `openai.reasoningEffort`, others as they support it. `reasoningLevel` joins
+  `PromptBody` (and `SteerBody` inherits it); the client stores it beside the
+  model and shows the toggle only when the selected model has non-empty
+  `reasoningLevels`.
+- **The signature is the catch.** Anthropic extended-thinking blocks carry a
+  signature that must be sent back verbatim on the *next* turn when tools are in
+  play, or the API rejects it (OpenAI returns only a summary + an opaque item
+  id). So batch reasoning *text* for the live view, but persist the completed
+  block's `providerMetadata` durably on `reasoning-end`, and have `history()`
+  fold reasoning back into the assistant message **with** its signature. Rule:
+  reasoning text is reproducible (batch it); reasoning signature is
+  non-reproducible (fsync it). Preserve and resend `redacted_thinking` blocks;
+  never render them.
+- **Render as a collapsible thought block** above the answer — its own muted smd
+  region, streamed live, auto-collapsed to "Thought for Ns" on the first real
+  text delta. Handle all three real cases gracefully: raw thinking, summary
+  only, none.
+
+### Tools — the explicit, durable loop
+
+The AI SDK will run the whole tool loop itself (`stopWhen` + `tool.execute`).
+**Don't use that**: it executes tools *inside* one `streamText`, so a worker
+crash mid-tool re-runs the tool on reclaim — fine for a read-only search,
+catastrophic for a side-effecting one. Drive the loop explicitly and persist
+across the boundary:
+
+```
+run(messages):
+  loop:
+    step = streamText(model, messages, tools)   # one provider round-trip
+    stream text-delta / reasoning-delta         # batched
+    if step ends with tool-calls:
+      for each call:
+        persist tool-call            (DURABLE)
+        result = executor.run(call)  # ← the sandbox lives here
+        persist tool-result          (DURABLE)
+        append call + result to messages
+      continue                                   # feed results back
+    else: break                                  # normal stop
+```
+
+Because the tool-result is in the log **before** the model sees it, `history()`
+on reclaim replays it and the model continues from the stored result **rather
+than re-executing the tool**. That is the whole game for side-effecting tools.
+One job still equals one turn; it just spans several provider round-trips, which
+the existing heartbeat/lease/checkpoint already tolerate (checkpoint advances
+across tool boundaries).
+
+- **Tool registry** (`{name, description, inputSchema, riskLevel, executor}`),
+  enabled via the same opt-in curation UI as models.
+- **Tool calls render as cards, not markdown** — a collapsible region keyed by
+  `toolCallId` inside the current turn (name, args, spinner, result/preview).
+  smd stays for prose.
+- **Approval gate = the safety lever, and it reuses machinery you have.**
+  A tool declares risk. Read-only/pure → auto-run in-proc. Dangerous → emit the
+  `tool-call` with `status:"pending-approval"` and **park the run exactly like a
+  steer** (a durable event, no interrupt); the client shows Approve/Deny inline;
+  `POST /…/tools/:id/approve` enqueues the continuation. Multi-device approval
+  and resumability fall out for free — approve on a phone, the laptop's SSE
+  replay rebuilds the same state.
+
+### Sandboxing — reuse the spindle *engine*, not its pipelines
+
+Dangerous tools run in a microVM. The homelab already runs a **Tangled spindle**,
+whose execution engine is exactly a sandboxed command runner wearing a CI
+costume: a QEMU microVM per job, an in-guest agent (Shuttle) that dials back over
+**vsock/agentproto** and runs commands as an unprivileged user streaming
+stdout/stderr/exit, aggressive network-namespace isolation (RFC 6890 special
+addresses blackholed, private-IP DNS answers stripped), a work-conserving fair
+scheduler with cgroup limits, a nix binary cache, and uniform teardown. Reusing
+that is far better than hand-rolling nsjail/docker.
+
+**Integrate at the engine boundary, not the pipeline boundary.** Tangled
+pipelines are the wrong seam: they're triggered by public `sh.tangled.*` records
+and stream results to a public event stream — and Tangled has **no private
+repos**, so conversation data would be world-readable — and the record →
+Jetstream → clone → boot path is slow. None of that is inherent to *running a
+command*: vsock exec is host-local and touches no PDS.
+
+```
+kloe (SpindleExecutor) ──authed local API──► sandbox broker ──agentproto/vsock──► microVM
+   dangerous tool call                     (co-located w/ spindle)   Shuttle runs cmd
+   ◄──────────── streamed stdout/stderr/exit ─────────────────────────────┘
+```
+
+The **broker** is a thin daemon on the spindle host that reuses spindle's
+microVM engine (vendored packages, or a private "manual exec" mode added to
+spindle) but skips Jetstream/PDS/repo-clone and never publishes to the public
+event stream. Logs land in kloe's own log, private by construction. vsock is
+host-local, so the broker must live on the spindle box; kloe reaches it over an
+authed LAN API (a unix socket if co-located).
+
+**Executor tiers**, selected by a tool's risk level (same adapter-by-type
+spirit as providers): pure/read-only → **in-proc** (no VM); anything needing a
+sandbox → **microVM via the broker**.
+
+### The Nix sandbox as event-sourced, self-extending state
+
+The environment is defined **declaratively in Nix**, and that definition is part
+of the conversation's durable state — not hidden mutable state in a VM.
+
+- A `sandbox-spec` event records a declarative delta ("this env now also has
+  `nixpkgs#ffmpeg`, `git+…#tool`"). The **current environment is a fold** over
+  those events — the same shape as the steer queue and model curation.
+- On boot/reclaim/warm-pool assignment the broker **reconstructs the Nix spec
+  from the log** and activates it. The VM holds no state the log doesn't; a
+  disposable VM loses nothing.
+- **Replay reconstructs the toolset, not just the transcript.** Pin the nixpkgs
+  rev / flake lock and a conversation is byte-reproducible — the agent gets the
+  identical tools on re-run. This falls straight out of the event-log model.
+- **The agent extends itself** via an `add_tools({packages, flakes})` meta-tool:
+  it appends a `sandbox-spec` event, re-activates the warm VM (near-instant on a
+  cache hit), and subsequent `run_shell` calls see the new binaries. Declarative
+  beats imperative `curl | sh`: atomic, reproducible, rolls back to a generation
+  if it doesn't build. Services (postgres, headless chromium) come the same way
+  via NixOS `services`; a custom tool is a flake ref.
+- **The homelab cache compounds.** Every realized path is pushed back to
+  spindle's cache; the first use of a package builds, every use after is a
+  store-path realization. The cache becomes a shared, growing tool library
+  across all agent runs, so `add_tools` gets cheaper over time.
+- **Bounded supply chain = the safety model.** The agent can only pull from
+  substituters and flake sources you allow (and egress is namespace-restricted
+  anyway), so capability extension and supply-chain control are the *same*
+  mechanism.
+
+### Sandbox lifecycle — per-chat logically, pooled physically
+
+A sandbox-per-chat is clean but VMs must not pile up. Split the two lifetimes
+the same way a conversation (durable log, forever) and its actor (in-memory,
+idle-evicted) are already split:
+
+- **Logical sandbox = the folded manifest in the log.** A few hundred bytes of
+  sqlite per chat; a thousand chats = a thousand tiny manifests + *one shared
+  nix store*. Never evicted.
+- **Physical VM = materialized on demand, torn down aggressively.** Safe to
+  discard because the environment rebuilds from the fold. A hot/warm/cold
+  hierarchy:
+
+  | Tier | State | When |
+  |------|-------|------|
+  | Hot  | booted, RAM+vCPU live | chat actively running tools |
+  | Warm | QEMU memory snapshot to disk | recently active; fast restore |
+  | Cold | manifest only, in the log | rebuild on next call (cache-fast) |
+
+  Eviction is LRU on warm VMs under slot pressure; the sandbox gets its own idle
+  TTL, longer than the actor's (boot is expensive → more hysteresis).
+- **Capacity is spindle's job.** Its scheduler is work-conserving with per-user
+  fairness and acquires a slot before boot. So a tool call that needs a sandbox
+  is **a job waiting on a sandbox slot** — if the pool is full it stays queued,
+  the same lease/queue model already in the driver. kloe builds no VM scheduler.
+
+### Artifacts — the promotion path
+
+Tools are reproducible from the manifest, so they're disposable; files the agent
+*creates* are not, so they need an explicit path to durability:
+
+- **Workspace is ephemeral by default** and dies with the VM. **Rule: if it's
+  not promoted to a blob referenced in the log, it's scratch.** This is what
+  keeps VMs disposable and stops disk from accumulating.
+- **Promotion**: anything under `/workspace/outputs/` is auto-harvested on step
+  completion → blobbed → referenced in the `tool-result`; plus an explicit
+  `save_artifact({path})` for precision. Agent-produced files use the *same*
+  content-addressed blob store as user uploads — one mechanism.
+- **Two channels in/out of the VM, kept distinct**: the **nix store** (tools) is
+  spindle's read-only store disk + cache proxies; **data blobs** (inputs/outputs)
+  are kloe's — inputs mounted read-only (virtiofs/9p, zero-copy, uncorruptable),
+  outputs harvested after the step.
+- **Reuse is by sha256**: an artifact from turn 3 fed to a tool in turn 7 is
+  just its reference; the broker materializes the same blob into the new
+  workspace. No re-upload, no byte-copying.
+- **Render** like tool cards: image → inline thumbnail (user uploads and agent
+  images render identically); other → a download chip served from
+  `GET /api/blobs/:sha256`. **Opt-in persistent per-chat volume** exists for a
+  genuine long-lived project workspace, but it's a deliberate choice with its
+  own age/size GC — that's where disk pile-up would otherwise sneak back in.
+
+### New events (extend the enum)
+
+All AG-UI-aligned, `threadId`/`runId`-carrying, same as the base set:
+
+| Event | Durability | Payload sketch |
+|-------|-----------|----------------|
+| `reasoning-delta` | batched | `{ messageId, delta }` |
+| `tool-call` | durable | `{ toolCallId, toolName, input, riskLevel, status }` |
+| `tool-output-delta` | batched | `{ toolCallId, delta }` (streamed stdout) |
+| `tool-result` | durable | `{ toolCallId, output, artifacts[], exitCode? }` |
+| `sandbox-spec` | durable | `{ packages[], flakes[], services? }` (a fold delta) |
+
+`tool-call.status` covers `running | pending-approval | ok | denied | error`.
+Reasoning signatures ride `message-end` (or `reasoning-end`) rather than a delta.
+
+### Build sequence
+
+Land it in this order — each step is independently useful and proves one layer:
+
+1. **Blob store + attachments** — `BlobStore` (fs backend), `POST /api/blobs`,
+   `attachments[]` on user messages, thumbnails, image parts in `history()`. No
+   agentic loop yet.
+2. **Full-stream migration + one pure tool** (e.g. web search) — new `RunStep`
+   kinds, durable `tool-call`/`tool-result`, `history()` folding, tool cards.
+   In-proc executor, zero risk.
+3. **Thinking** — reasoning parts + adapter level map + the collapsible block +
+   signature preservation. (Shares the full-stream migration with step 2.)
+4. **Approval gate** — the parked `pending-approval` status over the steer/job
+   machinery.
+5. **`SpindleExecutor` + broker** — first dangerous tool (`run_shell`) over
+   agentproto; the `sandbox-spec` fold + `add_tools`; artifact promotion.
+6. **Sandbox lifecycle polish** — warm/cold tiers, slot-as-job, snapshot restore
+   — only when boot latency justifies it.
+
 ## Stack
  
 | Layer            | Choice                                                        |
@@ -387,6 +698,8 @@ above as the deferred path but are not built yet.
 | Code highlight   | Deferred to completed blocks (Shiki in a worker) — not built yet |
 | Event schema     | AG-UI-aligned typed events                                     |
 | Sync engine      | **None** in base build (see decision rules)                    |
+| Blob store       | Content-addressed (`sha256`), swappable backend via `KLOE_BLOB_BACKEND`: local-fs default + self-hosted S3 (Garage/MinIO/R2 via Bun `S3Client`) — **built**; endpoints/attachments next |
+| Tool sandbox     | microVM via a broker over Tangled spindle's engine (agentproto/vsock); Nix env as an event-sourced fold — *designed, not built* |
  
 ## When to add more (decision rules)
  
@@ -395,8 +708,9 @@ above as the deferred path but are not built yet.
 | High-frequency up-channel: voice, token-level barge-in, presence, live cursors | WebSockets (accept losing free resume) |
 | Offline authoring that must converge across devices        | Sync engine (TinyBase MergeableStore, ~6–13 KB, over a custom synchronizer riding the existing SSE/actor channel) |
 | Concurrent editing/reordering of past messages             | CRDT for those fields only            |
-| Horizontal scale across nodes                               | Back the actor's log/pubsub with Redis Streams + Pub/Sub, or Durable Objects |
+| Horizontal scale across nodes                               | Back the actor's log/pubsub with Redis Streams + Pub/Sub, or Durable Objects, **and** move blobs to a self-hosted S3-compatible store |
 | Richer CRDT data (trees, rich text)                        | Yjs (known quantity) or Loro (WASM cost) |
+| Model needs images/files, or tools that touch a real environment | The tools/attachments/sandboxing section — full-stream + durable parts + blob store; microVM via the spindle-engine broker for dangerous tools |
  
 Default to **not** adding these. Optimistic UI gives eagerness; the heavier tools
 buy *reconciliation*, which most of a chat UI never needs.
@@ -421,3 +735,21 @@ buy *reconciliation*, which most of a chat UI never needs.
   tab receives the server echo of a message it didn't originate.
 - Where the actor lives at scale (sticky in-proc vs. Durable Object) and the
   auth boundary in front of it.
+- Sandbox exec idempotency: if the worker dies after the microVM ran but before
+  the `tool-result` persisted, re-running risks a double side-effect. The honest
+  ceiling is to persist the result before acking the model and treat a crash in
+  that gap as a *failed* tool the user/model retries — tightened by a
+  broker-side idempotency key (`toolCallId`, don't boot a second VM for the same
+  key). Confirm this is enough, or whether a durable "exec-started" marker is
+  also needed.
+- Broker coupling: vendor spindle's microVM engine packages vs. add a private
+  "manual exec" mode to spindle. Which keeps upstream drift lowest while never
+  publishing to the public event stream?
+- Sandbox TTLs and warm-pool size: the sandbox idle TTL (vs. the actor's), how
+  many VMs to keep hot/warm, and whether snapshot-restore is worth the disk over
+  a cache-warm cold rebuild.
+- Persistent workspace volumes: when a chat should get a durable per-chat ext4
+  volume rather than an ephemeral one, and its age/size GC budget.
+- Blob GC cadence: refcount mark-sweep on delete is clear; open is the
+  background sweep interval and whether to keep a grace window before collecting
+  a newly-unreferenced blob.
