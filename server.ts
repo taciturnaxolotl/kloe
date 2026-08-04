@@ -61,6 +61,57 @@ if (import.meta.main) {
     "/og-image.png": file("og-image.png"),
   };
 
+  // KaTeX's stylesheet + fonts, served straight from the installed package (no
+  // vendoring, no CDN). The client injects the <link> at runtime on first math,
+  // so the bundler never resolves it and nothing math-related loads until used.
+  // The CSS references its fonts relatively, resolving under /vendor/fonts/.
+  const katexDir = new URL("./node_modules/katex/dist/", import.meta.url);
+  const vendorRoutes = {
+    "/vendor/katex.min.css": () =>
+      new Response(Bun.file(new URL("katex.min.css", katexDir)), {
+        headers: { "Content-Type": "text/css", "Cache-Control": "public, max-age=31536000, immutable" },
+      }),
+    "/vendor/fonts/:name": (req: Bun.BunRequest<"/vendor/fonts/:name">) => {
+      // Only a bare KaTeX font filename — never a path segment that could escape.
+      if (!/^KaTeX_[\w-]+\.(woff2|woff|ttf)$/.test(req.params.name)) {
+        return new Response("not found", { status: 404 });
+      }
+      return new Response(Bun.file(new URL("fonts/" + req.params.name, katexDir)), {
+        headers: { "Cache-Control": "public, max-age=31536000, immutable" },
+      });
+    },
+  };
+
+  // The enrichment bundle (Shiki + KaTeX) is heavy and optional, so it must NOT
+  // ride the app entry. Bun.serve's HTML bundler inlines dynamic imports, so we
+  // build enrich.js as its own SPLIT bundle here (splitting DOES work in
+  // Bun.build) and serve its outputs from /assets/. The client loads /assets/
+  // enrich.js via a runtime URL, so the app entry never pulls these libs and
+  // grammars load per-language only when a code/math block appears. Rebuilt on
+  // each (re)start — `--watch` picks up enrich.js edits.
+  const enrichBuild = await Bun.build({
+    entrypoints: [new URL("./src/client/enrich.js", import.meta.url).pathname],
+    target: "browser",
+    splitting: true,
+    minify: true,
+  });
+  const enrichAssets = new Map<string, Blob>();
+  for (const out of enrichBuild.outputs) {
+    enrichAssets.set(out.path.replace(/^\.?\//, ""), out);
+  }
+  const assetRoutes = {
+    "/assets/:file": (req: Bun.BunRequest<"/assets/:file">) => {
+      const a = enrichAssets.get(req.params.file);
+      if (!a) return new Response("not found", { status: 404 });
+      return new Response(a, {
+        headers: {
+          "Content-Type": a.type || "text/javascript",
+          "Cache-Control": "public, max-age=31536000, immutable",
+        },
+      });
+    },
+  };
+
   const port = getConfig().server.port;
   // The SSE stream is intentionally long-lived and can sit idle between
   // generations. Bun's default idleTimeout is 10s — shorter than our 15s
@@ -76,7 +127,11 @@ if (import.meta.main) {
       "/settings": settingsHTML,
       "/conversations": conversationsHTML,
       ...staticRoutes,
-      ...apiRoutes({ store, blobs }),
+      ...vendorRoutes,
+      ...assetRoutes,
+      // `kick` claims a just-enqueued job immediately instead of waiting for the
+      // 1s poll tick below; the poll remains as a fallback (and for the worker).
+      ...apiRoutes({ store, blobs, kick: () => void driver.driveOnce() }),
     },
   });
   console.log(`kloe listening on http://localhost:${port}`);

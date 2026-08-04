@@ -255,6 +255,11 @@ body.selecting #selectBtn { order: 4; }
 .turn:hover .meta, .turn:focus-within .meta, .turn.generating .meta { opacity: 1; }
 .turn .body > :first-child { margin-top: 0; }
 .turn .body > :last-child { margin-bottom: 0; }
+/* Prose is a block within the turn body; trim the first/last inner margins so a
+   block sits flush, and space sibling blocks (a later tool/thinking block). */
+.turn .body .block + .block { margin-top: 14px; }
+.turn .body .prose > :first-child { margin-top: 0; }
+.turn .body .prose > :last-child { margin-bottom: 0; }
 .turn .body p { margin: 0 0 12px; }
 .turn .body code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-sunk);
   border: 1px solid var(--rule); border-radius: var(--radius-xs); padding: 0.05em 0.35em; }
@@ -272,10 +277,22 @@ body.selecting #selectBtn { order: 4; }
 .turn .body th, .turn .body td { border: 1px solid var(--rule); padding: 4px 9px; text-align: left; }
 .turn .body img { max-width: 100%; border-radius: var(--radius-sm); }
 /* streaming caret (spec: blinking caret at the stream head), no injected node */
-.turn.generating .body::after { content: ""; display: inline-block; width: 7px; height: 1.05em;
+.turn.generating .prose::after { content: ""; display: inline-block; width: 7px; height: 1.05em;
   vertical-align: text-bottom; margin-left: 1px; background: var(--accent); border-radius: 1px;
   animation: blink 1s steps(2) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
+
+/* Shiki highlighting: tokens carry --shiki-light/--shiki-dark; pick per theme.
+   The app's own pre/code chrome (bg, border, padding) is kept — only colors change. */
+.turn .body pre code.hl span { color: var(--shiki-light); }
+@media (prefers-color-scheme: dark) { .turn .body pre code.hl span { color: var(--shiki-dark); } }
+:root[data-theme="light"] .turn .body pre code.hl span { color: var(--shiki-light); }
+:root[data-theme="dark"] .turn .body pre code.hl span { color: var(--shiki-dark); }
+
+/* KaTeX math. Inline flows with text; display centers on its own line. */
+.turn .body .math-inline { white-space: nowrap; }
+.turn .body .math-display { display: block; overflow-x: auto; margin: 12px 0; text-align: center; }
+.turn .body .math-inline .katex, .turn .body .math-display .katex { font-size: 1.02em; }
 
 .turn.pending { opacity: .6; }
 .turn.failed .body { color: var(--ink-muted); }

@@ -25,7 +25,21 @@ import { mountDialogs } from "./confirm.js";
 (function () {
   "use strict";
 
-  var SEND = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>';
+  // Lazily load the enrichment bundle (Shiki + KaTeX) from /assets on first code
+  // or math block. The URL is computed so the app bundler leaves it external —
+  // the heavy grammars never touch the app entry, and text-only chats never
+  // fetch them. Fail-soft: if it can't load, prose stays as plain markdown.
+  var _enrich;
+  function enrich(el) {
+    if (!_enrich) {
+      _enrich = import(new URL("/assets/enrich.js", document.baseURI).href)
+        .then(function (m) { return m.enrich; })
+        .catch(function () { return function () {}; });
+    }
+    _enrich.then(function (fn) { fn(el); });
+  }
+
+  var SEND ='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>';
 
   var $ = function (id) { return document.getElementById(id); };
   var thread = $("thread"), scroll = $("scroll"), jump = $("jump");
@@ -181,10 +195,23 @@ import { mountDialogs } from "./confirm.js";
   // so there's no untrusted HTML string to purify — only the href/src the
   // wrapped renderer already guarded.
   function finalize(renderer) { return !!(renderer && renderer._stripped); }
-  function renderStaticMd(el, text) {
+  // A turn body is an ordered container of blocks; markdown (user text, or a
+  // streamed assistant turn) lives in a `.block.prose`. Tool/thinking blocks
+  // (later) append as their own block types alongside it.
+  function proseBlock(container) {
+    var el = document.createElement("div");
+    el.className = "block prose";
+    container.appendChild(el);
+    return el;
+  }
+  // Static (non-streamed) markdown: render into a fresh prose block, then run the
+  // completed-block enhancers (code highlight, math). Returns whether a URL was stripped.
+  function renderStaticMd(container, text) {
+    var el = proseBlock(container);
     var np = newParser(el);
     smd.parser_write(np.parser, text);
     smd.parser_end(np.parser);
+    enrich(el);
     return finalize(np.renderer);
   }
 
@@ -327,9 +354,10 @@ import { mountDialogs } from "./confirm.js";
     if (msgs[messageId]) return msgs[messageId];
     var t = makeTurn("Assistant", "generating");
     var body = t.querySelector(".body");
-    var np = newParser(body);
+    var prose = proseBlock(body); // deltas stream into this block
+    var np = newParser(prose);
     var rec = {
-      turn: t, body: body, meta: t.querySelector(".meta"),
+      turn: t, body: body, prose: prose, meta: t.querySelector(".meta"),
       parser: np.parser, renderer: np.renderer, buf: "",
       startedAt: Date.now(), firstDeltaAt: 0,
     };
@@ -341,6 +369,7 @@ import { mountDialogs } from "./confirm.js";
     if (rec.buf) { smd.parser_write(rec.parser, rec.buf); rec.buf = ""; }
     smd.parser_end(rec.parser);
     var stripped = finalize(rec.renderer);
+    enrich(rec.prose); // completed turn: highlight code, render math
     rec.turn.classList.remove("generating");
     if (finishReason === "aborted") {
       rec.meta.textContent = "";

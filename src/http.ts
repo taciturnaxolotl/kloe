@@ -381,8 +381,12 @@ function patchModel(data: ModelPatchBody, store: Store): Response {
  * handler runs. Everything dynamic lives under `/api/` so a future service
  * worker can bypass it cleanly and cache only the static shell.
  */
-export function apiRoutes(deps: { store: Store; blobs: BlobStore }) {
+export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => void }) {
   const { store, blobs } = deps;
+  // Nudge the drive loop to claim a freshly enqueued job NOW instead of waiting
+  // for the next poll tick (that poll delay is up to ~1s of pure queue-wait on
+  // every message). No-op in tests, which drive jobs manually.
+  const kick = deps.kick ?? (() => {});
   return {
     "/health": { GET: () => Response.json({ ok: true }) },
 
@@ -425,8 +429,11 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore }) {
         openStream(req.params.id, req, store),
     },
     "/api/conversations/:id/prompt": {
-      POST: withBody(PromptBody, (data, req: Bun.BunRequest<"/api/conversations/:id/prompt">) =>
-        startRun(req.params.id, data, store)),
+      POST: withBody(PromptBody, (data, req: Bun.BunRequest<"/api/conversations/:id/prompt">) => {
+        const res = startRun(req.params.id, data, store);
+        kick();
+        return res;
+      }),
     },
     "/api/conversations/:id/cancel": {
       POST: (req: Bun.BunRequest<"/api/conversations/:id/cancel">) => {
@@ -435,8 +442,11 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore }) {
       },
     },
     "/api/conversations/:id/steer": {
-      POST: withBody(SteerBody, (data, req: Bun.BunRequest<"/api/conversations/:id/steer">) =>
-        startSteer(req.params.id, data, store)),
+      POST: withBody(SteerBody, (data, req: Bun.BunRequest<"/api/conversations/:id/steer">) => {
+        const res = startSteer(req.params.id, data, store);
+        kick();
+        return res;
+      }),
       GET: (req: Bun.BunRequest<"/api/conversations/:id/steer">) =>
         Response.json({ queued: store.pendingQueue(req.params.id) }),
     },
