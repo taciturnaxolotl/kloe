@@ -202,11 +202,11 @@ test("history: an image attachment becomes an image part when the model supports
 
   const msgs = await a.history({ blobs, supportsImages: true });
   expect(msgs).toHaveLength(1);
-  const parts = msgs[0]!.content as Array<{ type: string; text?: string; image?: Uint8Array; mediaType?: string }>;
+  const parts = msgs[0]!.content as Array<{ type: string; text?: string; data?: Uint8Array; mediaType?: string }>;
   expect(parts[0]).toEqual({ type: "text", text: "look" });
-  expect(parts[1]!.type).toBe("image");
+  expect(parts[1]!.type).toBe("file"); // AI SDK file part with an image mediaType
   expect(parts[1]!.mediaType).toBe("image/png");
-  expect(new TextDecoder().decode(parts[1]!.image!)).toBe("PNGBYTES");
+  expect(new TextDecoder().decode(parts[1]!.data!)).toBe("PNGBYTES");
 });
 
 test("history: an image degrades to a sandbox note when the model can't see images", async () => {

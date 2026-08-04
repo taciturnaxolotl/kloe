@@ -376,9 +376,45 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
 .queue .qcount { font-family: var(--mono); font-size: 10px; line-height: 1.5; color: var(--ink-muted);
   background: color-mix(in srgb, var(--ink) 8%, transparent); border-radius: var(--radius-pill); padding: 0 6px; }
 .queue .qitems { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 5px; }
-.queue .qitems li { display: flex; align-items: baseline; font-size: 13px; color: var(--ink-muted);
-  min-width: 0; }
+.queue .qitems li { display: flex; align-items: flex-start; gap: 8px; font-size: 13px;
+  color: var(--ink-muted); min-width: 0; }
+.queue .qmain { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 5px; }
 .queue .qtext { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queue .qx { flex: none; width: 20px; height: 20px; border: 0; background: none; cursor: pointer;
+  color: var(--ink-faint); font-size: 16px; line-height: 1; border-radius: var(--radius-xs); }
+.queue .qx:hover { color: var(--err); background: color-mix(in srgb, var(--err) 12%, transparent); }
+
+/* ---- attachments ------------------------------------------------------- */
+/* Staged tray inside the composer (before send). The card has no top padding,
+   so the tray provides its own; horizontal 8px aligns chips with the textarea. */
+.staged { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 8px 2px; }
+.staged.hidden { display: none; }
+.staged .chip { position: relative; display: inline-flex; align-items: center; gap: 6px;
+  max-width: 220px; padding: 4px 8px; border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-md); background: var(--bg-sunk); font-size: 12px; }
+.staged .chip.uploading { opacity: .55; }
+.staged .chip .fi svg { width: 15px; height: 15px; color: var(--ink-muted); display: block; }
+.staged .chip img { width: 28px; height: 28px; object-fit: cover; border-radius: var(--radius-xs); }
+.staged .chip .nm { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
+.staged .chip .x { flex: none; width: 18px; height: 18px; border: 0; background: none; cursor: pointer;
+  color: var(--ink-faint); font-size: 15px; line-height: 1; border-radius: var(--radius-xs); }
+.staged .chip .x:hover { color: var(--err); }
+
+/* Rendered attachments on a turn (and in queue previews). */
+.attachments { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.attachments .att { display: inline-flex; text-decoration: none; }
+/* Beat `.turn .body a`'s underline (higher specificity) — chips aren't prose links. */
+.turn .body .attachments a, .attachments .att:hover { text-decoration: none; }
+.attachments .att.img img { max-width: 260px; max-height: 260px; border-radius: var(--radius-sm);
+  border: 1px solid var(--rule); display: block; }
+.attachments .att.file { align-items: center; gap: 7px; max-width: 240px; padding: 6px 10px;
+  border: 1px solid var(--rule-strong); border-radius: var(--radius-md); background: var(--bg-sunk); font-size: 13px; }
+.attachments .att.file:hover { border-color: var(--accent); }
+.attachments .att.file .fi svg { width: 16px; height: 16px; color: var(--ink-muted); display: block; }
+.attachments .att.file .nm { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
+
+/* Composer drop target while dragging files over it. */
+.card.drop { border-color: var(--accent); border-style: dashed; }
 
 /* ---- settings ---------------------------------------------------------- */
 .setpage { max-width: 760px; margin: 0 auto; padding: 14px 16px 60px; width: 100%; }

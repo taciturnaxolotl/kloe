@@ -19,7 +19,9 @@ import type { BlobStore } from "./blobs";
 /** A user-message content part while building model messages. */
 type UserPart =
   | { type: "text"; text: string }
-  | { type: "image"; image: Uint8Array; mediaType: string };
+  // AI SDK's image part is deprecated; images ride as file parts with an
+  // `image/*` mediaType, which vision models consume the same way.
+  | { type: "file"; data: Uint8Array; mediaType: string };
 
 /** Options controlling how `history()` renders attachments for the model. */
 export interface HistoryOptions {
@@ -265,7 +267,7 @@ export class ConversationActor {
     const isImage = a.kind === "image" || a.mime.startsWith("image/");
     if (isImage && opts.supportsImages && opts.blobs) {
       const blob = await opts.blobs.get(a.sha256);
-      if (blob) return { type: "image", image: new Uint8Array(await blob.arrayBuffer()), mediaType: a.mime };
+      if (blob) return { type: "file", data: new Uint8Array(await blob.arrayBuffer()), mediaType: a.mime };
     }
     if (isTextLike(a.mime) && opts.blobs && (size === undefined || size <= ATTACHMENT_INLINE_TEXT_MAX)) {
       const blob = await opts.blobs.get(a.sha256);

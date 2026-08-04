@@ -34,6 +34,7 @@ import { mountDialogs } from "./confirm.js";
   var pill = $("pill"), pillModel = $("pillModel"), picker = $("picker");
   var ctx = $("ctx"), ctxbar = $("ctxbar"), ctxpct = $("ctxpct");
   var queueEl = $("queue"), queueCount = $("queueCount"), queueItems = $("queueItems");
+  var stagedEl = $("staged"), attachBtn = $("attach");
 
   // ---- state -------------------------------------------------------------
   var convId = null;          // current conversation id
@@ -43,9 +44,105 @@ import { mountDialogs } from "./confirm.js";
   var models = [], selected = null;
   var msgs = Object.create(null);      // messageId -> assistant render record
   var pending = Object.create(null);   // runId -> optimistic user turn awaiting echo
-  var queued = Object.create(null);    // runId -> queued steer content (staging panel only)
+  var queued = Object.create(null);    // runId -> { content, attachments } (staging panel)
   var flushHandle = null;
   var lastUsage = null;                // real token usage from the last completed turn
+  var staged = [];                     // attachments uploaded and waiting on the next send
+
+  // ---- attachments -------------------------------------------------------
+  // Uploads go to the content-addressed blob store first; the send/steer body
+  // then carries lightweight refs ({sha256,name,mime,kind}), never bytes.
+  var IMG = /^image\//;
+  function attKind(mime) { return IMG.test(mime) ? "image" : "file"; }
+  // Serve URL for a stored blob, carrying the original name so a download keeps it.
+  function blobUrl(a) {
+    return "/api/blobs/" + encodeURIComponent(a.sha256) + "?name=" + encodeURIComponent(a.name);
+  }
+  var FILE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/></svg>';
+
+  function uploadingCount() {
+    var n = 0;
+    for (var i = 0; i < staged.length; i++) if (staged[i].uploading) n++;
+    return n;
+  }
+  // A ref suitable for the message body (drops local-only fields).
+  function attachmentRef(it) { return { sha256: it.sha256, name: it.name, mime: it.mime, kind: it.kind }; }
+
+  async function uploadOne(file) {
+    var it = { name: file.name || "file", mime: file.type || "application/octet-stream",
+               kind: attKind(file.type || ""), sha256: null, uploading: true,
+               url: IMG.test(file.type || "") ? URL.createObjectURL(file) : null };
+    staged.push(it);
+    renderStaged(); updateSend();
+    try {
+      var res = await fetch("/api/blobs", { method: "POST", headers: { "content-type": it.mime }, body: file });
+      if (!res.ok) throw new Error("upload failed (" + res.status + ")");
+      var j = await res.json();
+      it.sha256 = j.sha256; it.uploading = false;
+    } catch (e) {
+      // Drop a failed upload from the tray; nothing was staged for send.
+      var i = staged.indexOf(it); if (i >= 0) staged.splice(i, 1);
+      if (it.url) URL.revokeObjectURL(it.url);
+      console.warn("attachment:", e && e.message);
+    }
+    renderStaged(); updateSend();
+  }
+  function stageFiles(list) {
+    if (!list || !list.length) return;
+    for (var i = 0; i < list.length; i++) uploadOne(list[i]);
+  }
+  function removeStaged(it) {
+    var i = staged.indexOf(it); if (i < 0) return;
+    staged.splice(i, 1);
+    if (it.url) URL.revokeObjectURL(it.url);
+    renderStaged(); updateSend();
+  }
+  function clearStaged() {
+    for (var i = 0; i < staged.length; i++) if (staged[i].url) URL.revokeObjectURL(staged[i].url);
+    staged = [];
+    renderStaged(); updateSend();
+  }
+  function renderStaged() {
+    stagedEl.classList.toggle("hidden", staged.length === 0);
+    stagedEl.innerHTML = "";
+    staged.forEach(function (it) {
+      var chip = document.createElement("div");
+      chip.className = "chip" + (it.uploading ? " uploading" : "") + (it.kind === "image" ? " img" : "");
+      if (it.kind === "image" && it.url) {
+        var img = document.createElement("img");
+        img.src = it.url; img.alt = it.name; chip.appendChild(img);
+      } else {
+        var ic = document.createElement("span"); ic.className = "fi"; ic.innerHTML = FILE_SVG; chip.appendChild(ic);
+      }
+      var nm = document.createElement("span"); nm.className = "nm"; nm.textContent = it.name; chip.appendChild(nm);
+      var x = document.createElement("button");
+      x.type = "button"; x.className = "x"; x.setAttribute("aria-label", "Remove " + it.name); x.textContent = "×";
+      x.onclick = function () { removeStaged(it); };
+      chip.appendChild(x);
+      stagedEl.appendChild(chip);
+    });
+  }
+  // Renders a turn's attachments (images as thumbnails, other files as chips).
+  function renderAttachments(container, attachments) {
+    if (!attachments || !attachments.length) return;
+    var wrap = document.createElement("div");
+    wrap.className = "attachments";
+    attachments.forEach(function (a) {
+      var link = document.createElement("a");
+      link.href = blobUrl(a); link.target = "_blank"; link.rel = "noopener noreferrer";
+      if (a.kind === "image") {
+        link.className = "att img";
+        var img = document.createElement("img"); img.src = blobUrl(a); img.alt = a.name; img.loading = "lazy";
+        link.appendChild(img);
+      } else {
+        link.className = "att file"; link.setAttribute("download", a.name);
+        var ic = document.createElement("span"); ic.className = "fi"; ic.innerHTML = FILE_SVG; link.appendChild(ic);
+        var nm = document.createElement("span"); nm.className = "nm"; nm.textContent = a.name; link.appendChild(nm);
+      }
+      wrap.appendChild(link);
+    });
+    container.appendChild(wrap);
+  }
 
   // ---- streaming-markdown rendering --------------------------------------
   // Wrap smd's default renderer to harden URLs. smd never emits raw HTML tags
@@ -135,7 +232,9 @@ import { mountDialogs } from "./confirm.js";
     $("stop").style.display = streaming ? "inline-flex" : "none";
     send.style.display = streaming ? "none" : "inline-flex";
     send.innerHTML = SEND;
-    var has = input.value.trim().length > 0 && selected;
+    // Sendable with text OR staged attachments; blocked while an upload is still
+    // in flight (its sha256 isn't known yet, so the ref would be incomplete).
+    var has = (input.value.trim().length > 0 || staged.length > 0) && selected && uploadingCount() === 0;
     send.className = "send" + (has ? " ready" : "");
     send.disabled = !has;
     send.setAttribute("aria-label", "Send");
@@ -156,6 +255,7 @@ import { mountDialogs } from "./confirm.js";
     pending = Object.create(null);
     queued = Object.create(null);
     renderQueue();
+    clearStaged();
     streaming = false;
     lastUsage = null;
     if (flushHandle) { cancelAnimationFrame(flushHandle); flushHandle = null; }
@@ -171,13 +271,15 @@ import { mountDialogs } from "./confirm.js";
     return t;
   }
 
-  function optimisticUser(content, runId) {
+  function optimisticUser(content, runId, attachments) {
     var t = makeTurn("You", "pending");
-    renderStaticMd(t.querySelector(".body"), content);
+    var body = t.querySelector(".body");
+    if (content) renderStaticMd(body, content);
+    renderAttachments(body, attachments);
     autoScroll();
-    pending[runId] = { turn: t, content: content };
+    pending[runId] = { turn: t, content: content, attachments: attachments };
   }
-  function confirmUser(runId, content) {
+  function confirmUser(runId, content, attachments) {
     // A queued steer being promoted by the flush: drop it from the staging
     // panel — it now enters the thread as a real turn (rendered fresh below,
     // the first time it appears there).
@@ -186,13 +288,20 @@ import { mountDialogs } from "./confirm.js";
     if (p) { p.turn.classList.remove("pending", "failed"); delete pending[runId]; return; }
     // Not ours (history, another device, or a promoted steer): render fresh.
     var t = makeTurn("You");
-    renderStaticMd(t.querySelector(".body"), content);
+    var body = t.querySelector(".body");
+    if (content) renderStaticMd(body, content);
+    renderAttachments(body, attachments);
     autoScroll();
   }
-  function confirmQueued(runId, content) {
+  function confirmQueued(runId, content, attachments) {
     // Staging only: queued steers never enter the thread until promoted. The
     // panel is the single view of the pending queue.
-    queued[runId] = content;
+    queued[runId] = { content: content, attachments: attachments };
+    renderQueue();
+  }
+  function confirmCancelled(runId) {
+    if (queued[runId] === undefined) return;
+    delete queued[runId];
     renderQueue();
   }
   function failUser(runId) {
@@ -208,7 +317,7 @@ import { mountDialogs } from "./confirm.js";
     btn.type = "button"; btn.textContent = "Retry";
     btn.onclick = function () {
       p.turn.remove(); delete pending[runId];
-      doSend(p.content, runId);
+      doSend(p.content, runId, p.attachments);
     };
     fb.appendChild(btn);
     p.turn.querySelector(".body").appendChild(fb);
@@ -279,10 +388,13 @@ import { mountDialogs } from "./confirm.js";
   function applyEvent(name, data) {
     switch (name) {
       case "user-message":
-        confirmUser(data.runId, data.content);
+        confirmUser(data.runId, data.content, data.attachments);
         break;
       case "queued-message":
-        confirmQueued(data.runId, data.content);
+        confirmQueued(data.runId, data.content, data.attachments);
+        break;
+      case "queued-cancelled":
+        confirmCancelled(data.runId);
         break;
       case "message-start":
         streaming = true;
@@ -330,8 +442,8 @@ import { mountDialogs } from "./confirm.js";
     // events reconstruct the steer queue on their own — no separate fetch needed.
     var es = new EventSource("/api/conversations/" + encodeURIComponent(id) + "/stream");
     source = es;
-    ["user-message", "queued-message", "run-started", "message-start", "text-delta",
-     "message-end", "run-error", "cancelled"].forEach(function (nm) {
+    ["user-message", "queued-message", "queued-cancelled", "run-started", "message-start",
+     "text-delta", "message-end", "run-error", "cancelled"].forEach(function (nm) {
       es.addEventListener(nm, function (ev) {
         var data; try { data = JSON.parse(ev.data); } catch (_) { return; }
         applyEvent(nm, data);
@@ -360,25 +472,34 @@ import { mountDialogs } from "./confirm.js";
   }
   function submit() {
     var content = input.value.trim();
-    if (!content || !selected) return;
-    input.value = ""; autosize();
+    // Sendable with text or attachments; nothing to send if both are empty.
+    if ((!content && staged.length === 0) || !selected || uploadingCount() > 0) return;
+    var attachments = staged.map(attachmentRef);
+    input.value = ""; autosize(); clearStaged();
     var runId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
     // While a run is in flight the message joins the steer queue; otherwise it
     // starts a run.
-    if (streaming) { doSteer(content, runId); return; }
-    doSend(content, runId);
+    if (streaming) { doSteer(content, runId, attachments); return; }
+    doSend(content, runId, attachments);
+  }
+  // Only send `attachments` in the body when there are some, so a plain text
+  // message stays byte-identical to before.
+  function bodyFor(content, runId, attachments) {
+    var b = { content: content, model: selected.ref, runId: runId };
+    if (attachments && attachments.length) b.attachments = attachments;
+    return JSON.stringify(b);
   }
   // Optimistic apply now, POST after: the user's turn is on screen before the
   // request leaves. Reconciled by the server's user-message echo (same runId).
-  async function doSend(content, runId) {
+  async function doSend(content, runId, attachments) {
     var wasNew = !hasConversation(convId);
-    optimisticUser(content, runId);
+    optimisticUser(content, runId, attachments);
     streaming = true; updateSend(); // job is queued + cancellable even pre-first-token
     try {
       var res = await fetch("/api/conversations/" + encodeURIComponent(convId) + "/prompt", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content: content, model: selected.ref, runId: runId }),
+        body: bodyFor(content, runId, attachments),
       });
       if (!res.ok) {
         streaming = false; updateSend();
@@ -387,7 +508,7 @@ import { mountDialogs } from "./confirm.js";
         if (err.error) console.warn("prompt rejected:", err.error);
         return;
       }
-      if (wasNew) { title.textContent = content.slice(0, 80); setDocTitle(content.slice(0, 80)); setTimeout(loadConversations, 400); }
+      if (wasNew && content) { title.textContent = content.slice(0, 80); setDocTitle(content.slice(0, 80)); setTimeout(loadConversations, 400); }
     } catch (e) {
       streaming = false; updateSend();
       failUser(runId);
@@ -396,14 +517,14 @@ import { mountDialogs } from "./confirm.js";
   // Steer mid-run: the message joins the staging queue above the composer and
   // flushes with the whole queue as one batched run when the current run ends.
   // It enters the thread only once the flush promotes it (its user-message echo).
-  async function doSteer(content, runId) {
-    queued[runId] = content;
+  async function doSteer(content, runId, attachments) {
+    queued[runId] = { content: content, attachments: attachments };
     renderQueue();
     try {
       var res = await fetch("/api/conversations/" + encodeURIComponent(convId) + "/steer", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content: content, model: selected.ref, runId: runId }),
+        body: bodyFor(content, runId, attachments),
       });
       if (!res.ok) {
         var err = await res.json().catch(function () { return {}; });
@@ -413,6 +534,15 @@ import { mountDialogs } from "./confirm.js";
     } catch (e) {
       if (queued[runId] !== undefined) { delete queued[runId]; renderQueue(); }
     }
+  }
+  // Remove a still-pending steer. Optimistic: drop it locally now, then DELETE;
+  // the queued-cancelled echo keeps other devices in sync (idempotent here).
+  async function cancelSteer(runId) {
+    delete queued[runId]; renderQueue();
+    try {
+      await fetch("/api/conversations/" + encodeURIComponent(convId) + "/steer/" + encodeURIComponent(runId),
+        { method: "DELETE" });
+    } catch (e) { /* the panel already reflects the removal */ }
   }
   function stop() {
     if (!streaming) return;
@@ -440,10 +570,20 @@ import { mountDialogs } from "./confirm.js";
     queueCount.textContent = ids.length;
     queueItems.innerHTML = "";
     ids.forEach(function (runId) {
+      var item = queued[runId];
       var li = document.createElement("li");
+      var main = document.createElement("div");
+      main.className = "qmain";
       var text = document.createElement("span");
-      text.className = "qtext"; text.textContent = queued[runId];
-      li.appendChild(text);
+      text.className = "qtext";
+      text.textContent = item.content || (item.attachments && item.attachments.length ? "" : "");
+      main.appendChild(text);
+      if (item.attachments && item.attachments.length) renderAttachments(main, item.attachments);
+      li.appendChild(main);
+      var x = document.createElement("button");
+      x.type = "button"; x.className = "qx"; x.setAttribute("aria-label", "Remove from queue"); x.textContent = "×";
+      x.onclick = function () { cancelSteer(runId); };
+      li.appendChild(x);
       queueItems.appendChild(li);
     });
   }
@@ -526,6 +666,27 @@ import { mountDialogs } from "./confirm.js";
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
   });
   $("stop").addEventListener("click", function () { if (streaming) stop(); });
+
+  // Attachments: a hidden file input behind the paperclip, plus drag-drop onto
+  // the composer and image paste from the clipboard. All routes funnel to
+  // stageFiles → upload → staged tray.
+  var fileInput = document.createElement("input");
+  fileInput.type = "file"; fileInput.multiple = true; fileInput.style.display = "none";
+  document.body.appendChild(fileInput);
+  attachBtn.addEventListener("click", function () { fileInput.click(); });
+  fileInput.addEventListener("change", function () { stageFiles(fileInput.files); fileInput.value = ""; });
+  composer.addEventListener("dragover", function (e) { e.preventDefault(); composer.classList.add("drop"); });
+  composer.addEventListener("dragleave", function (e) {
+    if (e.target === composer || !composer.contains(e.relatedTarget)) composer.classList.remove("drop");
+  });
+  composer.addEventListener("drop", function (e) {
+    e.preventDefault(); composer.classList.remove("drop");
+    if (e.dataTransfer && e.dataTransfer.files) stageFiles(e.dataTransfer.files);
+  });
+  input.addEventListener("paste", function (e) {
+    var items = e.clipboardData && e.clipboardData.files;
+    if (items && items.length) { e.preventDefault(); stageFiles(items); }
+  });
   pill.addEventListener("click", function () { if (picker.hidden) openPicker(); else closePicker(); });
   document.addEventListener("click", function (e) {
     if (!picker.hidden && !picker.contains(e.target) && e.target !== pill && !pill.contains(e.target)) closePicker();
