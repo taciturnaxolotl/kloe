@@ -410,6 +410,9 @@ export class ConversationActor {
       // that's a clean stop, not an error. Anything else is a real failure.
       if (!this.isCancelled()) {
         errored = true;
+        // Also log server-side: the RunErr event reaches the client, but the
+        // terminal is where you're watching, and a stack is more diagnostic.
+        console.error(`[run ${runId}] provider error:`, err);
         this.persist(Event.RunErr, {
           runId,
           threadId: this.conversationId,

@@ -1,9 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { Store, parseJobParams, type JobParams } from "./store";
-import { ConversationActor } from "./actor";
+import type { ModelMessage } from "ai";
+import { Store, parseJobParams, type JobParams, type JobRow } from "./store";
+import { ConversationActor, type RunStep } from "./actor";
 import { run, modelSupportsImages } from "./inference";
 import type { BlobStore } from "./blobs";
 import { LEASE_GRACE_MS, HEARTBEAT_INTERVAL_MS } from "./config";
+
+/** Per-run stage timings, filled as a run progresses; logged when KLOE_DEBUG is set. */
+const LOG_TIMING = process.env.KLOE_DEBUG === "1" || process.env.KLOE_DEBUG === "true";
+interface RunTiming {
+  historyMs: number;
+  firstTokenAt: number;
+  chunks: number;
+}
 
 /**
  * The fields a runnable generation needs, whatever its source. The prompt is
@@ -58,6 +67,7 @@ export class JobDriver {
   async driveOnce(): Promise<void> {
     const row = this.store.claimExpiredExclusive(Date.now());
     if (!row) return;
+    const claimedAt = Date.now();
     if (this.activeRuns.has(row.conversation_id)) {
       // The previous run is still finishing up; hand the job back so the
       // next poll picks it up immediately instead of waiting for the lease
@@ -81,11 +91,12 @@ export class JobDriver {
     const leaseRefresh = setInterval(() => {
       this.store.heartbeat(row.id, Date.now() + LEASE_GRACE_MS);
     }, HEARTBEAT_INTERVAL_MS);
+    const timing: RunTiming = { historyMs: 0, firstTokenAt: 0, chunks: 0 };
     try {
       if (params.kind === "flush") {
-        await this.flushQueue(row.id, actor);
+        await this.flushQueue(row.id, actor, timing);
       } else {
-        await this.runSpec(row.id, actor, params);
+        await this.runSpec(row.id, actor, params, timing);
       }
       this.store.markDone(row.id);
     } catch {
@@ -93,6 +104,7 @@ export class JobDriver {
     } finally {
       clearInterval(leaseRefresh);
       this.activeRuns.delete(row.conversation_id);
+      if (LOG_TIMING) logTiming(row, claimedAt, timing);
     }
   }
 
@@ -105,7 +117,7 @@ export class JobDriver {
    * stale flush job — e.g. after a crash between promote and completion —
    * just completes).
    */
-  private async flushQueue(jobId: string, actor: ConversationActor): Promise<void> {
+  private async flushQueue(jobId: string, actor: ConversationActor, timing?: RunTiming): Promise<void> {
     const msgs = this.store.pendingQueue(actor.conversationId);
     if (msgs.length === 0) return;
 
@@ -114,24 +126,25 @@ export class JobDriver {
       runId: msgs[0]!.runId,
       messageId: randomUUID(),
       model: msgs[msgs.length - 1]!.model,
-    });
+    }, timing);
   }
 
   /** Streams one generation through the actor, checkpointing as it goes. */
-  private async runSpec(jobId: string, actor: ConversationActor, spec: RunSpec): Promise<void> {
+  private async runSpec(jobId: string, actor: ConversationActor, spec: RunSpec, timing?: RunTiming): Promise<void> {
     // Snapshot the conversation (the promoted user messages are already in the
     // log) so the generation carries full context, not just the last message.
     // Attachments are resolved to model parts here (image / inline text / note),
     // gated on whether the target model accepts images.
+    const hStart = Date.now();
     const messages = await actor.history({
       blobs: this.blobs,
       supportsImages: modelSupportsImages(spec.model),
     });
+    if (timing) timing.historyMs = Date.now() - hStart;
     await actor.runText(
       spec.runId,
       spec.messageId,
-      (signal) =>
-        run(messages, { runId: spec.runId, model: spec.model, abortSignal: signal }),
+      (signal) => this.streamTimed(messages, spec, signal, timing),
       (seq) => {
         // Advance the job's durable checkpoint + lease on each flush so a
         // crash mid-run is re-claimed from the last flushed seq.
@@ -140,4 +153,37 @@ export class JobDriver {
       },
     );
   }
+
+  /** The provider stream, tapped to record first-token time and chunk count. */
+  private async *streamTimed(
+    messages: ModelMessage[],
+    spec: RunSpec,
+    signal: AbortSignal,
+    timing?: RunTiming,
+  ): AsyncGenerator<RunStep> {
+    for await (const step of run(messages, { runId: spec.runId, model: spec.model, abortSignal: signal })) {
+      if (timing && step.kind === "text") {
+        if (!timing.firstTokenAt) timing.firstTokenAt = Date.now();
+        timing.chunks++;
+      }
+      yield step;
+    }
+  }
+}
+
+/**
+ * One-line per-run latency breakdown (KLOE_DEBUG): how long the job sat queued
+ * before being claimed (the drive-loop poll delay), how long history rebuild
+ * took, the provider's time-to-first-token, and the generation stretch + rate.
+ */
+function logTiming(row: JobRow, claimedAt: number, t: RunTiming): void {
+  const now = Date.now();
+  const wait = row.created_at ? claimedAt - row.created_at : -1;
+  const ttft = t.firstTokenAt ? t.firstTokenAt - (claimedAt + t.historyMs) : -1;
+  const gen = t.firstTokenAt ? now - t.firstTokenAt : -1;
+  const rate = gen > 0 && t.chunks ? Math.round((t.chunks / gen) * 1000) : 0;
+  console.log(
+    `[timing ${row.id.slice(-8)}] queue-wait ${wait}ms · history ${t.historyMs}ms · ` +
+      `provider-ttft ${ttft}ms · gen ${gen}ms (${t.chunks} chunks, ${rate}/s)`,
+  );
 }

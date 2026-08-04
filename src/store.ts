@@ -11,6 +11,8 @@ export interface JobRow {
   lease_until: number;
   checkpoint_seq: number;
   params: string;
+  /** ms epoch when the job was enqueued — for measuring queue-wait latency. */
+  created_at: number;
 }
 
 export interface RunJobParams {
@@ -204,7 +206,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   status TEXT NOT NULL DEFAULT 'queued',
   lease_until INTEGER NOT NULL DEFAULT 0,
   checkpoint_seq INTEGER NOT NULL DEFAULT 0,
-  params TEXT NOT NULL
+  params TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status);
 
@@ -289,6 +292,12 @@ export class Store {
     } catch {
       // column already exists
     }
+    // Migration for DBs created before jobs.created_at existed.
+    try {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0");
+    } catch {
+      // column already exists
+    }
 
     this.readStmt = this.db.prepare(
       `SELECT seq, event, data FROM events
@@ -307,7 +316,8 @@ export class Store {
     );
 
     this.enqueueStmt = this.db.prepare(
-      `INSERT INTO jobs (id, conversation_id, status, params) VALUES (?, ?, 'queued', ?)`,
+      `INSERT INTO jobs (id, conversation_id, status, params, created_at)
+       VALUES (?, ?, 'queued', ?, ?)`,
     );
     // The hot claim query: queued or expired-lease jobs, but only for
     // conversations with no other live running job. Enforces the single-writer
@@ -330,7 +340,7 @@ export class Store {
            )
          ORDER BY j.rowid LIMIT 1
        )
-       RETURNING id, conversation_id, status, lease_until, checkpoint_seq, params`,
+       RETURNING id, conversation_id, status, lease_until, checkpoint_seq, params, created_at`,
     );
     this.heartbeatStmt = this.db.prepare(
       `UPDATE jobs SET lease_until = ? WHERE id = ? AND status = 'running'`,
@@ -608,7 +618,7 @@ export class Store {
   }
 
   enqueue(jobId: string, conversationId: string, params: JobParams): void {
-    this.enqueueStmt.run(jobId, conversationId, JSON.stringify(params));
+    this.enqueueStmt.run(jobId, conversationId, JSON.stringify(params), Date.now());
   }
 
   /**

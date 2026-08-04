@@ -113,7 +113,9 @@ export async function* run(
     temperature: opts.temperature ?? 0.7,
     abortSignal: opts.abortSignal,
   });
+  let textChunks = 0;
   for await (const chunk of result.textStream) {
+    textChunks++;
     yield { kind: "text", chunk };
   }
   // The stream has drained normally (a cancel throws above and skips this):
@@ -125,5 +127,26 @@ export async function* run(
     if (usage) yield { kind: "usage", usage };
   } catch {
     // provider didn't surface usage; leave message-end without it
+  }
+  // A model that streamed no text at all is abnormal (a misconfigured endpoint,
+  // a content filter, or a reasoning model whose output arrives outside the text
+  // stream). Surface why — finish reason, any warnings, and whether text landed
+  // off-stream — so it isn't a silent empty turn.
+  if (textChunks === 0) {
+    try {
+      const [finishReason, warnings, text, reasoning] = await Promise.all([
+        result.finishReason,
+        result.warnings,
+        result.text,
+        Promise.resolve(result.reasoningText).catch(() => undefined),
+      ]);
+      console.warn(
+        `[run ${opts.runId}] streamed 0 text chunks — finishReason=${finishReason}, ` +
+          `text.length=${text?.length ?? 0}, reasoning.length=${reasoning?.length ?? 0}, ` +
+          `warnings=${JSON.stringify(warnings ?? [])}`,
+      );
+    } catch (err) {
+      console.warn(`[run ${opts.runId}] streamed 0 text chunks; diagnostics failed:`, err);
+    }
   }
 }
