@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { getConfig } from "./settings";
 
 export interface JobRow {
   id: string;
@@ -228,7 +229,7 @@ export class Store {
   private pendingQueueStmt: ReturnType<Database["prepare"]>;
   private hasPendingFlushStmt: ReturnType<Database["prepare"]>;
 
-  constructor(databasePath: string = process.env.KLOE_DB ?? "data/kloe.db") {
+  constructor(databasePath: string = getConfig().server.dbPath) {
     // Ensure the parent directory exists so a fresh checkout (where `data/` is
     // gitignored and absent) doesn't crash with SQLITE_CANTOPEN. Skipped for
     // in-memory databases, which have no filesystem path.

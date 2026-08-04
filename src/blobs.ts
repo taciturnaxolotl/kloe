@@ -3,6 +3,7 @@ import { rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { S3Client } from "bun";
+import { getConfig, type Config } from "./settings";
 
 /**
  * Content-addressed blob storage — the byte layer behind attachments and agent
@@ -61,7 +62,7 @@ export class FsBlobStore implements BlobStore {
   private readonly root: string;
   private readonly tmpDir: string;
 
-  constructor(root: string = process.env.KLOE_BLOBS ?? "data/blobs") {
+  constructor(root: string = "data/blobs") {
     this.root = root;
     this.tmpDir = join(root, "tmp");
     mkdirSync(this.tmpDir, { recursive: true });
@@ -152,7 +153,7 @@ export class S3BlobStore implements BlobStore {
 
   constructor(opts: S3BlobStoreOptions = {}) {
     const { client, prefix, ...creds } = opts;
-    this.prefix = prefix ?? process.env.KLOE_S3_PREFIX ?? "blobs/";
+    this.prefix = prefix ?? "blobs/";
     // Drop undefined so an unset option doesn't clobber Bun's env fallback.
     const clean = Object.fromEntries(
       Object.entries(creds).filter(([, v]) => v !== undefined),
@@ -202,21 +203,19 @@ export class S3BlobStore implements BlobStore {
 }
 
 /**
- * Builds the blob store from env: `KLOE_BLOB_BACKEND` selects `fs` (default) or
- * `s3`. The `fs` backend reads `KLOE_BLOBS` for its root; the `s3` backend reads
- * the standard `S3_*`/`AWS_*` credentials (plus `KLOE_S3_PREFIX`). This is the
- * one place the deployment picks a backend — everything else takes a `BlobStore`.
+ * Builds the blob store from validated config (`config.blobs`): `backend`
+ * selects `fs` (root = `path`) or `s3` (creds + `prefix`, missing creds falling
+ * back to Bun's `S3_*`/`AWS_*` env). The backend value is schema-validated
+ * upstream, so an invalid one fails at config load, not here. This is the one
+ * place the deployment picks a backend — everything else takes a `BlobStore`.
  */
-export function createBlobStore(): BlobStore {
-  const backend = (process.env.KLOE_BLOB_BACKEND ?? "fs").toLowerCase();
-  switch (backend) {
+export function createBlobStore(blobs: Config["blobs"] = getConfig().blobs): BlobStore {
+  switch (blobs.backend) {
     case "fs":
-      return new FsBlobStore();
+      return new FsBlobStore(blobs.path);
     case "s3":
-      return new S3BlobStore();
+      return new S3BlobStore({ ...blobs.s3 });
     default:
-      throw new Error(
-        `unknown KLOE_BLOB_BACKEND "${backend}" (expected "fs" or "s3")`,
-      );
+      throw new Error(`unknown blob backend "${blobs.backend}"`);
   }
 }

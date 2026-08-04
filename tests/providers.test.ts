@@ -158,6 +158,17 @@ test("resolveModel requires the provider's API key env var", () => {
   expect(() => registry().resolveModel("acme/acme-1")).toThrow(/API key/);
 });
 
+test("a provider that declares NO apiKey resolves keyless", () => {
+  // No apiKey field at all → intentional keyless (local endpoint), not a
+  // misconfig; the adapter is built without a credential.
+  const keyless = inlineConfig();
+  delete (keyless as { apiKey?: string }).apiKey;
+  const reg = new ProviderRegistry(fixtureCatalog(), {
+    config: { providers: [keyless] },
+  });
+  expect(reg.resolveModel("hyper/hyper-1")).toBeDefined();
+});
+
 test("resolveModel builds an adapter when the key is present", () => {
   process.env.ACME_KEY = "sk-test";
   process.env.ANTH_KEY = "sk-anthropic";

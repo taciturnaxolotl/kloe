@@ -70,29 +70,22 @@ test("a malformed sha256 never touches the filesystem", async () => {
   await blobs.delete("../../etc/passwd"); // no throw, no escape
 });
 
-// ---- factory (backend selection) ---------------------------------------
-test("createBlobStore defaults to the fs backend", () => {
-  const prev = process.env.KLOE_BLOB_BACKEND;
-  delete process.env.KLOE_BLOB_BACKEND;
-  try {
-    expect(createBlobStore()).toBeInstanceOf(FsBlobStore);
-    process.env.KLOE_BLOB_BACKEND = "fs";
-    expect(createBlobStore()).toBeInstanceOf(FsBlobStore);
-  } finally {
-    if (prev === undefined) delete process.env.KLOE_BLOB_BACKEND;
-    else process.env.KLOE_BLOB_BACKEND = prev;
-  }
+// ---- factory (backend selection from validated config) -----------------
+// The backend value is validated at config load (see settings.test.ts), so the
+// factory just dispatches; it takes an explicit blobs-config so it's pure.
+test("createBlobStore builds the fs backend from config", () => {
+  const store = createBlobStore({ backend: "fs", path: root, maxBytes: 1, s3: { prefix: "blobs/" } });
+  expect(store).toBeInstanceOf(FsBlobStore);
 });
 
-test("createBlobStore rejects an unknown backend", () => {
-  const prev = process.env.KLOE_BLOB_BACKEND;
-  process.env.KLOE_BLOB_BACKEND = "gopher";
-  try {
-    expect(() => createBlobStore()).toThrow(/unknown KLOE_BLOB_BACKEND/);
-  } finally {
-    if (prev === undefined) delete process.env.KLOE_BLOB_BACKEND;
-    else process.env.KLOE_BLOB_BACKEND = prev;
-  }
+test("createBlobStore builds the s3 backend from config", () => {
+  const store = createBlobStore({
+    backend: "s3",
+    path: "data/blobs",
+    maxBytes: 1,
+    s3: { bucket: "b", prefix: "blobs/" },
+  });
+  expect(store).toBeInstanceOf(S3BlobStore);
 });
 
 // ---- S3 backend (opt-in: needs a real S3-compatible endpoint) -----------

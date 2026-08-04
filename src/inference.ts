@@ -2,6 +2,7 @@ import { streamText, type LanguageModel, type ModelMessage } from "ai";
 import { ProviderRegistry } from "./providers";
 import { RateLimiter } from "./ratelimit";
 import { loadCatalog, type LoadCatalogOptions } from "./catalog";
+import { getConfig } from "./settings";
 import type { RunStep } from "./actor";
 import type { TokenUsage } from "./events";
 
@@ -50,12 +51,13 @@ export function getRegistry(): ProviderRegistry {
  * limiter state. Pass `force: true` to rebuild (e.g. to reload the catalog).
  */
 export function initInference(
-  opts: { catalog?: LoadCatalogOptions; configPath?: string; force?: boolean } = {},
+  opts: { catalog?: LoadCatalogOptions; force?: boolean } = {},
 ): Promise<ProviderRegistry> {
   if (initPromise && !opts.force) return initPromise;
   initPromise = (async () => {
     const catalog = await loadCatalog(opts.catalog);
-    const r = new ProviderRegistry(catalog, { configPath: opts.configPath });
+    // Providers come from the single validated config (kloe.json + env).
+    const r = new ProviderRegistry(catalog, { config: { providers: getConfig().providers } });
     // Live model discovery for non-catalog providers (e.g. Hyper). Soft-fails:
     // the server boots with whatever models were declared inline.
     await r.discover();

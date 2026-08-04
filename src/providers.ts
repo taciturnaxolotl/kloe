@@ -2,21 +2,21 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import type { LanguageModel } from "ai";
-import { existsSync, readFileSync } from "node:fs";
 import type { Catalog, CatalogModel, ProviderType } from "./catalog";
 import { parseModel } from "./catalog";
 import { discoverModels, enrichModels } from "./discover";
+import { resolveRef } from "./settings";
 
 /**
  * Ops config for one *enabled* provider — the deployment-specific layer. An
- * entry in providers.json means "this provider is turned on: here's its secret
+ * entry in kloe.json's `providers` means "this provider is turned on: here's its secret
  * and how hard to push it". Everything else (endpoint, model list, pricing,
  * capabilities) comes from the catalog, matched by `id`.
  */
 export interface ProviderConfig {
   id: string;
-  /** API key: a "$ENV_VAR" interpolation or a literal. */
-  apiKey: string;
+  /** API key: a "$ENV_VAR" interpolation or a literal. Absent for keyless providers. */
+  apiKey?: string;
   /** Optional endpoint override (else the catalog's); "$ENV_VAR" or literal. */
   apiEndpoint?: string;
   /** Max concurrent in-flight requests to this provider. */
@@ -28,7 +28,7 @@ export interface ProviderConfig {
 interface OpsFile {
   providers: Array<{
     id: string;
-    apiKey: string;
+    apiKey?: string;
     apiEndpoint?: string;
     maxConcurrency?: number;
     minIntervalMs?: number;
@@ -97,7 +97,7 @@ type ModelFactory = (modelId: string) => LanguageModel;
 /** Cached factory plus the resolved credentials it was built with, so a
  * rotated key/endpoint rebuilds instead of serving a stale one. */
 interface CachedFactory {
-  apiKey: string;
+  apiKey: string | undefined;
   baseURL: string | undefined;
   factory: ModelFactory;
 }
@@ -126,11 +126,13 @@ export class ProviderRegistry {
 
   constructor(
     catalog: Catalog,
-    opts: { configPath?: string; config?: OpsFile; fetchImpl?: typeof fetch } = {},
+    opts: { config?: OpsFile; fetchImpl?: typeof fetch } = {},
   ) {
     this.catalog = catalog;
     this.fetchImpl = opts.fetchImpl;
-    const ops = opts.config ?? this.loadFile(opts.configPath ?? "providers.json");
+    // Providers come pre-loaded and validated from settings (kloe.json); the
+    // registry no longer reads any file itself. Absent config → echo only.
+    const ops = opts.config ?? { providers: [] };
     for (const p of ops.providers) {
       if (p.id === "echo") continue; // built-in, not catalog-backed
       if (!catalog.getProvider(p.id)) {
@@ -174,14 +176,14 @@ export class ProviderRegistry {
     for (const [id, inline] of this.inline) {
       if (!inline.needsDiscovery) continue;
       const config = this.configs.get(id)!;
-      const baseUrl = resolveEnv(config.apiEndpoint);
+      const baseUrl = resolveRef(config.apiEndpoint);
       if (!baseUrl) continue;
       jobs.push(
         (async () => {
           const cfg = {
             id,
             baseUrl,
-            apiKey: resolveEnv(config.apiKey),
+            apiKey: resolveRef(config.apiKey),
             fetchImpl: this.fetchImpl,
             timeoutMs: opts.timeoutMs,
           };
@@ -203,18 +205,6 @@ export class ProviderRegistry {
       );
     }
     await Promise.all(jobs);
-  }
-
-  private loadFile(path: string): OpsFile {
-    if (!existsSync(path)) return { providers: [] };
-    const raw = readFileSync(path, "utf8");
-    try {
-      return JSON.parse(raw) as OpsFile;
-    } catch (err) {
-      throw new Error(
-        `failed to parse provider config "${path}": ${(err as Error).message}`,
-      );
-    }
   }
 
   /** Ops config for an enabled provider (echo/unknown → undefined). */
@@ -299,16 +289,20 @@ export class ProviderRegistry {
   private factoryFor(providerId: string, config: ProviderConfig): ModelFactory {
     const catProvider = this.catalog.getProvider(providerId);
     const inline = this.inline.get(providerId);
-    const apiKey = resolveEnv(config.apiKey);
-    if (!apiKey) {
+    // Keyless is allowed when NO key is declared: it resolves to undefined and
+    // the adapter omits the credential (local endpoints). But a key that WAS
+    // declared yet resolves empty is a misconfig (env var forgotten), not a
+    // keyless provider — flag it rather than silently sending no credential.
+    const apiKey = resolveRef(config.apiKey);
+    if (config.apiKey !== undefined && !apiKey) {
       throw new Error(
-        `provider "${providerId}" requires an API key (config: ${config.apiKey})`,
+        `provider "${providerId}" declares an API key that resolved empty (config: ${config.apiKey}); set its env var, or remove apiKey for a keyless provider`,
       );
     }
     // Inline providers are required (at construction) to have an apiEndpoint,
     // so it always wins here via config.apiEndpoint.
     const baseURL =
-      resolveEnv(config.apiEndpoint) ?? resolveEnv(catProvider?.apiEndpoint);
+      resolveRef(config.apiEndpoint) ?? resolveRef(catProvider?.apiEndpoint);
 
     const cached = this.factories.get(providerId);
     if (cached && cached.apiKey === apiKey && cached.baseURL === baseURL) {
@@ -322,27 +316,23 @@ export class ProviderRegistry {
   }
 }
 
-/** Resolves a "$ENV_VAR" interpolation to its env value; passes literals through. */
-function resolveEnv(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  if (value.startsWith("$")) return process.env[value.slice(1)];
-  return value;
-}
-
 /** Selects the AI SDK adapter for a provider based on its catalog `type`. */
 function buildFactory(
   providerId: string,
   type: ProviderType,
-  apiKey: string,
+  apiKey: string | undefined,
   baseURL: string | undefined,
 ): ModelFactory {
+  // Omit the credential entirely when there isn't one, so keyless (local)
+  // endpoints work and keyed ones are unchanged.
+  const key = apiKey ? { apiKey } : {};
   switch (type) {
     case "anthropic": {
-      const p = createAnthropic({ apiKey, ...(baseURL ? { baseURL } : {}) });
+      const p = createAnthropic({ ...key, ...(baseURL ? { baseURL } : {}) });
       return (modelId) => p(modelId);
     }
     case "openai": {
-      const p = createOpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
+      const p = createOpenAI({ ...key, ...(baseURL ? { baseURL } : {}) });
       return (modelId) => p(modelId);
     }
     // openai-compat, openrouter, and any other type fall back to the
@@ -353,7 +343,7 @@ function buildFactory(
           `provider "${providerId}" (type "${type}") needs an endpoint; set apiEndpoint or ensure the catalog provides one`,
         );
       }
-      const p = createOpenAICompatible({ name: providerId, baseURL, apiKey });
+      const p = createOpenAICompatible({ name: providerId, baseURL, ...key });
       return (modelId) => p(modelId);
     }
   }

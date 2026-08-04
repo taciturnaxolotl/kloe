@@ -5,6 +5,7 @@ import { Store } from "./src/store";
 import { initInference } from "./src/inference";
 import { apiRoutes, getActor, evictIdleActors } from "./src/http";
 import { JobDriver } from "./src/drive";
+import { getConfig } from "./src/settings";
 import { REAP_INTERVAL_MS } from "./src/config";
 
 /**
@@ -49,7 +50,7 @@ if (import.meta.main) {
     "/og-image.png": file("og-image.png"),
   };
 
-  const port = Number(process.env.PORT ?? 3000);
+  const port = getConfig().server.port;
   // The SSE stream is intentionally long-lived and can sit idle between
   // generations. Bun's default idleTimeout is 10s — shorter than our 15s
   // keepalive — so an idle stream would be killed before the first keepalive

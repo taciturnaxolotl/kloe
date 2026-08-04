@@ -7,8 +7,5 @@ export const LEASE_GRACE_MS = 30_000;
 export const REAP_INTERVAL_MS = 5_000;
 export const SUBSCRIBER_HEARTBEAT_MS = 15_000;
 export const MAX_SSE_FIELD_BYTES = 8 * 1024;
-// Upload cap enforced at POST /api/blobs (policy, not the byte store's concern).
-// Bounds disk/memory per upload; the S3 backend buffers up to this to hash.
-export const MAX_BLOB_BYTES = 25 * 1024 * 1024;
 // Actors with no subscribers and no active run are evicted after this TTL.
 export const ACTOR_IDLE_TTL_MS = 5 * 60_000;

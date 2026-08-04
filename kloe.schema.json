@@ -1,0 +1,176 @@
+{
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "server": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 3000
+        },
+        "dbPath": {
+          "type": "string",
+          "default": "data/kloe.db"
+        }
+      },
+      "required": [],
+      "default": {
+        "port": 3000,
+        "dbPath": "data/kloe.db"
+      }
+    },
+    "blobs": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "enum": [
+            "fs",
+            "s3"
+          ],
+          "type": "string",
+          "default": "fs"
+        },
+        "path": {
+          "type": "string",
+          "default": "data/blobs"
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 26214400
+        },
+        "s3": {
+          "type": "object",
+          "properties": {
+            "bucket": {
+              "type": "string"
+            },
+            "endpoint": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string"
+            },
+            "accessKeyId": {
+              "type": "string"
+            },
+            "secretAccessKey": {
+              "type": "string"
+            },
+            "prefix": {
+              "type": "string",
+              "default": "blobs/"
+            },
+            "virtualHostedStyle": {
+              "type": "boolean"
+            }
+          },
+          "required": [],
+          "default": {
+            "prefix": "blobs/"
+          }
+        }
+      },
+      "required": [],
+      "default": {
+        "backend": "fs",
+        "path": "data/blobs",
+        "maxBytes": 26214400,
+        "s3": {
+          "prefix": "blobs/"
+        }
+      }
+    },
+    "catwalk": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "cachePath": {
+          "type": "string"
+        },
+        "seedPath": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "default": {}
+    },
+    "providers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "apiKey": {
+            "type": "string"
+          },
+          "apiEndpoint": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "maxConcurrency": {
+            "type": "number"
+          },
+          "minIntervalMs": {
+            "type": "number"
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "context_window": {
+                  "type": "number"
+                },
+                "default_max_tokens": {
+                  "type": "number"
+                },
+                "can_reason": {
+                  "type": "boolean"
+                },
+                "reasoning_levels": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "supports_attachments": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id"
+              ]
+            }
+          },
+          "discoverModels": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "default": []
+    }
+  },
+  "required": [],
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

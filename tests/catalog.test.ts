@@ -125,7 +125,6 @@ test("initInference is idempotent — concurrent calls share one registry", asyn
       seedPath: tmpFile("seed.json", JSON.stringify(RAW)),
       fetchImpl: failFetch(),
     },
-    configPath: "/nonexistent-providers.json",
   };
   const [a, b] = await Promise.all([initInference(opts), initInference(opts)]);
   expect(a).toBe(b);

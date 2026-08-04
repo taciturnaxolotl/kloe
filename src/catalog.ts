@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { getConfig } from "./settings";
 
 /**
  * The model/provider *catalog*: universal metadata (endpoints, context windows,
@@ -91,8 +92,8 @@ function reqStr(value: unknown, field: string): string {
 
 /**
  * Parses one model entry from raw catwalk JSON (snake_case). Exported so
- * `providers.json` can carry inline model lists for providers that aren't in
- * the catalog.
+ * `kloe.json` providers can carry inline model lists for providers that aren't
+ * in the catalog.
  */
 export function parseModel(m: RawModel): CatalogModel {
   const id = reqStr(m.id, "model.id");
@@ -202,9 +203,10 @@ function readJsonFile(path: string): unknown | undefined {
  * logged so a stale catalog is visible in the logs rather than silent.
  */
 export async function loadCatalog(opts: LoadCatalogOptions = {}): Promise<Catalog> {
-  const url = opts.url ?? process.env.CATWALK_URL ?? DEFAULT_URL;
-  const cachePath = opts.cachePath ?? process.env.CATWALK_CACHE ?? DEFAULT_CACHE;
-  const seedPath = opts.seedPath ?? process.env.CATWALK_SEED ?? DEFAULT_SEED;
+  const cat = getConfig().catwalk;
+  const url = opts.url ?? cat.url ?? DEFAULT_URL;
+  const cachePath = opts.cachePath ?? cat.cachePath ?? DEFAULT_CACHE;
+  const seedPath = opts.seedPath ?? cat.seedPath ?? DEFAULT_SEED;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const fetchImpl = opts.fetchImpl ?? fetch;
 
