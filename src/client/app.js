@@ -39,6 +39,9 @@ import { mountDialogs } from "./confirm.js";
     _enrich.then(function (fn) { fn(el); });
   }
 
+  // Right-pointing chevron for timeline step rows; rotates 90° (→ down) when open.
+  var CHEV = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
+
   var SEND ='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>';
 
   var $ = function (id) { return document.getElementById(id); };
@@ -222,7 +225,7 @@ import { mountDialogs } from "./confirm.js";
     var painted = false;
     for (var id in msgs) {
       var r = msgs[id];
-      if (r.reasoning && r.reasoning.buf) { smd.parser_write(r.reasoning.parser, r.reasoning.buf); r.reasoning.buf = ""; painted = true; }
+      if (r.reasoning && r.reasoning.buf) { smd.parser_write(r.reasoning.parser, r.reasoning.buf); r.reasoning.buf = ""; painted = true; updateReasoningPreview(r.reasoning); }
       if (r.buf) { smd.parser_write(r.parser, r.buf); r.buf = ""; painted = true; liveMeta(r); }
     }
     if (painted) autoScroll();
@@ -366,31 +369,63 @@ import { mountDialogs } from "./confirm.js";
     autoScroll();
     return rec;
   }
-  // A collapsible "thinking" block, created lazily the first time reasoning
-  // streams. It sits above the answer prose; it auto-collapses to "Thought for
-  // Ns" once the answer starts (or on end for reasoning-only turns).
+  // ---- agent-activity timeline -------------------------------------------
+  // Intermediate steps (reasoning now; tool calls + results later) render above
+  // the answer as an ordered column of collapsed rows: plain muted text, a
+  // hover-revealed chevron that rotates open, each expandable on its own.
+  function ensureTimeline(rec) {
+    if (rec.timeline) return rec.timeline;
+    var t = document.createElement("div");
+    t.className = "block timeline";
+    rec.body.insertBefore(t, rec.prose); // steps precede the answer
+    rec.timeline = t;
+    return t;
+  }
+  // A collapsed step row (a <details>) appended to the timeline; `cls` tags its
+  // type (e.g. "reasoning", "tool"). Returns its details/label/body.
+  function makeStep(rec, cls) {
+    var d = document.createElement("details");
+    d.className = "step " + cls;
+    var sum = document.createElement("summary");
+    sum.innerHTML = '<span class="steplabel"></span>' + CHEV;
+    var body = document.createElement("div"); body.className = "stepbody";
+    d.appendChild(sum); d.appendChild(body);
+    ensureTimeline(rec).appendChild(d);
+    return { details: d, label: sum.querySelector(".steplabel"), body: body };
+  }
+  // The reasoning step: created lazily on first reasoning delta. Its label
+  // shimmers "Thinking" while active, then settles to "Thought for Ns" from the
+  // server's authoritative duration (message-end reasoningMs — client wall-clock
+  // can't see silent server-side thinking).
   function ensureReasoning(rec) {
     if (rec.reasoning) return rec.reasoning;
-    var d = document.createElement("details");
-    d.className = "block reasoning"; d.open = true;
-    var sum = document.createElement("summary"); sum.textContent = "Thinking…";
-    var body = document.createElement("div"); body.className = "rbody";
-    d.appendChild(sum); d.appendChild(body);
-    rec.body.insertBefore(d, rec.prose); // reasoning precedes the answer
-    var np = newParser(body);
-    rec.reasoning = { details: d, summary: sum, body: body, parser: np.parser, renderer: np.renderer,
-                      buf: "", startedAt: Date.now(), collapsed: false, ended: false };
+    var step = makeStep(rec, "reasoning thinking");
+    step.label.textContent = "Thinking";
+    var np = newParser(step.body);
+    rec.reasoning = { details: step.details, label: step.label, body: step.body,
+                      parser: np.parser, renderer: np.renderer, buf: "", collapsed: false, ended: false };
     autoScroll();
     return rec.reasoning;
   }
-  function thoughtLabel(rc) {
-    var secs = Math.max(0, Math.round((Date.now() - rc.startedAt) / 1000));
-    return "Thought for " + secs + "s";
+  // Follow the reasoning stream to the bottom while its row is expanded.
+  function updateReasoningPreview(rc) {
+    if (rc.details.open) rc.body.scrollTop = rc.body.scrollHeight;
   }
+  function labelThought(rec, reasoningMs) {
+    var rc = rec.reasoning;
+    if (!rc) return;
+    rc.details.classList.remove("thinking");
+    rc.label.textContent = reasoningMs != null
+      ? "Thought for " + Math.max(0, Math.round(reasoningMs / 1000)) + "s"
+      : "Thought";
+  }
+  // Thinking finished (answer started): stop the shimmer (row stays collapsed).
   function collapseReasoning(rec) {
     var rc = rec.reasoning;
     if (!rc || rc.collapsed) return;
-    rc.collapsed = true; rc.details.open = false; rc.summary.textContent = thoughtLabel(rc);
+    rc.collapsed = true;
+    rc.details.classList.remove("thinking");
+    rc.label.textContent = "Thought"; // duration lands on message-end
   }
   function endReasoning(rec) {
     var rc = rec.reasoning;
@@ -398,11 +433,10 @@ import { mountDialogs } from "./confirm.js";
     if (rc.buf) { smd.parser_write(rc.parser, rc.buf); rc.buf = ""; }
     smd.parser_end(rc.parser); rc.ended = true;
     enrich(rc.body);
-    // Reasoning-only turn (no answer text): label it but leave it open to read.
-    if (!rc.collapsed) rc.summary.textContent = thoughtLabel(rc);
   }
-  function endAssistant(rec, finishReason, usage) {
+  function endAssistant(rec, finishReason, usage, reasoningMs) {
     endReasoning(rec);
+    labelThought(rec, reasoningMs);
     if (rec.buf) { smd.parser_write(rec.parser, rec.buf); rec.buf = ""; }
     smd.parser_end(rec.parser);
     var stripped = finalize(rec.renderer);
@@ -483,7 +517,7 @@ import { mountDialogs } from "./confirm.js";
       case "message-end": {
         streaming = false;
         var r = msgs[data.messageId];
-        if (r) endAssistant(r, data.finishReason, data.usage);
+        if (r) endAssistant(r, data.finishReason, data.usage, data.reasoningMs);
         updateSend();
         // The flush's promotions arrive as their own user-message events
         // (confirmUser drops each from the panel), so there's nothing to

@@ -399,6 +399,13 @@ export class ConversationActor {
     }, BATCH_FLUSH_MS);
 
     let usage: TokenUsage | undefined;
+    // Reasoning duration: wall-clock from the start of generation to the first
+    // answer token. This captures silent server-side thinking (a long ttft with
+    // no tokens) that the client can't see, and is durable so it's right on
+    // replay. Only meaningful when the model actually reasoned.
+    const genStart = Date.now();
+    let sawReasoning = false;
+    let firstTextAt = 0;
     try {
       for await (const step of steps(abortController.signal)) {
         if (this.isCancelled()) {
@@ -406,6 +413,7 @@ export class ConversationActor {
           break;
         }
         if (step.kind === "text") {
+          if (firstTextAt === 0) firstTextAt = Date.now();
           delta += step.chunk;
           batch++;
           if (batch >= BATCH_MAX_DELTAS) {
@@ -413,6 +421,7 @@ export class ConversationActor {
             batch = 0;
           }
         } else if (step.kind === "reasoning") {
+          sawReasoning = true;
           reasoning += step.chunk;
           rbatch++;
           if (rbatch >= BATCH_MAX_DELTAS) {
@@ -452,7 +461,10 @@ export class ConversationActor {
     if (finish === "aborted") {
       this.persist(Event.Cancelled, { runId, threadId: this.conversationId });
     }
-    this.persist(Event.MsgEnd, { runId, threadId: this.conversationId, messageId, finishReason: finish, usage });
+    // Reasoning time = start-of-generation → first answer token (or end, if the
+    // model reasoned but never produced an answer). Only when it reasoned.
+    const reasoningMs = sawReasoning ? (firstTextAt || Date.now()) - genStart : undefined;
+    this.persist(Event.MsgEnd, { runId, threadId: this.conversationId, messageId, finishReason: finish, usage, reasoningMs });
     this.currentRunId = null;
   }
 }

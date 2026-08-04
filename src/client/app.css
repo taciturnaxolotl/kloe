@@ -289,19 +289,35 @@ body.selecting #selectBtn { order: 4; }
 :root[data-theme="light"] .turn .body pre code.hl span { color: var(--shiki-light); }
 :root[data-theme="dark"] .turn .body pre code.hl span { color: var(--shiki-dark); }
 
-/* Reasoning ("thinking") block — collapsible, muted, sits above the answer. */
-.turn .body .reasoning { border: 1px solid var(--rule); border-radius: var(--radius-sm);
-  background: var(--bg-sunk); overflow: hidden; }
-.turn .body .reasoning > summary { cursor: pointer; list-style: none; user-select: none;
-  padding: 7px 12px; font-family: var(--mono); font-size: 11px; letter-spacing: .03em;
-  color: var(--ink-muted); display: flex; align-items: center; gap: 7px; }
-.turn .body .reasoning > summary::-webkit-details-marker { display: none; }
-.turn .body .reasoning > summary::before { content: "▸"; font-size: 9px; color: var(--ink-faint); }
-.turn .body .reasoning[open] > summary::before { content: "▾"; }
-.turn.generating .body .reasoning[open] > summary { color: var(--accent); }
-.turn .body .reasoning .rbody { padding: 2px 12px 10px; color: var(--ink-muted); font-size: 0.92em; }
-.turn .body .reasoning .rbody > :first-child { margin-top: 0; }
-.turn .body .reasoning .rbody > :last-child { margin-bottom: 0; }
+/* Agent-activity timeline — reasoning (and, later, tool call/result) steps as an
+   ordered column of collapsed rows above the answer. Each row is plain muted
+   text; a chevron appears on hover (or when open) and rotates to point down.
+   Expanded bodies are height-capped and scroll so long content can't blow up
+   the page. */
+.turn .body .timeline { display: flex; flex-direction: column; gap: 1px; margin: 2px 0 0; }
+/* Timeline + answer are one continuous turn — keep them tight, not block-spaced. */
+.turn .body .timeline + .prose { margin-top: 5px; }
+.turn .body .timeline .step > summary { list-style: none; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 6px; padding: 3px 2px;
+  font-family: var(--mono); font-size: 11px; letter-spacing: .02em; color: var(--ink-muted); }
+.turn .body .timeline .step > summary::-webkit-details-marker { display: none; }
+.turn .body .timeline .step > summary:hover { color: var(--ink); }
+.turn .body .timeline .step .chev { width: 12px; height: 12px; flex: none; color: var(--ink-faint);
+  opacity: 0; transition: opacity .12s ease, transform .12s ease; }
+.turn .body .timeline .step:hover > summary .chev,
+.turn .body .timeline .step[open] > summary .chev { opacity: 1; }
+.turn .body .timeline .step[open] > summary .chev { transform: rotate(90deg); }
+/* Shimmering label while a step is active (background-clipped moving gradient). */
+.turn .body .timeline .step.thinking .steplabel {
+  background: linear-gradient(90deg, var(--ink-faint) 25%, var(--ink) 50%, var(--ink-faint) 75%);
+  background-size: 200% 100%; -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; animation: shimmer 1.7s linear infinite; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+.turn .body .timeline .stepbody { max-height: 300px; overflow-y: auto;
+  margin: 1px 0 5px 18px; padding-left: 11px; border-left: 1px solid var(--rule);
+  color: var(--ink-muted); font-size: 0.9em; }
+.turn .body .timeline .stepbody > :first-child { margin-top: 0; }
+.turn .body .timeline .stepbody > :last-child { margin-bottom: 0; }
 
 /* KaTeX math. Inline flows with text; display centers on its own line. */
 .turn .body .math-inline { white-space: nowrap; }

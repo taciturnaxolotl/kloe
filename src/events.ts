@@ -110,6 +110,8 @@ export interface MessageEndData {
   finishReason: "stop" | "length" | "tool-calls" | "aborted" | "error";
   /** Present when the provider reported usage for this run. */
   usage?: TokenUsage;
+  /** Wall-clock ms the model spent reasoning before the answer — for the thinking label. */
+  reasoningMs?: number;
 }
 
 export interface RunErrorData {

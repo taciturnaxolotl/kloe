@@ -265,7 +265,22 @@ test("reasoning steps stream as reasoning-delta events, ahead of the answer text
   expect(names.indexOf(Event.ReasoningDelta)).toBeLessThan(names.indexOf(Event.TextDelta));
   const rd = events.find((e) => e.event === Event.ReasoningDelta)!.data as { delta: string };
   expect(rd.delta).toContain("let me think");
+  // The thinking duration is stamped durably on message-end (so it's right on
+  // replay); a number when the model reasoned.
+  const end = events.find((e) => e.event === Event.MsgEnd)!.data as { reasoningMs?: number };
+  expect(typeof end.reasoningMs).toBe("number");
   // Reasoning is display-only for now — it is NOT fed back into model history.
   const hist = await a.history();
   expect(JSON.stringify(hist)).not.toContain("let me think");
+});
+
+test("message-end omits reasoningMs when the turn produced no reasoning", async () => {
+  const a = new ConversationActor("t-noreason", store);
+  const events: WireEvent[] = [];
+  a.follow({ push: (e) => events.push(e), closed: false });
+  await a.runText("nr", "mnr", async function* (_signal) {
+    yield { kind: "text", chunk: "just an answer" };
+  });
+  const end = events.find((e) => e.event === Event.MsgEnd)!.data as { reasoningMs?: number };
+  expect(end.reasoningMs).toBeUndefined();
 });
