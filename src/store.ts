@@ -77,6 +77,21 @@ export interface StoredEvent {
   data: unknown;
 }
 
+/** Metadata for a stored blob (bytes live in the BlobStore, keyed by sha256). */
+export interface BlobMeta {
+  sha256: string;
+  mime: string;
+  size: number;
+  createdAt: number;
+}
+
+interface BlobRow {
+  sha256: string;
+  mime: string;
+  size: number;
+  created_at: number;
+}
+
 /** A conversation as shown in the chat rail: id, age, and a derived title. */
 export interface ConversationSummary {
   id: string;
@@ -197,6 +212,26 @@ CREATE TABLE IF NOT EXISTS model_settings (
   display_name TEXT,
   sort_order INTEGER NOT NULL DEFAULT 0
 );
+
+-- Blob metadata (the bytes live in the BlobStore, keyed by sha256). Content-
+-- addressed, so a row is immutable once written; mime/size come from the upload.
+CREATE TABLE IF NOT EXISTS blobs (
+  sha256 TEXT PRIMARY KEY,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+-- Which conversations reference which blobs. Populated when attachments/artifacts
+-- land in the event log (a later slice); a blob with no row here is unreferenced
+-- and, past the grace window, GC-eligible. Content-addressed dedup means a blob
+-- can have rows from several conversations — the sweep collects only zero-ref ones.
+CREATE TABLE IF NOT EXISTS blob_refs (
+  sha256 TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  PRIMARY KEY (sha256, conversation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_blob_refs_conv ON blob_refs (conversation_id);
 `;
 
 /**
@@ -228,6 +263,10 @@ export class Store {
   private upsertSettingStmt: ReturnType<Database["prepare"]>;
   private pendingQueueStmt: ReturnType<Database["prepare"]>;
   private hasPendingFlushStmt: ReturnType<Database["prepare"]>;
+  private insertBlobStmt: ReturnType<Database["prepare"]>;
+  private getBlobStmt: ReturnType<Database["prepare"]>;
+  private findOrphanBlobsStmt: ReturnType<Database["prepare"]>;
+  private deleteBlobStmt: ReturnType<Database["prepare"]>;
 
   constructor(databasePath: string = getConfig().server.dbPath) {
     // Ensure the parent directory exists so a fresh checkout (where `data/` is
@@ -380,6 +419,24 @@ export class Store {
       `SELECT 1 FROM jobs WHERE conversation_id = ? AND status = 'queued'
        AND json_extract(params, '$.kind') = 'flush' LIMIT 1`,
     );
+
+    // Content-addressed, so a re-upload of identical bytes is a no-op: keep the
+    // original row (and its created_at) rather than rewriting it.
+    this.insertBlobStmt = this.db.prepare(
+      `INSERT INTO blobs (sha256, mime, size, created_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(sha256) DO NOTHING`,
+    );
+    this.getBlobStmt = this.db.prepare(
+      `SELECT sha256, mime, size, created_at FROM blobs WHERE sha256 = ?`,
+    );
+    // Orphans: no conversation references them and they're older than the grace
+    // cutoff (so a just-uploaded, not-yet-referenced blob is spared).
+    this.findOrphanBlobsStmt = this.db.prepare(
+      `SELECT sha256 FROM blobs
+       WHERE created_at < ?
+         AND NOT EXISTS (SELECT 1 FROM blob_refs r WHERE r.sha256 = blobs.sha256)`,
+    );
+    this.deleteBlobStmt = this.db.prepare(`DELETE FROM blobs WHERE sha256 = ?`);
   }
 
   /**
@@ -443,6 +500,39 @@ export class Store {
       s.displayName,
       s.sortOrder,
     );
+  }
+
+  /**
+   * Records blob metadata (mime/size) for a stored sha256. Idempotent: a
+   * re-upload of the same content keeps the original row. The bytes are written
+   * to the BlobStore separately; this is only the metadata index.
+   */
+  recordBlob(sha256: string, mime: string, size: number): void {
+    this.insertBlobStmt.run(sha256, mime, size, Date.now());
+  }
+
+  /** Metadata for a stored blob, or undefined if unknown. */
+  getBlob(sha256: string): BlobMeta | undefined {
+    const row = this.getBlobStmt.get(sha256) as BlobRow | null;
+    return row
+      ? { sha256: row.sha256, mime: row.mime, size: row.size, createdAt: row.created_at }
+      : undefined;
+  }
+
+  /**
+   * Sha256s of blobs referenced by no conversation and created before
+   * `olderThan` (ms epoch) — the GC sweep's candidate set. The bytes are
+   * deleted from the BlobStore, then `deleteBlob` drops the row.
+   */
+  findOrphanBlobs(olderThan: number): string[] {
+    return (this.findOrphanBlobsStmt.all(olderThan) as Array<{ sha256: string }>).map(
+      (r) => r.sha256,
+    );
+  }
+
+  /** Drops a blob's metadata row (bytes are removed from the BlobStore separately). */
+  deleteBlob(sha256: string): void {
+    this.deleteBlobStmt.run(sha256);
   }
 
   /** Atomic append + seq advance in one transaction. */

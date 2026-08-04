@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Store, parseJobParams } from "../src/store";
 import { apiRoutes, getActor, evictIdleActors } from "../src/http";
+import { FsBlobStore } from "../src/blobs";
+import { getConfig, setConfig } from "../src/settings";
 import { JobDriver } from "../src/drive";
 import { setRegistry } from "../src/inference";
 import { ProviderRegistry } from "../src/providers";
@@ -11,6 +13,7 @@ import { Catalog } from "../src/catalog";
 
 const tmp = mkdtempSync(join(tmpdir(), "kloe-srv-"));
 const store = new Store(join(tmp, "test.db"));
+const blobs = new FsBlobStore(join(tmp, "blobs"));
 
 // A real Bun server on an ephemeral port — the same routing/validation path
 // production uses. `apiRoutes` carries no HTML routes, so starting it never
@@ -18,7 +21,7 @@ const store = new Store(join(tmp, "test.db"));
 let server: ReturnType<typeof Bun.serve>;
 let base: string;
 beforeAll(() => {
-  server = Bun.serve({ port: 0, routes: apiRoutes({ store }) });
+  server = Bun.serve({ port: 0, routes: apiRoutes({ store, blobs }) });
   base = server.url.origin;
 });
 afterAll(() => {
@@ -528,4 +531,52 @@ test("a reconnecting stream replays queued-message events (and their promotion)"
   const u = frames.find((f) => f.event === "user-message")!.data as { runId: string };
   expect(q.runId).toBe("sr-1");
   expect(u.runId).toBe("sr-1");
+});
+
+// ---- blob upload / download -------------------------------------------
+test("POST /api/blobs stores content-addressed bytes; GET returns them", async () => {
+  const bytes = new TextEncoder().encode("hello blob");
+  const post = await fetch(`${base}/api/blobs`, {
+    method: "POST",
+    headers: { "content-type": "text/plain" },
+    body: bytes,
+  });
+  expect(post.status).toBe(201);
+  const { sha256, size, mime } = (await post.json()) as { sha256: string; size: number; mime: string };
+  expect(sha256).toMatch(/^[0-9a-f]{64}$/);
+  expect(size).toBe(bytes.byteLength);
+  expect(mime).toBe("text/plain");
+
+  const get = await fetch(`${base}/api/blobs/${sha256}`);
+  expect(get.status).toBe(200);
+  expect(get.headers.get("content-type")).toBe("text/plain");
+  expect(get.headers.get("cache-control")).toContain("immutable");
+  expect(await get.text()).toBe("hello blob");
+});
+
+test("re-uploading identical bytes returns the same sha256 (dedup)", async () => {
+  const body = () => new TextEncoder().encode("same bytes");
+  const a = await (await fetch(`${base}/api/blobs`, { method: "POST", body: body() })).json();
+  const b = await (await fetch(`${base}/api/blobs`, { method: "POST", body: body() })).json();
+  expect((b as { sha256: string }).sha256).toBe((a as { sha256: string }).sha256);
+});
+
+test("GET /api/blobs/:sha256 is 404 for an unknown or malformed id", async () => {
+  const unknown = "0".repeat(64);
+  expect((await fetch(`${base}/api/blobs/${unknown}`)).status).toBe(404);
+  expect((await fetch(`${base}/api/blobs/not-a-hash`)).status).toBe(404);
+});
+
+test("POST /api/blobs rejects a body over the size cap with 413", async () => {
+  const base0 = getConfig();
+  setConfig({ ...base0, blobs: { ...base0.blobs, maxBytes: 8 } });
+  try {
+    const res = await fetch(`${base}/api/blobs`, {
+      method: "POST",
+      body: new TextEncoder().encode("this is definitely more than eight bytes"),
+    });
+    expect(res.status).toBe(413);
+  } finally {
+    setConfig(base0); // restore the cap for any later tests
+  }
 });

@@ -7,6 +7,8 @@ import { parseEventId } from "./events";
 import { withBody } from "./validate";
 import { PromptBody, SteerBody, ModelPatchBody, RenameBody } from "./schemas";
 import { ACTOR_IDLE_TTL_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
+import { getConfig } from "./settings";
+import type { BlobStore } from "./blobs";
 
 /**
  * The web layer as a plain data structure: `apiRoutes(deps)` returns a Bun
@@ -253,6 +255,78 @@ function startSteer(conversationId: string, data: SteerBody, store: Store): Resp
   return Response.json({ ok: true, runId }, { status: 202 });
 }
 
+/** A 64-char lowercase hex sha256 — the shape a blob id must have. */
+function isSha256(s: string): boolean {
+  return /^[0-9a-f]{64}$/.test(s);
+}
+
+/** Marks a body that ran past the size cap while streaming. */
+class PayloadTooLarge extends Error {}
+
+/**
+ * Wraps an upload stream so it errors past `max` bytes instead of buffering the
+ * whole thing to find out — Content-Length is only a hint (and spoofable), so
+ * the cap is enforced on the actual byte flow.
+ */
+function limitBody(body: ReadableStream<Uint8Array>, max: number): ReadableStream<Uint8Array> {
+  let total = 0;
+  return body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        total += chunk.byteLength;
+        if (total > max) controller.error(new PayloadTooLarge());
+        else controller.enqueue(chunk);
+      },
+    }),
+  );
+}
+
+/**
+ * Content-addressed upload: streams the body into the blob store (hashing as it
+ * goes), records its metadata, and returns the sha256. The raw body IS the blob
+ * (Content-Type is its mime), so this bypasses `withBody`'s JSON path. Dedup and
+ * the content address both fall out of the store; the 413 is enforced mid-stream.
+ */
+async function uploadBlob(req: Request, store: Store, blobs: BlobStore): Promise<Response> {
+  const max = getConfig().blobs.maxBytes;
+  const declared = Number(req.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > max) {
+    return Response.json({ error: `blob exceeds ${max} bytes` }, { status: 413 });
+  }
+  if (!req.body) return Response.json({ error: "empty body" }, { status: 400 });
+  const mime = req.headers.get("content-type") || "application/octet-stream";
+  try {
+    const ref = await blobs.put(limitBody(req.body, max));
+    store.recordBlob(ref.sha256, mime, ref.size);
+    return Response.json({ sha256: ref.sha256, size: ref.size, mime }, { status: 201 });
+  } catch (err) {
+    if (err instanceof PayloadTooLarge) {
+      return Response.json({ error: `blob exceeds ${max} bytes` }, { status: 413 });
+    }
+    throw err;
+  }
+}
+
+/**
+ * Serves blob bytes by sha256. Immutable (content-addressed) so it's cached
+ * hard; the mime comes from the metadata row, not the file. With the S3 backend
+ * the returned `S3File` makes this a redirect to a presigned URL (serving
+ * offload) rather than a proxy of the bytes.
+ */
+async function serveBlob(sha256: string, store: Store, blobs: BlobStore): Promise<Response> {
+  if (!isSha256(sha256)) return new Response("not found", { status: 404 });
+  const meta = store.getBlob(sha256);
+  const blob = meta ? await blobs.get(sha256) : null;
+  if (!meta || !blob) return new Response("not found", { status: 404 });
+  return new Response(blob, {
+    headers: {
+      "Content-Type": meta.mime,
+      "Cache-Control": "public, max-age=31536000, immutable",
+      "Content-Disposition": "inline",
+    },
+  });
+}
+
 /** Partial curation update; `displayName: null` clears an override. */
 function patchModel(data: ModelPatchBody, store: Store): Response {
   const rejected = requireKnownModel(data.ref);
@@ -274,10 +348,19 @@ function patchModel(data: ModelPatchBody, store: Store): Response {
  * handler runs. Everything dynamic lives under `/api/` so a future service
  * worker can bypass it cleanly and cache only the static shell.
  */
-export function apiRoutes(deps: { store: Store }) {
-  const { store } = deps;
+export function apiRoutes(deps: { store: Store; blobs: BlobStore }) {
+  const { store, blobs } = deps;
   return {
     "/health": { GET: () => Response.json({ ok: true }) },
+
+    // Content-addressed blobs: upload (raw body) → sha256; fetch by sha256.
+    "/api/blobs": {
+      POST: (req: Bun.BunRequest<"/api/blobs">) => uploadBlob(req, store, blobs),
+    },
+    "/api/blobs/:sha256": {
+      GET: (req: Bun.BunRequest<"/api/blobs/:sha256">) =>
+        serveBlob(req.params.sha256, store, blobs),
+    },
 
     "/api/conversations": {
       // `?q=` searches titles + message contents; no query lists all, newest first.

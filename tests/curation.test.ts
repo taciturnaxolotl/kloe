@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Store } from "../src/store";
 import { apiRoutes } from "../src/http";
+import { FsBlobStore } from "../src/blobs";
 import { ProviderRegistry } from "../src/providers";
 import { setRegistry } from "../src/inference";
 import { Catalog } from "../src/catalog";
@@ -33,7 +34,8 @@ function freshApp() {
   const tmp = mkdtempSync(join(tmpdir(), "kloe-cur-"));
   tmpDirs.push(tmp);
   const store = new Store(join(tmp, "test.db"));
-  const server = Bun.serve({ port: 0, routes: apiRoutes({ store }) });
+  const blobs = new FsBlobStore(join(tmp, "blobs"));
+  const server = Bun.serve({ port: 0, routes: apiRoutes({ store, blobs }) });
   servers.push(server);
   return { base: server.url.origin, store };
 }

@@ -5,8 +5,10 @@ import { Store } from "./src/store";
 import { initInference } from "./src/inference";
 import { apiRoutes, getActor, evictIdleActors } from "./src/http";
 import { JobDriver } from "./src/drive";
+import { createBlobStore } from "./src/blobs";
+import { sweepOrphanBlobs } from "./src/gc";
 import { getConfig } from "./src/settings";
-import { REAP_INTERVAL_MS } from "./src/config";
+import { REAP_INTERVAL_MS, BLOB_GC_GRACE_MS, BLOB_GC_INTERVAL_MS } from "./src/config";
 
 /**
  * Web entrypoint. Bun's native `routes` serve the HTML pages (transpiled,
@@ -23,6 +25,7 @@ if (import.meta.main) {
   await initInference();
 
   const store = new Store();
+  const blobs = createBlobStore();
   const driver = new JobDriver(store, (id) => getActor(id, store));
 
   setInterval(() => {
@@ -35,6 +38,14 @@ if (import.meta.main) {
     store.reap(Date.now());
     evictIdleActors();
   }, REAP_INTERVAL_MS);
+
+  // Blob GC: reclaim orphaned blobs (no conversation references them) past the
+  // grace window. Runs on its own slower cadence since it touches the byte store.
+  setInterval(() => {
+    void sweepOrphanBlobs(store, blobs, BLOB_GC_GRACE_MS).catch((err) =>
+      console.warn(`blob gc: ${(err as Error).message}`),
+    );
+  }, BLOB_GC_INTERVAL_MS);
 
   // The favicon <link>s and the manifest are bundled straight from the HTML
   // heads (Bun hashes them and rewrites the hrefs). The manifest's own icons
@@ -65,7 +76,7 @@ if (import.meta.main) {
       "/settings": settingsHTML,
       "/conversations": conversationsHTML,
       ...staticRoutes,
-      ...apiRoutes({ store }),
+      ...apiRoutes({ store, blobs }),
     },
   });
   console.log(`kloe listening on http://localhost:${port}`);
