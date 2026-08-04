@@ -8,6 +8,7 @@ import { ParseError } from "./errors";
 export const Event = {
   User: "user-message",
   Queued: "queued-message",
+  QueuedCancelled: "queued-cancelled",
   MsgStart: "message-start",
   TextDelta: "text-delta",
   ToolCall: "tool-call",
@@ -43,6 +44,12 @@ export interface QueuedMessageData {
   model: string;
   /** Files/images attached to the steered message; absent for plain text. */
   attachments?: AttachmentRef[];
+}
+
+/** Tombstones a queued steer (by runId) so it drops out of the pending queue. */
+export interface QueuedCancelledData {
+  threadId: string;
+  runId: string;
 }
 
 export interface RunStartedData {
@@ -110,6 +117,7 @@ export interface CancelledData {
 export type EventData =
   | UserMessageData
   | QueuedMessageData
+  | QueuedCancelledData
   | RunStartedData
   | MessageStartData
   | TextDeltaData

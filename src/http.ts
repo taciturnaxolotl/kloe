@@ -331,18 +331,33 @@ async function uploadBlob(req: Request, store: Store, blobs: BlobStore): Promise
  * the returned `S3File` makes this a redirect to a presigned URL (serving
  * offload) rather than a proxy of the bytes.
  */
-async function serveBlob(sha256: string, store: Store, blobs: BlobStore): Promise<Response> {
+async function serveBlob(
+  sha256: string,
+  store: Store,
+  blobs: BlobStore,
+  filename?: string,
+): Promise<Response> {
   if (!isSha256(sha256)) return new Response("not found", { status: 404 });
   const meta = store.getBlob(sha256);
   const blob = meta ? await blobs.get(sha256) : null;
   if (!meta || !blob) return new Response("not found", { status: 404 });
+  // The original filename is per-reference (not stored on the content-addressed
+  // blob), so the caller passes it via `?name=`. Sanitized to a single safe
+  // path segment so it can't inject header bytes or a Content-Disposition break.
+  const safe = filename ? sanitizeFilename(filename) : "";
+  const disposition = safe ? `inline; filename="${safe}"` : "inline";
   return new Response(blob, {
     headers: {
       "Content-Type": meta.mime,
       "Cache-Control": "public, max-age=31536000, immutable",
-      "Content-Disposition": "inline",
+      "Content-Disposition": disposition,
     },
   });
+}
+
+/** A filename reduced to one safe segment: no path separators, quotes, or control bytes. */
+function sanitizeFilename(name: string): string {
+  return name.replace(/[^\w.\- ]+/g, "_").slice(0, 128);
 }
 
 /** Partial curation update; `displayName: null` clears an override. */
@@ -377,7 +392,12 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore }) {
     },
     "/api/blobs/:sha256": {
       GET: (req: Bun.BunRequest<"/api/blobs/:sha256">) =>
-        serveBlob(req.params.sha256, store, blobs),
+        serveBlob(
+          req.params.sha256,
+          store,
+          blobs,
+          new URL(req.url).searchParams.get("name") ?? undefined,
+        ),
     },
 
     "/api/conversations": {
@@ -419,6 +439,19 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore }) {
         startSteer(req.params.id, data, store)),
       GET: (req: Bun.BunRequest<"/api/conversations/:id/steer">) =>
         Response.json({ queued: store.pendingQueue(req.params.id) }),
+    },
+    // Remove a still-pending steer from the queue (before it's promoted).
+    "/api/conversations/:id/steer/:runId": {
+      DELETE: (req: Bun.BunRequest<"/api/conversations/:id/steer/:runId">) => {
+        const { id, runId } = req.params;
+        // Only tombstone something actually queued, so a bad runId can't spam
+        // the log; already-promoted or already-cancelled steers 404.
+        if (!store.pendingQueue(id).some((m) => m.runId === runId)) {
+          return Response.json({ error: "no such queued message" }, { status: 404 });
+        }
+        getActor(id, store).cancelSteer(runId);
+        return Response.json({ ok: true });
+      },
     },
     "/api/conversations/:id/events": {
       GET: (req: Bun.BunRequest<"/api/conversations/:id/events">) =>

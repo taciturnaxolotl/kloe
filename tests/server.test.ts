@@ -693,3 +693,51 @@ test("steer rejects an attachment whose blob was never uploaded (422)", async ()
   });
   expect(res.status).toBe(422);
 });
+
+test("a queued steer can be removed before it's promoted", async () => {
+  const conv = "steer-cancel";
+  await steerPost(base, conv, { content: "cancel me", model: "echo", runId: "sc-1" });
+  await steerPost(base, conv, { content: "keep me", model: "echo", runId: "sc-2" });
+  let pending = (await (await fetch(`${base}/api/conversations/${conv}/steer`)).json()) as {
+    queued: Array<{ runId: string }>;
+  };
+  expect(pending.queued.map((m) => m.runId)).toEqual(["sc-1", "sc-2"]);
+
+  const del = await fetch(`${base}/api/conversations/${conv}/steer/sc-1`, { method: "DELETE" });
+  expect(del.status).toBe(200);
+  pending = (await (await fetch(`${base}/api/conversations/${conv}/steer`)).json()) as {
+    queued: Array<{ runId: string }>;
+  };
+  expect(pending.queued.map((m) => m.runId)).toEqual(["sc-2"]); // sc-1 gone, sc-2 stays
+});
+
+test("cancelling a non-pending steer is a 404 (no log spam)", async () => {
+  const res = await fetch(`${base}/api/conversations/steer-cancel-404/steer/nope`, { method: "DELETE" });
+  expect(res.status).toBe(404);
+});
+
+test("a cancelled steer is not promoted on flush", async () => {
+  const conv = "steer-cancel-flush";
+  await steerPost(base, conv, { content: "doomed", model: "echo", runId: "cf-1" });
+  await fetch(`${base}/api/conversations/${conv}/steer/cf-1`, { method: "DELETE" });
+  await new JobDriver(store, (id) => getActor(id, store)).driveOnce();
+  const promoted = getActor(conv, store)
+    .replay(0)
+    .some((e) => e.event === "user-message" && (e.data as { runId: string }).runId === "cf-1");
+  expect(promoted).toBe(false);
+});
+
+test("GET /api/blobs/:sha256?name= sets the download filename", async () => {
+  const bytes = new TextEncoder().encode("named download");
+  const { sha256 } = (await (await fetch(`${base}/api/blobs`, { method: "POST", body: bytes })).json()) as {
+    sha256: string;
+  };
+  const res = await fetch(`${base}/api/blobs/${sha256}?name=report%20final.pdf`);
+  expect(res.headers.get("content-disposition")).toContain('filename="report final.pdf"');
+  // Path-traversal / injection in the name is neutralized to one safe segment:
+  // no separators (can't traverse) and no header-break bytes.
+  const evil = await fetch(`${base}/api/blobs/${sha256}?name=../../etc/passwd`);
+  const cd = evil.headers.get("content-disposition")!;
+  expect(cd).not.toContain("/");
+  expect(cd).not.toMatch(/[\r\n]/);
+});

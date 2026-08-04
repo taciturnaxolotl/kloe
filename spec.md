@@ -68,9 +68,9 @@ The conversation is an **append-only event log**. Each event:
 ```
 {
   id:    "<conversationId>:<seq>",  // monotonic; drives Last-Event-ID resume
-  event: "user-message" | "queued-message" | "run-started" | "message-start" |
-         "text-delta" | "message-end" | "run-error" | "cancelled" |
-         "tool-call" | "tool-result",
+  event: "user-message" | "queued-message" | "queued-cancelled" | "run-started" |
+         "message-start" | "text-delta" | "message-end" | "run-error" |
+         "cancelled" | "tool-call" | "tool-result",
   data:  { ... }                    // event-specific payload
 }
 ```
@@ -136,7 +136,9 @@ questions).
 - `POST /api/conversations/:id/prompt` — appends the user message through the
   actor, enqueues a job, returns 202 with `{jobId, runId, messageId}`. The run
   executes later in the drive loop, not in the handler. The user message and
-  the run share one `runId` so clients can correlate the optimistic echo.
+  the run share one `runId` so clients can correlate the optimistic echo. May
+  carry `attachments[]` (blob refs from `POST /api/blobs`); each is validated to
+  reference a real blob (422 otherwise) and registered in `blob_refs`.
 - `POST /api/conversations/:id/cancel` — sets the cancel flag; the run checks it
   between token batches and aborts upstream. **A dropped connection is NOT a cancel**
   (resume is in play), so cancellation must be explicit and out-of-band.
@@ -145,9 +147,15 @@ questions).
   event (visible on every device) and enqueues one flush job. When the current
   run ends, the whole pending queue is promoted to `user-message` events and
   run as ONE batched generation — all queued messages go out together, never
-  one at a time.
-- `GET /api/conversations/:id/steer` — the pending steer queue (derived from
-  the log: `queued-message` events with no matching `user-message` yet).
+  one at a time. Carries `attachments[]` like `prompt` (registered at queue time
+  so they're GC-protected while pending, and promoted with the message).
+- `DELETE /api/conversations/:id/steer/:runId` — removes ONE still-pending steer
+  by `runId` (append-only, via a `queued-cancelled` tombstone the queue
+  derivation honors). 404 if that runId isn't currently queued, so a stale id
+  can't spam the log. There is no bulk clear — the client deletes per item.
+- `GET /api/conversations/:id/steer` — the pending steer queue (derived from the
+  log: `queued-message` events not yet superseded by a `user-message` promotion
+  or a `queued-cancelled` removal).
 - `GET /api/conversations` — the rail: ids ordered by most recent activity,
   each with a title derived from its first user message.
 - `GET /api/conversations/:id/events` — full replay of the durable log.
@@ -461,6 +469,53 @@ cookie/session auth as everything else, with immutable long-cache headers and a
 single-user today (is this *the* user); per-blob tenant scoping is deferred until
 kloe is actually multi-user.
 
+### Attachment handling — by type, plus the universal sandbox path
+
+Attachments are **files of any type**, not just images. `kind` is a coarse UI
+hint; **`mime` drives how the attachment reaches the model**, cheapest path
+first:
+
+1. **Image** (`image/*`, and the model reports `supportsImages`) → an AI SDK
+   **image part** — native vision, no sandbox needed.
+2. **Text-like** (`text/*`, JSON/CSV/source, and small enough to fit the context
+   budget) → **inlined as a text part**, fenced and labeled with its `name`.
+   This is the easiest case: the bytes just become context.
+3. **Everything else** — binary, or text too large to inline — is **not put in
+   context at all**. It's surfaced to the model as an addressable handle it can
+   pull into the **sandbox** and operate on with tools (parse a PDF, probe an
+   archive, run a binary). This is the same "big data is touched through tools,
+   not context" rule, applied to uploads.
+
+**The universal invariant, independent of the routing above: every attachment —
+any type, any size — is addressable by a stable handle (its `sha256`/ref) and can
+be materialized read-only into the sandbox workspace on demand by the model.**
+Inlining and sandbox-access are orthogonal: inlining is a convenience for what
+fits in context; the sandbox is the always-available way to *act on* the bytes.
+So even an image or a small text file the model already saw in context can still
+be pulled into the sandbox as a file (to resize it, grep it, feed it to a tool).
+
+The mechanism is the one the sandbox section already defines: attachments are
+blobs, and blobs are mounted into `/workspace/inputs/` read-only (virtiofs/9p,
+zero-copy, content-addressed, uncorruptable) — plus a tool
+(`get_attachment(sha256)` / `read_file`) so the model can request any attachment
+by reference regardless of how (or whether) it appeared in context. The model
+never needs the bytes inlined to work with a file; it needs the handle.
+
+**Original filenames are preserved and used.** The blob is content-addressed
+(keyed by `sha256`, shared across references), so the human name lives on the
+*reference* (`Attachment.name`), not the blob. That name is carried durably in
+the event log and put to work in two places:
+
+- **In the sandbox**, an attachment materializes as `/workspace/inputs/<name>`,
+  not `/workspace/inputs/<sha256>` — models reason far better about `report.pdf`
+  than a hash, and a tool that writes `output.csv` reads naturally. Collisions
+  (same name, different bytes, or the same name twice in one turn) are
+  disambiguated by a short prefix directory (`inputs/<n>/<name>`), never by
+  mangling the name itself.
+- **On download**, `GET /api/blobs/:sha256?name=<name>` sets a sanitized
+  `Content-Disposition` filename (one safe path segment — no separators or
+  header-break bytes), so a user saving a file gets its real name back.
+
 ### Thinking (reasoning)
 
 Reasoning is another stream of durable parts on the assistant turn, not a
@@ -637,10 +692,14 @@ Tools are reproducible from the manifest, so they're disposable; files the agent
 - **Two channels in/out of the VM, kept distinct**: the **nix store** (tools) is
   spindle's read-only store disk + cache proxies; **data blobs** (inputs/outputs)
   are kloe's — inputs mounted read-only (virtiofs/9p, zero-copy, uncorruptable),
-  outputs harvested after the step.
-- **Reuse is by sha256**: an artifact from turn 3 fed to a tool in turn 7 is
-  just its reference; the broker materializes the same blob into the new
-  workspace. No re-upload, no byte-copying.
+  outputs harvested after the step. **User attachments are inputs too**: any
+  attachment (image, text, or binary — see "Attachment handling") is a blob, so
+  the model materializes it into `/workspace/inputs/` by `sha256` the same way it
+  reuses a prior artifact. Every attachment is downloadable into the sandbox
+  regardless of type or whether it was also inlined into context.
+- **Reuse is by sha256**: an artifact from turn 3, or an attachment from turn 1,
+  fed to a tool in turn 7 is just its reference; the broker materializes the same
+  blob into the new workspace. No re-upload, no byte-copying.
 - **Render** like tool cards: image → inline thumbnail (user uploads and agent
   images render identically); other → a download chip served from
   `GET /api/blobs/:sha256`. **Opt-in persistent per-chat volume** exists for a
@@ -667,8 +726,10 @@ Reasoning signatures ride `message-end` (or `reasoning-end`) rather than a delta
 Land it in this order — each step is independently useful and proves one layer:
 
 1. **Blob store + attachments** — `BlobStore` (fs backend), `POST /api/blobs`,
-   `attachments[]` on user messages, thumbnails, image parts in `history()`. No
-   agentic loop yet.
+   `attachments[]` on user (and steered) messages, thumbnails. Then mime-routed
+   delivery to the model in `history()`: image part / inlined text / sandbox-only
+   (see "Attachment handling"). No agentic loop yet — the sandbox path lands with
+   the executor (step 5), but the *addressability* (blob refs) is here from day one.
 2. **Full-stream migration + one pure tool** (e.g. web search) — new `RunStep`
    kinds, durable `tool-call`/`tool-result`, `history()` folding, tool cards.
    In-proc executor, zero risk.

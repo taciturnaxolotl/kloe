@@ -411,7 +411,8 @@ export class Store {
        WHERE e.conversation_id = ? AND e.event = 'queued-message'
          AND NOT EXISTS (
            SELECT 1 FROM events u
-           WHERE u.conversation_id = e.conversation_id AND u.event = 'user-message'
+           WHERE u.conversation_id = e.conversation_id
+             AND u.event IN ('user-message', 'queued-cancelled')
              AND json_extract(u.data, '$.runId') = json_extract(e.data, '$.runId')
          )
        ORDER BY e.seq ASC`,
@@ -654,7 +655,8 @@ export class Store {
   /**
    * Steered messages waiting to be flushed into a run, oldest first. Derived
    * from the event log: a `queued-message` is pending until a `user-message`
-   * with the same runId promotes it. Malformed rows are skipped, never fatal.
+   * (promotion) or a `queued-cancelled` (removal) with the same runId supersedes
+   * it. Malformed rows are skipped, never fatal.
    */
   pendingQueue(conversationId: string): PendingMessage[] {
     const rows = this.pendingQueueStmt.all(conversationId) as Array<{ data: string }>;

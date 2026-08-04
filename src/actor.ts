@@ -132,6 +132,18 @@ export class ConversationActor {
   }
 
   /**
+   * Tombstones a queued steer so it drops out of the pending queue. The queue
+   * is derived from the log, so this is just another event — every device sees
+   * the removal, and a reconnecting client rebuilds the queue without it. The
+   * blob_refs added at queue time are left: the (now-tombstoned) queued-message
+   * still holds the reference, so the blob stays protected until the whole
+   * conversation is deleted (per-message deref would need finer-grained refs).
+   */
+  cancelSteer(runId: string): void {
+    this.persist(Event.QueuedCancelled, { threadId: this.conversationId, runId });
+  }
+
+  /**
    * Requests cancellation. With no argument: aborts the currently running run
    * if there is one, otherwise defers to the next run (covers the
    * `/cancel`-before-claim race). With a runId: cancels that specific run even
