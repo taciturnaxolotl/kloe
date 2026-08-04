@@ -211,14 +211,30 @@ function openStream(conversationId: string, req: Request, store: Store): Respons
  * message and the run share `runId` so the client can correlate the
  * optimistic echo.
  */
+/**
+ * 422 if any attachment references a blob that was never uploaded, so the log
+ * never carries a dangling reference (and blob_refs never points at nothing).
+ * Shared by the prompt and steer paths.
+ */
+function requireKnownBlobs(attachments: PromptBody["attachments"], store: Store): Response | null {
+  for (const a of attachments ?? []) {
+    if (!store.getBlob(a.sha256)) {
+      return Response.json({ error: `unknown blob "${a.sha256}"` }, { status: 422 });
+    }
+  }
+  return null;
+}
+
 function startRun(conversationId: string, data: PromptBody, store: Store): Response {
   const rejected = requireKnownModel(data.model);
   if (rejected) return rejected;
+  const badBlob = requireKnownBlobs(data.attachments, store);
+  if (badBlob) return badBlob;
 
   const actor = getActor(conversationId, store);
   const runId = data.runId ?? randomUUID();
   const messageId = randomUUID();
-  actor.appendUser(data.content, runId);
+  actor.appendUser(data.content, runId, data.attachments);
 
   const jobId = `${conversationId}:${randomUUID()}`;
   store.enqueue(jobId, conversationId, { conversationId, runId, messageId, prompt: data.content, model: data.model });
@@ -239,10 +255,12 @@ function startRun(conversationId: string, data: PromptBody, store: Store): Respo
 function startSteer(conversationId: string, data: SteerBody, store: Store): Response {
   const rejected = requireKnownModel(data.model);
   if (rejected) return rejected;
+  const badBlob = requireKnownBlobs(data.attachments, store);
+  if (badBlob) return badBlob;
 
   const actor = getActor(conversationId, store);
   const runId = data.runId ?? randomUUID();
-  actor.queueSteer(data.content, data.model, runId);
+  actor.queueSteer(data.content, data.model, runId, data.attachments);
 
   // One flush job is enough to drain the whole queue; skip it when one is
   // already waiting (it drains everything queued by the time it runs).
@@ -407,9 +425,15 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore }) {
         Response.json(getActor(req.params.id, store).replay(0)),
     },
     "/api/conversations/:id": {
-      DELETE: (req: Bun.BunRequest<"/api/conversations/:id">) => {
-        store.deleteConversation(req.params.id);
+      DELETE: async (req: Bun.BunRequest<"/api/conversations/:id">) => {
+        const orphaned = store.deleteConversation(req.params.id);
         actors.delete(req.params.id); // drop the in-memory actor so it can't resurrect the log
+        // Free blobs this conversation was the last to reference: bytes first,
+        // then the metadata row (a crash between leaves it for the GC sweep).
+        for (const sha256 of orphaned) {
+          await blobs.delete(sha256);
+          store.deleteBlob(sha256);
+        }
         return Response.json({ ok: true });
       },
       PATCH: withBody(RenameBody, (data, req: Bun.BunRequest<"/api/conversations/:id">) => {

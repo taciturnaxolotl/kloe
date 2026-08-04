@@ -580,3 +580,116 @@ test("POST /api/blobs rejects a body over the size cap with 413", async () => {
     setConfig(base0); // restore the cap for any later tests
   }
 });
+
+// ---- attachments on messages ------------------------------------------
+/** Uploads bytes and returns the attachment reference the client would send. */
+async function upload(text: string, name: string, kind: "image" | "file"): Promise<{ sha256: string; name: string; mime: string; kind: "image" | "file" }> {
+  const res = await fetch(`${base}/api/blobs`, { method: "POST", body: new TextEncoder().encode(text) });
+  const { sha256, mime } = (await res.json()) as { sha256: string; mime: string };
+  return { sha256, name, mime, kind };
+}
+
+test("prompt with attachments records them on the user-message and links blob_refs", async () => {
+  const conv = "att-1";
+  const att = await upload("pretend png", "cat.png", "image");
+  const res = await fetch(`${base}/api/conversations/${conv}/prompt`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content: "look", model: "echo", runId: "a1", attachments: [att] }),
+  });
+  expect(res.status).toBe(202);
+
+  const events = getActor(conv, store).replay(0);
+  const user = events.find((e) => e.event === "user-message");
+  const data = user!.data as { attachments?: Array<{ sha256: string; name: string }> };
+  expect(data.attachments).toHaveLength(1);
+  expect(data.attachments![0]!.sha256).toBe(att.sha256);
+  expect(data.attachments![0]!.name).toBe("cat.png");
+
+  // blob_refs now protects the blob from GC.
+  const refd = store.findOrphanBlobs(Date.now() + 1_000_000);
+  expect(refd).not.toContain(att.sha256);
+});
+
+test("prompt rejects an attachment whose blob was never uploaded (422)", async () => {
+  const res = await fetch(`${base}/api/conversations/att-bad/prompt`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      content: "x",
+      model: "echo",
+      attachments: [{ sha256: "a".repeat(64), name: "ghost", mime: "image/png", kind: "image" }],
+    }),
+  });
+  expect(res.status).toBe(422);
+});
+
+test("deleting a conversation frees blobs it was the last to reference", async () => {
+  const conv = "att-del";
+  const att = await upload("delete me", "doc.txt", "file");
+  await fetch(`${base}/api/conversations/${conv}/prompt`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content: "keep then delete", model: "echo", attachments: [att] }),
+  });
+  expect(store.getBlob(att.sha256)).toBeDefined();
+
+  const del = await fetch(`${base}/api/conversations/${conv}`, { method: "DELETE" });
+  expect(del.status).toBe(200);
+  expect(store.getBlob(att.sha256)).toBeUndefined(); // row gone
+  expect((await fetch(`${base}/api/blobs/${att.sha256}`)).status).toBe(404); // bytes gone
+});
+
+test("a blob shared by two conversations survives deleting one", async () => {
+  const att = await upload("shared bytes", "s.bin", "file");
+  for (const conv of ["share-a", "share-b"]) {
+    await fetch(`${base}/api/conversations/${conv}/prompt`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: "hi", model: "echo", attachments: [att] }),
+    });
+  }
+  await fetch(`${base}/api/conversations/share-a`, { method: "DELETE" });
+  expect(store.getBlob(att.sha256)).toBeDefined(); // share-b still references it
+  expect((await fetch(`${base}/api/blobs/${att.sha256}`)).status).toBe(200);
+});
+
+test("steer with attachments queues them, and flush promotes them to the user turn", async () => {
+  const conv = "steer-att";
+  const att = await upload("steered image", "pic.png", "image");
+  const res = await fetch(`${base}/api/conversations/${conv}/steer`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content: "with a pic", model: "echo", runId: "sa-1", attachments: [att] }),
+  });
+  expect(res.status).toBe(202);
+
+  // The queued-message (visible before promotion) carries the attachments.
+  const queued = getActor(conv, store).replay(0).find((e) => e.event === "queued-message");
+  expect((queued!.data as { attachments?: unknown[] }).attachments).toHaveLength(1);
+  // GET /steer reflects them too (reconnect rebuild path).
+  const pending = (await (await fetch(`${base}/api/conversations/${conv}/steer`)).json()) as {
+    queued: Array<{ runId: string; attachments?: unknown[] }>;
+  };
+  expect(pending.queued[0]!.attachments).toHaveLength(1);
+
+  // Flush the queue: the steer is promoted to a user-message carrying the attachments.
+  await new JobDriver(store, (id) => getActor(id, store)).driveOnce();
+  const promoted = getActor(conv, store)
+    .replay(0)
+    .find((e) => e.event === "user-message" && (e.data as { runId: string }).runId === "sa-1");
+  expect((promoted!.data as { attachments?: Array<{ sha256: string }> }).attachments![0]!.sha256).toBe(att.sha256);
+});
+
+test("steer rejects an attachment whose blob was never uploaded (422)", async () => {
+  const res = await fetch(`${base}/api/conversations/steer-att-bad/steer`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      content: "x",
+      model: "echo",
+      attachments: [{ sha256: "b".repeat(64), name: "ghost", mime: "image/png", kind: "image" }],
+    }),
+  });
+  expect(res.status).toBe(422);
+});

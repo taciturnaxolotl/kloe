@@ -7,6 +7,7 @@ import {
   type EventData,
   type EventName,
   type TokenUsage,
+  type AttachmentRef,
   type UserMessageData,
   type TextDeltaData,
   type MessageEndData,
@@ -85,13 +86,21 @@ export class ConversationActor {
     }
   }
 
-  /** Appends the user's prompt; the caller starts the run separately. */
-  appendUser(content: string, runId: string = randomUUID()): void {
+  /**
+   * Appends the user's prompt; the caller starts the run separately. Any
+   * attachments ride in the event and are registered in `blob_refs` so the GC
+   * protects those blobs and deleting the conversation frees them.
+   */
+  appendUser(content: string, runId: string = randomUUID(), attachments?: AttachmentRef[]): void {
     this.persist(Event.User, {
       runId,
       threadId: this.conversationId,
       content: truncateUtf8(content),
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
     });
+    if (attachments) {
+      for (const a of attachments) this.store.addBlobRef(a.sha256, this.conversationId);
+    }
   }
 
   /**
@@ -101,13 +110,24 @@ export class ConversationActor {
    * batched generation when the current run finishes. The queue is derived
    * from the log, so the event itself is the durable state.
    */
-  queueSteer(content: string, model: string, runId: string = randomUUID()): string {
+  queueSteer(
+    content: string,
+    model: string,
+    runId: string = randomUUID(),
+    attachments?: AttachmentRef[],
+  ): string {
     this.persist(Event.Queued, {
       threadId: this.conversationId,
       runId,
       content: truncateUtf8(content),
       model,
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
     });
+    // Register refs now (not just on promotion) so a staged steer's blob is
+    // protected from GC during the queued window.
+    if (attachments) {
+      for (const a of attachments) this.store.addBlobRef(a.sha256, this.conversationId);
+    }
     return runId;
   }
 

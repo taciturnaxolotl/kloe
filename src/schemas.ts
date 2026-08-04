@@ -8,11 +8,25 @@ import * as v from "valibot";
  * that returns 422 today.
  */
 
+/**
+ * A reference to an uploaded blob (POST /api/blobs) attached to a message. The
+ * bytes live in the BlobStore; only this reference rides the event log. `name`
+ * is per-reference (the original filename); `kind` drives how the UI renders it.
+ */
+export const Attachment = v.object({
+	sha256: v.pipe(v.string(), v.regex(/^[0-9a-f]{64}$/, "sha256 must be 64 hex chars")),
+	name: v.string(),
+	mime: v.string(),
+	kind: v.picklist(["image", "file"]),
+});
+export type Attachment = v.InferOutput<typeof Attachment>;
+
 /** POST /api/conversations/:id/prompt */
 export const PromptBody = v.object({
 	content: v.string(),
 	model: v.pipe(v.string(), v.minLength(1, "model is required")),
 	runId: v.optional(v.string()),
+	attachments: v.optional(v.array(Attachment)),
 });
 export type PromptBody = v.InferOutput<typeof PromptBody>;
 

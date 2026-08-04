@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { getConfig } from "./settings";
+import type { AttachmentRef } from "./events";
 
 export interface JobRow {
   id: string;
@@ -38,6 +39,7 @@ export interface PendingMessage {
   runId: string;
   content: string;
   model: string;
+  attachments?: AttachmentRef[];
 }
 
 /**
@@ -267,6 +269,7 @@ export class Store {
   private getBlobStmt: ReturnType<Database["prepare"]>;
   private findOrphanBlobsStmt: ReturnType<Database["prepare"]>;
   private deleteBlobStmt: ReturnType<Database["prepare"]>;
+  private addBlobRefStmt: ReturnType<Database["prepare"]>;
 
   constructor(databasePath: string = getConfig().server.dbPath) {
     // Ensure the parent directory exists so a fresh checkout (where `data/` is
@@ -437,6 +440,10 @@ export class Store {
          AND NOT EXISTS (SELECT 1 FROM blob_refs r WHERE r.sha256 = blobs.sha256)`,
     );
     this.deleteBlobStmt = this.db.prepare(`DELETE FROM blobs WHERE sha256 = ?`);
+    this.addBlobRefStmt = this.db.prepare(
+      `INSERT INTO blob_refs (sha256, conversation_id) VALUES (?, ?)
+       ON CONFLICT(sha256, conversation_id) DO NOTHING`,
+    );
   }
 
   /**
@@ -474,12 +481,28 @@ export class Store {
       .run(trimmed === "" ? null : trimmed, id);
   }
 
-  /** Permanently removes a conversation and everything scoped to it. */
-  deleteConversation(id: string): void {
-    this.db.transaction(() => {
+  /**
+   * Permanently removes a conversation and everything scoped to it, and returns
+   * the sha256s of blobs left orphaned by the removal (referenced by this
+   * conversation and now by no other). The caller deletes those bytes from the
+   * BlobStore, then `deleteBlob`s the rows — bytes-first, so a crash between
+   * leaves the row for the periodic sweep rather than a byte with no record.
+   */
+  deleteConversation(id: string): string[] {
+    return this.db.transaction(() => {
+      // Blobs this conversation referenced — the only candidates for orphaning.
+      const candidates = (
+        this.db
+          .prepare("SELECT DISTINCT sha256 FROM blob_refs WHERE conversation_id = ?")
+          .all(id) as Array<{ sha256: string }>
+      ).map((r) => r.sha256);
+      this.db.prepare("DELETE FROM blob_refs WHERE conversation_id = ?").run(id);
       this.db.prepare("DELETE FROM events WHERE conversation_id = ?").run(id);
       this.db.prepare("DELETE FROM jobs WHERE conversation_id = ?").run(id);
       this.db.prepare("DELETE FROM conversations WHERE id = ?").run(id);
+      // Of those candidates, the ones no conversation references anymore.
+      const stillRef = this.db.prepare("SELECT 1 FROM blob_refs WHERE sha256 = ? LIMIT 1");
+      return candidates.filter((sha) => stillRef.get(sha) == null);
     })();
   }
 
@@ -533,6 +556,15 @@ export class Store {
   /** Drops a blob's metadata row (bytes are removed from the BlobStore separately). */
   deleteBlob(sha256: string): void {
     this.deleteBlobStmt.run(sha256);
+  }
+
+  /**
+   * Links a blob to a conversation (idempotent). A blob keeps rows from every
+   * conversation that references it, so dedup is safe: deleting one conversation
+   * only orphans a blob no other conversation still points at.
+   */
+  addBlobRef(sha256: string, conversationId: string): void {
+    this.addBlobRefStmt.run(sha256, conversationId);
   }
 
   /** Atomic append + seq advance in one transaction. */
@@ -631,7 +663,9 @@ export class Store {
       try {
         const d = JSON.parse(r.data) as Record<string, unknown>;
         if (typeof d.runId === "string" && typeof d.content === "string" && typeof d.model === "string") {
-          out.push({ runId: d.runId, content: d.content, model: d.model });
+          const msg: PendingMessage = { runId: d.runId, content: d.content, model: d.model };
+          if (Array.isArray(d.attachments)) msg.attachments = d.attachments as AttachmentRef[];
+          out.push(msg);
         }
       } catch {
         // malformed row: skip it rather than poison the flush

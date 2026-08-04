@@ -19,10 +19,20 @@ export const Event = {
 } as const;
 export type EventName = (typeof Event)[keyof typeof Event];
 
+/** A blob referenced by a message (bytes in the BlobStore, keyed by sha256). */
+export interface AttachmentRef {
+  sha256: string;
+  name: string;
+  mime: string;
+  kind: "image" | "file";
+}
+
 export interface UserMessageData {
   threadId: string;
   runId: string;
   content: string;
+  /** Files/images the user attached; absent for a plain text turn. */
+  attachments?: AttachmentRef[];
 }
 
 /** A steered message parked in the queue until the current run finishes. */
@@ -31,6 +41,8 @@ export interface QueuedMessageData {
   runId: string;
   content: string;
   model: string;
+  /** Files/images attached to the steered message; absent for plain text. */
+  attachments?: AttachmentRef[];
 }
 
 export interface RunStartedData {

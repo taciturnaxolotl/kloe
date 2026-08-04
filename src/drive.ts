@@ -102,7 +102,7 @@ export class JobDriver {
     const msgs = this.store.pendingQueue(actor.conversationId);
     if (msgs.length === 0) return;
 
-    for (const m of msgs) actor.appendUser(m.content, m.runId);
+    for (const m of msgs) actor.appendUser(m.content, m.runId, m.attachments);
     await this.runSpec(jobId, actor, {
       runId: msgs[0]!.runId,
       messageId: randomUUID(),
