@@ -78,6 +78,15 @@ function limiterFor(providerName: string): RateLimiter | undefined {
   return l;
 }
 
+/** Whether a model can accept image inputs (false for unknown refs). */
+export function modelSupportsImages(modelRef: string): boolean {
+  try {
+    return getRegistry().listModels().find((m) => m.ref === modelRef)?.supportsImages ?? false;
+  } catch {
+    return false;
+  }
+}
+
 /** Resolves a model ref to a rate-limited LanguageModel. */
 export function resolveModel(modelRef: string): LanguageModel {
   const model = getRegistry().resolveModel(modelRef);

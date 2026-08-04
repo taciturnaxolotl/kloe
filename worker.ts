@@ -2,6 +2,7 @@ import { Store } from "./src/store";
 import { ConversationActor } from "./src/actor";
 import { initInference } from "./src/inference";
 import { JobDriver } from "./src/drive";
+import { createBlobStore } from "./src/blobs";
 import { REAP_INTERVAL_MS } from "./src/config";
 
 /**
@@ -16,6 +17,7 @@ if (import.meta.main) {
   await initInference();
 
   const store = new Store();
+  const blobs = createBlobStore();
   // One actor per claimed conversation. Each job is fully executed before the
   // next is claimed, so a plain map keyed by conversation is sufficient.
   const actors = new Map<string, ConversationActor>();
@@ -26,7 +28,7 @@ if (import.meta.main) {
       actors.set(id, a);
     }
     return a;
-  });
+  }, blobs);
 
   // Reclaim any jobs whose lease expired while we were down, then poll.
   store.reap(Date.now());

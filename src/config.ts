@@ -14,3 +14,7 @@ export const ACTOR_IDLE_TTL_MS = 5 * 60_000;
 // upload and the message that references it (e.g. a file staged but not yet sent).
 export const BLOB_GC_INTERVAL_MS = 5 * 60_000;
 export const BLOB_GC_GRACE_MS = 60 * 60_000;
+// A text-like attachment at or under this size is inlined into the prompt as a
+// text part; larger ones (and all non-text, non-image files) are left for the
+// model to pull into the sandbox instead of bloating the context window.
+export const ATTACHMENT_INLINE_TEXT_MAX = 32 * 1024;

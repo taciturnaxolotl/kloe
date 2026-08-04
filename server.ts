@@ -26,7 +26,7 @@ if (import.meta.main) {
 
   const store = new Store();
   const blobs = createBlobStore();
-  const driver = new JobDriver(store, (id) => getActor(id, store));
+  const driver = new JobDriver(store, (id) => getActor(id, store), blobs);
 
   setInterval(() => {
     void driver.driveOnce();

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Store, parseJobParams, type JobParams } from "./store";
 import { ConversationActor } from "./actor";
-import { run } from "./inference";
+import { run, modelSupportsImages } from "./inference";
+import type { BlobStore } from "./blobs";
 import { LEASE_GRACE_MS, HEARTBEAT_INTERVAL_MS } from "./config";
 
 /**
@@ -34,12 +35,18 @@ interface RunSpec {
 export class JobDriver {
   private readonly store: Store;
   private readonly getActor: (conversationId: string) => ConversationActor;
+  private readonly blobs?: BlobStore;
   /** Conversations with a run in flight in this process. */
   private readonly activeRuns = new Set<string>();
 
-  constructor(store: Store, getActor: (conversationId: string) => ConversationActor) {
+  constructor(
+    store: Store,
+    getActor: (conversationId: string) => ConversationActor,
+    blobs?: BlobStore,
+  ) {
     this.store = store;
     this.getActor = getActor;
+    this.blobs = blobs;
   }
 
   /**
@@ -114,7 +121,12 @@ export class JobDriver {
   private async runSpec(jobId: string, actor: ConversationActor, spec: RunSpec): Promise<void> {
     // Snapshot the conversation (the promoted user messages are already in the
     // log) so the generation carries full context, not just the last message.
-    const messages = actor.history();
+    // Attachments are resolved to model parts here (image / inline text / note),
+    // gated on whether the target model accepts images.
+    const messages = await actor.history({
+      blobs: this.blobs,
+      supportsImages: modelSupportsImages(spec.model),
+    });
     await actor.runText(
       spec.runId,
       spec.messageId,

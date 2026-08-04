@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Store } from "../src/store";
+import { FsBlobStore } from "../src/blobs";
 import { ConversationActor, type Subscriber, type WireEvent } from "../src/actor";
 import { Event } from "../src/events";
 
@@ -100,7 +101,7 @@ test("history reconstructs prior turns as alternating user/assistant messages", 
   });
   a.appendUser("second question"); // the next run's triggering message
 
-  expect(a.history()).toEqual([
+  expect(await a.history()).toEqual([
     { role: "user", content: "first question" },
     { role: "assistant", content: "first answer" },
     { role: "user", content: "second question" },
@@ -111,7 +112,7 @@ test("history merges consecutive user turns (a flushed steer batch) into one", a
   const a = new ConversationActor("t-history-batch", store);
   a.appendUser("part one", "r-a");
   a.appendUser("part two", "r-b");
-  expect(a.history()).toEqual([{ role: "user", content: "part one\n\npart two" }]);
+  expect(await a.history()).toEqual([{ role: "user", content: "part one\n\npart two" }]);
 });
 
 test("history drops an assistant turn that produced no text (stopped before first token)", async () => {
@@ -122,7 +123,7 @@ test("history drops an assistant turn that produced no text (stopped before firs
     yield { kind: "text", chunk: "never" };
   });
   // Only the user turn survives — no empty assistant message.
-  expect(a.history()).toEqual([{ role: "user", content: "hi" }]);
+  expect(await a.history()).toEqual([{ role: "user", content: "hi" }]);
 });
 
 test("cancel mid-token aborts the stream at once and finishes aborted, not error", async () => {
@@ -176,3 +177,74 @@ test("error sets finishReason to error", async () => {
   const err = events.find((e) => e.event === Event.RunErr);
   expect(err).toBeDefined();
 });
+
+// ---- history: attachment mime-routing ----------------------------------
+function blobStore(): FsBlobStore {
+  return new FsBlobStore(join(mkdtempSync(join(tmpdir(), "kloe-ah-")), "blobs"));
+}
+async function stage(
+  blobs: FsBlobStore,
+  text: string,
+  name: string,
+  mime: string,
+  kind: "image" | "file",
+) {
+  const ref = await blobs.put(new TextEncoder().encode(text));
+  store.recordBlob(ref.sha256, mime, ref.size);
+  return { sha256: ref.sha256, name, mime, kind };
+}
+
+test("history: an image attachment becomes an image part when the model supports vision", async () => {
+  const blobs = blobStore();
+  const a = new ConversationActor("t-att-img", store);
+  const att = await stage(blobs, "PNGBYTES", "cat.png", "image/png", "image");
+  a.appendUser("look", "r1", [att]);
+
+  const msgs = await a.history({ blobs, supportsImages: true });
+  expect(msgs).toHaveLength(1);
+  const parts = msgs[0]!.content as Array<{ type: string; text?: string; image?: Uint8Array; mediaType?: string }>;
+  expect(parts[0]).toEqual({ type: "text", text: "look" });
+  expect(parts[1]!.type).toBe("image");
+  expect(parts[1]!.mediaType).toBe("image/png");
+  expect(new TextDecoder().decode(parts[1]!.image!)).toBe("PNGBYTES");
+});
+
+test("history: an image degrades to a sandbox note when the model can't see images", async () => {
+  const blobs = blobStore();
+  const a = new ConversationActor("t-att-noimg", store);
+  const att = await stage(blobs, "PNGBYTES", "cat.png", "image/png", "image");
+  a.appendUser("look", "r1", [att]);
+
+  // No image part to carry, so the turn is all text → collapses to a string
+  // that tells the model to reach the file via the sandbox.
+  const content = msgs0Text(await a.history({ blobs, supportsImages: false }));
+  expect(content).toContain("look");
+  expect(content).toContain("inputs/cat.png");
+});
+
+test("history: a small text file is inlined into the prompt", async () => {
+  const blobs = blobStore();
+  const a = new ConversationActor("t-att-text", store);
+  const att = await stage(blobs, "col1,col2\n1,2", "data.csv", "text/csv", "file");
+  a.appendUser("parse this", "r1", [att]);
+
+  const content = msgs0Text(await a.history({ blobs, supportsImages: true }));
+  expect(content).toContain("Attached file data.csv");
+  expect(content).toContain("col1,col2");
+});
+
+test("history: a binary file becomes a sandbox note, not inlined bytes", async () => {
+  const blobs = blobStore();
+  const a = new ConversationActor("t-att-bin", store);
+  const att = await stage(blobs, "\x00\x01ZIP", "archive.zip", "application/zip", "file");
+  a.appendUser("unpack", "r1", [att]);
+
+  const content = msgs0Text(await a.history({ blobs, supportsImages: true }));
+  expect(content).toContain("inputs/archive.zip");
+});
+
+/** The first message's content as a string (text-only turns collapse to one). */
+function msgs0Text(msgs: Awaited<ReturnType<ConversationActor["history"]>>): string {
+  const c = msgs[0]!.content;
+  return typeof c === "string" ? c : JSON.stringify(c);
+}

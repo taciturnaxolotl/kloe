@@ -13,7 +13,29 @@ import {
   type MessageEndData,
 } from "./events";
 import { truncateUtf8 } from "./sse";
-import { BATCH_FLUSH_MS, BATCH_MAX_DELTAS } from "./config";
+import { BATCH_FLUSH_MS, BATCH_MAX_DELTAS, ATTACHMENT_INLINE_TEXT_MAX } from "./config";
+import type { BlobStore } from "./blobs";
+
+/** A user-message content part while building model messages. */
+type UserPart =
+  | { type: "text"; text: string }
+  | { type: "image"; image: Uint8Array; mediaType: string };
+
+/** Options controlling how `history()` renders attachments for the model. */
+export interface HistoryOptions {
+  /** Resolves attachment bytes; without it, attachments degrade to text notes. */
+  blobs?: BlobStore;
+  /** Whether the target model can accept image parts (else images become notes). */
+  supportsImages?: boolean;
+}
+
+/** Text-like mimes we inline into the prompt (small ones) rather than sandbox. */
+function isTextLike(mime: string): boolean {
+  return (
+    mime.startsWith("text/") ||
+    /^application\/(json|xml|x-?yaml|javascript|typescript|toml|x-ndjson)$/.test(mime)
+  );
+}
 
 export interface WireEvent {
   id: string;
@@ -179,23 +201,42 @@ export class ConversationActor {
    * are excluded; empty assistant turns (e.g. a stop before the first token) are
    * dropped.
    */
-  history(): ModelMessage[] {
+  async history(opts: HistoryOptions = {}): Promise<ModelMessage[]> {
     const out: ModelMessage[] = [];
     const assistantText = new Map<string, string>();
-    const append = (role: "user" | "assistant", content: string): void => {
+    // Consecutive user turns (e.g. a flushed steer batch) accumulate here and
+    // flush as one turn when an assistant turn arrives — same merge rule as
+    // before, but now over parts so attachments survive.
+    let userParts: UserPart[] | null = null;
+    const flushUser = (): void => {
+      const parts = userParts;
+      userParts = null;
+      if (!parts || parts.length === 0) return;
+      // Collapse to a plain string when every part is text — preserves the exact
+      // prior shape for text-only turns; array content only when a file rides along.
+      if (parts.every((p) => p.type === "text")) {
+        const text = parts.map((p) => (p as { text: string }).text).join("\n\n");
+        if (text.length > 0) out.push({ role: "user", content: text });
+      } else {
+        out.push({ role: "user", content: parts } as ModelMessage);
+      }
+    };
+    const addAssistant = (content: string): void => {
       if (content.length === 0) return;
+      flushUser();
       const last = out[out.length - 1];
-      if (last && last.role === role && typeof last.content === "string") {
+      if (last && last.role === "assistant" && typeof last.content === "string") {
         last.content = `${last.content}\n\n${content}`;
-      } else if (role === "user") {
-        out.push({ role: "user", content });
       } else {
         out.push({ role: "assistant", content });
       }
     };
     for (const e of this.store.replay(this.conversationId, 0)) {
       if (e.event === Event.User) {
-        append("user", (e.data as UserMessageData).content);
+        const d = e.data as UserMessageData;
+        userParts ??= [];
+        if (d.content.length > 0) userParts.push({ type: "text", text: d.content });
+        for (const a of d.attachments ?? []) userParts.push(await this.renderAttachment(a, opts));
       } else if (e.event === Event.TextDelta) {
         const d = e.data as TextDeltaData;
         assistantText.set(d.messageId, (assistantText.get(d.messageId) ?? "") + d.delta);
@@ -203,12 +244,43 @@ export class ConversationActor {
         const d = e.data as MessageEndData;
         const text = assistantText.get(d.messageId);
         if (text !== undefined) {
-          append("assistant", text);
+          addAssistant(text);
           assistantText.delete(d.messageId);
         }
       }
     }
+    flushUser();
     return out;
+  }
+
+  /**
+   * Routes one attachment to a model part by mime (see spec "Attachment
+   * handling"): an image → an image part when the model supports vision; a
+   * small text-like file → inlined text; everything else (binary, oversized
+   * text, images a non-vision model can't read, or an unresolvable blob) → a
+   * text note telling the model to fetch it from the sandbox by name.
+   */
+  private async renderAttachment(a: AttachmentRef, opts: HistoryOptions): Promise<UserPart> {
+    const size = this.store.getBlob(a.sha256)?.size;
+    const isImage = a.kind === "image" || a.mime.startsWith("image/");
+    if (isImage && opts.supportsImages && opts.blobs) {
+      const blob = await opts.blobs.get(a.sha256);
+      if (blob) return { type: "image", image: new Uint8Array(await blob.arrayBuffer()), mediaType: a.mime };
+    }
+    if (isTextLike(a.mime) && opts.blobs && (size === undefined || size <= ATTACHMENT_INLINE_TEXT_MAX)) {
+      const blob = await opts.blobs.get(a.sha256);
+      if (blob) return { type: "text", text: `Attached file ${a.name}:\n\n\`\`\`\n${await blob.text()}\n\`\`\`` };
+    }
+    const sz = size !== undefined ? `, ${size} bytes` : "";
+    // TODO(sandbox): the `inputs/<name>` path is naive — two different files
+    // with the same name (or the same name twice in a turn) collide. When the
+    // sandbox lands (slice 5), disambiguate with a prefix dir (`inputs/<n>/<name>`)
+    // and emit the SAME path the inputs mount actually uses, so the note and the
+    // filesystem agree. Until then this path is indicative, not guaranteed.
+    return {
+      type: "text",
+      text: `[attachment: ${a.name} (${a.mime}${sz}) — not inlined; fetch it in the sandbox as inputs/${a.name}]`,
+    };
   }
 
   /** Replay the durable log strictly after `afterSeq`, oldest first. */
