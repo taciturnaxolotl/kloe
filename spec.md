@@ -723,24 +723,38 @@ Reasoning signatures ride `message-end` (or `reasoning-end`) rather than a delta
 
 ### Build sequence
 
-Land it in this order — each step is independently useful and proves one layer:
+Land it in this order — each step is independently useful and proves one layer.
+Steps 1–3 are **built**; 4–6 (approval + the spindle sandbox) are the remaining
+Part-B work.
 
-1. **Blob store + attachments** — `BlobStore` (fs backend), `POST /api/blobs`,
-   `attachments[]` on user (and steered) messages, thumbnails. Then mime-routed
-   delivery to the model in `history()`: image part / inlined text / sandbox-only
-   (see "Attachment handling"). No agentic loop yet — the sandbox path lands with
-   the executor (step 5), but the *addressability* (blob refs) is here from day one.
-2. **Full-stream migration + one pure tool** (e.g. web search) — new `RunStep`
-   kinds, durable `tool-call`/`tool-result`, `history()` folding, tool cards.
-   In-proc executor, zero risk.
-3. **Thinking** — reasoning parts + adapter level map + the collapsible block +
-   signature preservation. (Shares the full-stream migration with step 2.)
+1. **Blob store + attachments** ✅ — `BlobStore` (fs + S3), `POST`/`GET
+   /api/blobs`, `attachments[]` on user and steered messages, thumbnails,
+   orphan GC. Mime-routed delivery in `history()`: image part / inlined text /
+   sandbox-note. The sandbox *fetch* lands with the executor (step 5); the
+   *addressability* (blob refs) is here from day one.
+2. **Full-stream migration + tools** ✅ — `run()` consumes `fullStream`; new
+   `ToolCall`/`ToolResult` `RunStep`s; durable `tool-call`/`tool-result` events;
+   `history()` folds them into paired assistant/tool messages; tool steps render
+   in the timeline. `streamText` runs the agentic loop (`stopWhen`); tools are
+   in-process and side-effect-free for now (AI SDK auto-execute — pure tools are
+   safe to re-run on reclaim; the persist-before-model-sees explicit loop comes
+   with dangerous tools). First tool: **`web_search`** behind a swappable
+   `SearchProvider` (Ceramic), offered only when configured.
+3. **Thinking** ✅ — reasoning parts, adapter-level effort map (per-provider
+   `providerOptions`), the collapsible timeline step, durable `reasoningMs`.
+   Signature preservation for reasoning+tools is still open (see below).
 4. **Approval gate** — the parked `pending-approval` status over the steer/job
-   machinery.
+   machinery. *(not built)*
 5. **`SpindleExecutor` + broker** — first dangerous tool (`run_shell`) over
-   agentproto; the `sandbox-spec` fold + `add_tools`; artifact promotion.
+   agentproto; the `sandbox-spec` fold + `add_tools`; artifact promotion; the
+   explicit durable tool loop; attachment/artifact fetch into the sandbox. *(not built)*
 6. **Sandbox lifecycle polish** — warm/cold tiers, slot-as-job, snapshot restore
-   — only when boot latency justifies it.
+   — only when boot latency justifies it. *(not built)*
+
+Known follow-ups within what's built: reasoning-signature preservation for
+reasoning+tools (Anthropic), interleaved rendering of text between tool steps
+(today reasoning/tool steps group in the timeline above the answer), and
+truncating very large tool outputs in the durable log.
 
 ## Stack
  
@@ -760,6 +774,8 @@ Land it in this order — each step is independently useful and proves one layer
 | Event schema     | AG-UI-aligned typed events                                     |
 | Sync engine      | **None** in base build (see decision rules)                    |
 | Blob store       | Content-addressed (`sha256`), swappable backend via `KLOE_BLOB_BACKEND`: local-fs default + self-hosted S3 (Garage/MinIO/R2 via Bun `S3Client`) — **built**; endpoints/attachments next |
+| Tools            | AI SDK agentic loop (`streamText` + `stopWhen`); durable `tool-call`/`tool-result` events, `history()` folding, timeline rendering; in-process pure tools — **built** |
+| Search           | `web_search` behind a swappable `SearchProvider` (Ceramic first); config-selected, offered only when set — **built** |
 | Tool sandbox     | microVM via a broker over Tangled spindle's engine (agentproto/vsock); Nix env as an event-sourced fold — *designed, not built* |
  
 ## When to add more (decision rules)
