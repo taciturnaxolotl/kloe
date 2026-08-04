@@ -290,10 +290,10 @@ test("tool-call and tool-result steps persist as durable, ordered events", async
   const events: WireEvent[] = [];
   a.follow({ push: (e) => events.push(e), closed: false });
   await a.runText("rt", "mt", async function* (_signal) {
-    yield { kind: "text", chunk: "let me check the time" };
-    yield { kind: "tool-call", toolCallId: "c1", toolName: "get_time", input: { timezone: "UTC" } };
-    yield { kind: "tool-result", toolCallId: "c1", toolName: "get_time", output: { iso: "2026-08-04T00:00:00Z" } };
-    yield { kind: "text", chunk: "it is midnight UTC" };
+    yield { kind: "text", chunk: "let me search" };
+    yield { kind: "tool-call", toolCallId: "c1", toolName: "web_search", input: { query: "kloe" } };
+    yield { kind: "tool-result", toolCallId: "c1", toolName: "web_search", output: { results: [{ title: "T", url: "u" }] } };
+    yield { kind: "text", chunk: "here's what I found" };
   });
   const names = events.map((e) => e.event);
   expect(names).toContain(Event.ToolCall);
@@ -303,11 +303,11 @@ test("tool-call and tool-result steps persist as durable, ordered events", async
   expect(names.indexOf(Event.ToolCall)).toBeLessThan(names.indexOf(Event.ToolResult));
 
   const call = events.find((e) => e.event === Event.ToolCall)!.data as
-    { toolName: string; toolCallId: string; messageId: string; input: { timezone: string } };
-  expect(call.toolName).toBe("get_time");
+    { toolName: string; toolCallId: string; messageId: string; input: { query: string } };
+  expect(call.toolName).toBe("web_search");
   expect(call.toolCallId).toBe("c1");
   expect(call.messageId).toBe("mt");
-  expect(call.input.timezone).toBe("UTC");
-  const res = events.find((e) => e.event === Event.ToolResult)!.data as { output: { iso: string } };
-  expect(res.output.iso).toBe("2026-08-04T00:00:00Z");
+  expect(call.input.query).toBe("kloe");
+  const res = events.find((e) => e.event === Event.ToolResult)!.data as { output: { results: unknown[] } };
+  expect(res.output.results.length).toBe(1);
 });

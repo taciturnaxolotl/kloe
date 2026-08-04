@@ -102,6 +102,35 @@
       "required": [],
       "default": {}
     },
+    "search": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "enum": [
+            "none",
+            "ceramic"
+          ],
+          "type": "string",
+          "default": "none"
+        },
+        "apiKey": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "maxResults": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5
+        }
+      },
+      "required": [],
+      "default": {
+        "provider": "none",
+        "maxResults": 5
+      }
+    },
     "providers": {
       "type": "array",
       "items": {

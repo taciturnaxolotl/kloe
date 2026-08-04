@@ -1,4 +1,5 @@
 import { tool, jsonSchema, type ToolSet } from "ai";
+import { createSearchProvider, type SearchProvider } from "./search";
 
 /**
  * The tool registry. Each entry is an AI SDK `tool` with an input schema and an
@@ -6,43 +7,34 @@ import { tool, jsonSchema, type ToolSet } from "ai";
  * and the actor persists each tool-call/tool-result as a durable event that the
  * UI renders as a timeline step.
  *
- * First slice: read-only, side-effect-free tools only, executed in-process. The
+ * Tools are only offered when their backing capability is configured (e.g.
+ * `web_search` appears only when a search provider is set), so a deployment
+ * without them sends no `tools` at all.
+ *
+ * First slice: read-only, side-effect-free tools executed in-process. The
  * durable-loop guarantee (persist a result before the model sees it, so a job
  * reclaim doesn't re-run a side-effecting tool) and the sandbox executor come
  * with dangerous tools later — pure tools are safe to re-run on reclaim.
  */
 
-const getTime = tool({
-  description:
-    "Get the current date and time. Optionally in a specific IANA timezone " +
-    "(e.g. 'America/New_York', 'Europe/London'); defaults to the server's zone.",
-  inputSchema: jsonSchema<{ timezone?: string }>({
-    type: "object",
-    properties: {
-      timezone: { type: "string", description: "IANA timezone name, e.g. Asia/Tokyo" },
-    },
-    additionalProperties: false,
-  }),
-  execute: async ({ timezone }) => {
-    const now = new Date();
-    try {
-      const fmt = new Intl.DateTimeFormat("en-US", {
-        dateStyle: "full",
-        timeStyle: "long",
-        timeZone: timezone || undefined,
-      });
-      return {
-        iso: now.toISOString(),
-        formatted: fmt.format(now),
-        timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
-      };
-    } catch {
-      return { iso: now.toISOString(), error: `invalid timezone: ${timezone}` };
-    }
-  },
-});
+function webSearch(provider: SearchProvider) {
+  return tool({
+    description:
+      "Search the web for up-to-date information. Returns a list of results, " +
+      "each with a title, URL, and snippet. Use for recent events, facts, or " +
+      "anything beyond your training data.",
+    inputSchema: jsonSchema<{ query: string }>({
+      type: "object",
+      properties: { query: { type: "string", description: "The search query (1–50 words)" } },
+      required: ["query"],
+      additionalProperties: false,
+    }),
+    execute: async ({ query }) => ({ results: await provider.search(query) }),
+  });
+}
 
-/** The tools available to a run. Empty → no tools passed to the provider. */
+/** The tools available to a run; empty → no tools passed to the provider. */
 export function toolSet(): ToolSet {
-  return { get_time: getTime };
+  const search = createSearchProvider();
+  return search ? { web_search: webSearch(search) } : {};
 }

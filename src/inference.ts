@@ -119,6 +119,11 @@ export async function* run(
   // provider's key. Absent for echo/unknown providers.
   const providerName = opts.model.split("/")[0]!;
   const cfg = getRegistry().getConfig(providerName);
+  // Only send tools when some are configured (e.g. web_search needs a search
+  // provider) — a toolless deployment sends no `tools`, so endpoints that reject
+  // an unknown tools field are unaffected.
+  const tools = toolSet();
+  const hasTools = Object.keys(tools).length > 0;
   // Output cap: an explicit provider override wins; otherwise fall back to the
   // model's own default/max from the catalog (e.g. Hyper reports 384K). Sending
   // it prevents the endpoint's low default from cutting a run off mid-reasoning
@@ -135,8 +140,7 @@ export async function* run(
       : {}),
     // Tools + a step cap: streamText runs the agentic loop (call → execute →
     // feed back), bounded so a runaway can't loop forever.
-    tools: toolSet(),
-    stopWhen: stepCountIs(MAX_TOOL_STEPS),
+    ...(hasTools ? { tools, stopWhen: stepCountIs(MAX_TOOL_STEPS) } : {}),
   });
   // Consume the FULL stream (not just textStream) so reasoning models — whose
   // answer arrives as reasoning parts — come through instead of an empty turn.

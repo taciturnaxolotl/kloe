@@ -76,6 +76,14 @@ const CatwalkSchema = v.object({
   seedPath: v.optional(v.string()),
 });
 
+/** Web-search backing for the `web_search` tool. Disabled by default. */
+const SearchSchema = v.object({
+  provider: v.optional(v.picklist(["none", "ceramic"]), "none"),
+  apiKey: v.optional(v.string()),
+  endpoint: v.optional(v.string()),
+  maxResults: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 5),
+});
+
 const ServerSchema = v.object({
   port: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(65535)), 3000),
   dbPath: v.optional(v.string(), "data/kloe.db"),
@@ -86,6 +94,7 @@ export const ConfigSchema = v.object({
   server: section(ServerSchema),
   blobs: section(BlobsSchema),
   catwalk: section(CatwalkSchema),
+  search: section(SearchSchema),
   providers: v.optional(v.array(ProviderSchema), []),
 });
 export type Config = v.InferOutput<typeof ConfigSchema>;

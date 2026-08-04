@@ -16,6 +16,11 @@
       "prefix": "blobs/"
     }
   },
+  "search": {
+    "provider": "ceramic",
+    "apiKey": "$CERAMIC_API_KEY",
+    "maxResults": 5
+  },
   "providers": [
     {
       "id": "anthropic",
