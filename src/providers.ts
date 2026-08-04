@@ -381,7 +381,10 @@ function createEchoModel(): LanguageModel {
       const text = `echo: ${userText}`;
       const chunks = text.split(/(?<=\s)/);
       let i = 0;
-      let id = 0;
+      // All parts of one text block share an id: the full stream matches
+      // text-delta/text-end to the opening text-start by id (unlike the lenient
+      // text stream, which ignored ids). Distinct ids => "text part not found".
+      const textId = "t0";
       const signal = opts.abortSignal;
       const stream = new ReadableStream<Record<string, unknown>>({
         pull: async (controller) => {
@@ -390,10 +393,10 @@ function createEchoModel(): LanguageModel {
             return;
           }
           if (i === 0) {
-            controller.enqueue({ type: "text-start", id: `t${id++}` });
+            controller.enqueue({ type: "text-start", id: textId });
           }
           if (i >= chunks.length) {
-            controller.enqueue({ type: "text-end", id: `t${id++}` });
+            controller.enqueue({ type: "text-end", id: textId });
             controller.enqueue({
               type: "finish",
               finishReason: "stop",
@@ -404,7 +407,7 @@ function createEchoModel(): LanguageModel {
           }
           controller.enqueue({
             type: "text-delta",
-            id: `t${id++}`,
+            id: textId,
             delta: chunks[i++],
           });
           await Bun.sleep(chunkDelayMs);

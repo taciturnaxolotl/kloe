@@ -222,6 +222,7 @@ import { mountDialogs } from "./confirm.js";
     var painted = false;
     for (var id in msgs) {
       var r = msgs[id];
+      if (r.reasoning && r.reasoning.buf) { smd.parser_write(r.reasoning.parser, r.reasoning.buf); r.reasoning.buf = ""; painted = true; }
       if (r.buf) { smd.parser_write(r.parser, r.buf); r.buf = ""; painted = true; liveMeta(r); }
     }
     if (painted) autoScroll();
@@ -365,7 +366,43 @@ import { mountDialogs } from "./confirm.js";
     autoScroll();
     return rec;
   }
+  // A collapsible "thinking" block, created lazily the first time reasoning
+  // streams. It sits above the answer prose; it auto-collapses to "Thought for
+  // Ns" once the answer starts (or on end for reasoning-only turns).
+  function ensureReasoning(rec) {
+    if (rec.reasoning) return rec.reasoning;
+    var d = document.createElement("details");
+    d.className = "block reasoning"; d.open = true;
+    var sum = document.createElement("summary"); sum.textContent = "Thinking…";
+    var body = document.createElement("div"); body.className = "rbody";
+    d.appendChild(sum); d.appendChild(body);
+    rec.body.insertBefore(d, rec.prose); // reasoning precedes the answer
+    var np = newParser(body);
+    rec.reasoning = { details: d, summary: sum, body: body, parser: np.parser, renderer: np.renderer,
+                      buf: "", startedAt: Date.now(), collapsed: false, ended: false };
+    autoScroll();
+    return rec.reasoning;
+  }
+  function thoughtLabel(rc) {
+    var secs = Math.max(0, Math.round((Date.now() - rc.startedAt) / 1000));
+    return "Thought for " + secs + "s";
+  }
+  function collapseReasoning(rec) {
+    var rc = rec.reasoning;
+    if (!rc || rc.collapsed) return;
+    rc.collapsed = true; rc.details.open = false; rc.summary.textContent = thoughtLabel(rc);
+  }
+  function endReasoning(rec) {
+    var rc = rec.reasoning;
+    if (!rc || rc.ended) return;
+    if (rc.buf) { smd.parser_write(rc.parser, rc.buf); rc.buf = ""; }
+    smd.parser_end(rc.parser); rc.ended = true;
+    enrich(rc.body);
+    // Reasoning-only turn (no answer text): label it but leave it open to read.
+    if (!rc.collapsed) rc.summary.textContent = thoughtLabel(rc);
+  }
   function endAssistant(rec, finishReason, usage) {
+    endReasoning(rec);
     if (rec.buf) { smd.parser_write(rec.parser, rec.buf); rec.buf = ""; }
     smd.parser_end(rec.parser);
     var stripped = finalize(rec.renderer);
@@ -430,9 +467,15 @@ import { mountDialogs } from "./confirm.js";
         assistantTurn(data.messageId);
         updateSend();
         break;
+      case "reasoning-delta": {
+        var rrec = assistantTurn(data.messageId);
+        ensureReasoning(rrec).buf += data.delta;
+        scheduleFlush();
+        break;
+      }
       case "text-delta": {
         var rec = assistantTurn(data.messageId);
-        if (!rec.firstDeltaAt) rec.firstDeltaAt = Date.now();
+        if (!rec.firstDeltaAt) { rec.firstDeltaAt = Date.now(); collapseReasoning(rec); }
         rec.buf += data.delta;
         scheduleFlush();
         break;
@@ -472,7 +515,7 @@ import { mountDialogs } from "./confirm.js";
     var es = new EventSource("/api/conversations/" + encodeURIComponent(id) + "/stream");
     source = es;
     ["user-message", "queued-message", "queued-cancelled", "run-started", "message-start",
-     "text-delta", "message-end", "run-error", "cancelled"].forEach(function (nm) {
+     "reasoning-delta", "text-delta", "message-end", "run-error", "cancelled"].forEach(function (nm) {
       es.addEventListener(nm, function (ev) {
         var data; try { data = JSON.parse(ev.data); } catch (_) { return; }
         applyEvent(nm, data);

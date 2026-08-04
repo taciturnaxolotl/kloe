@@ -55,12 +55,17 @@ export interface TextStep {
   kind: "text";
   chunk: string;
 }
+/** A chunk of the model's reasoning/thinking (a separate stream from the answer). */
+export interface ReasoningStep {
+  kind: "reasoning";
+  chunk: string;
+}
 /** Real provider token usage, yielded once after the text stream drains. */
 export interface UsageStep {
   kind: "usage";
   usage: TokenUsage;
 }
-export type RunStep = TextStep | UsageStep;
+export type RunStep = TextStep | ReasoningStep | UsageStep;
 
 /**
  * One single-writer conversation. Owns the durable event log (via Store), the
@@ -360,30 +365,36 @@ export class ConversationActor {
 
     let delta = "";
     let batch = 0;
+    let reasoning = "";
+    let rbatch = 0;
     let errored = false;
-    const flushDelta = () => {
-      if (delta.length === 0) return;
+    // Text and reasoning are two batched streams; each flushes as its own delta
+    // event (same batching rule). Reasoning flushes also heartbeat the job so a
+    // long thinking stretch before the first answer token can't be reaped.
+    const flush = (eventName: EventName, text: string): void => {
+      if (text.length === 0) return;
       const seq = this.nextSeq();
       const id = makeId(this.conversationId, seq);
-      const truncated = truncateUtf8(delta);
-      this.store.appendAndBump(this.conversationId, seq, Event.TextDelta, {
-        runId,
-        threadId: this.conversationId,
-        messageId,
-        delta: truncated,
-      });
-      const e: WireEvent = {
-        id,
-        event: Event.TextDelta,
-        data: { runId, threadId: this.conversationId, messageId, delta: truncated },
-      };
-      this.emit(e);
-      delta = "";
+      const truncated = truncateUtf8(text);
+      const data = { runId, threadId: this.conversationId, messageId, delta: truncated };
+      this.store.appendAndBump(this.conversationId, seq, eventName, data);
+      this.emit({ id, event: eventName, data });
       this.lastActivity = Date.now();
       onProgress?.(seq);
     };
+    const flushDelta = () => {
+      if (delta.length === 0) return;
+      flush(Event.TextDelta, delta);
+      delta = "";
+    };
+    const flushReasoning = () => {
+      if (reasoning.length === 0) return;
+      flush(Event.ReasoningDelta, reasoning);
+      reasoning = "";
+    };
 
     const tick = setInterval(() => {
+      flushReasoning();
       flushDelta();
     }, BATCH_FLUSH_MS);
 
@@ -400,6 +411,13 @@ export class ConversationActor {
           if (batch >= BATCH_MAX_DELTAS) {
             flushDelta();
             batch = 0;
+          }
+        } else if (step.kind === "reasoning") {
+          reasoning += step.chunk;
+          rbatch++;
+          if (rbatch >= BATCH_MAX_DELTAS) {
+            flushReasoning();
+            rbatch = 0;
           }
         } else if (step.kind === "usage") {
           usage = step.usage;
@@ -424,6 +442,7 @@ export class ConversationActor {
       this.currentAbort = null;
     }
 
+    flushReasoning();
     flushDelta();
     const finish = errored
       ? "error"

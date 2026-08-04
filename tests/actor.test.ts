@@ -248,3 +248,24 @@ function msgs0Text(msgs: Awaited<ReturnType<ConversationActor["history"]>>): str
   const c = msgs[0]!.content;
   return typeof c === "string" ? c : JSON.stringify(c);
 }
+
+test("reasoning steps stream as reasoning-delta events, ahead of the answer text", async () => {
+  const a = new ConversationActor("t-reason", store);
+  const events: WireEvent[] = [];
+  a.follow({ push: (e) => events.push(e), closed: false });
+  await a.runText("rr", "mr", async function* (_signal) {
+    yield { kind: "reasoning", chunk: "let me think " };
+    yield { kind: "reasoning", chunk: "about it" };
+    yield { kind: "text", chunk: "the answer" };
+  });
+  const names = events.map((e) => e.event);
+  expect(names).toContain(Event.ReasoningDelta);
+  expect(names).toContain(Event.TextDelta);
+  // Reasoning is flushed before the answer text.
+  expect(names.indexOf(Event.ReasoningDelta)).toBeLessThan(names.indexOf(Event.TextDelta));
+  const rd = events.find((e) => e.event === Event.ReasoningDelta)!.data as { delta: string };
+  expect(rd.delta).toContain("let me think");
+  // Reasoning is display-only for now — it is NOT fed back into model history.
+  const hist = await a.history();
+  expect(JSON.stringify(hist)).not.toContain("let me think");
+});

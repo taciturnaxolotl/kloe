@@ -113,10 +113,22 @@ export async function* run(
     temperature: opts.temperature ?? 0.7,
     abortSignal: opts.abortSignal,
   });
+  // Consume the FULL stream (not just textStream) so reasoning models — whose
+  // answer arrives as reasoning parts — come through instead of an empty turn.
+  // `error` parts are surfaced as throws so the actor records a run-error rather
+  // than a silent stop.
   let textChunks = 0;
-  for await (const chunk of result.textStream) {
-    textChunks++;
-    yield { kind: "text", chunk };
+  for await (const part of result.fullStream) {
+    if (part.type === "text-delta") {
+      textChunks++;
+      yield { kind: "text", chunk: part.text };
+    } else if (part.type === "reasoning-delta") {
+      yield { kind: "reasoning", chunk: part.text };
+    } else if (part.type === "error") {
+      throw part.error;
+    }
+    // Other parts (start/end markers, tool events, step boundaries) are ignored
+    // here; tool support consumes them in a later slice.
   }
   // The stream has drained normally (a cancel throws above and skips this):
   // real provider usage is now resolvable. Emit it as the final step so the

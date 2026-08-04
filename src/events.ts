@@ -11,6 +11,7 @@ export const Event = {
   QueuedCancelled: "queued-cancelled",
   MsgStart: "message-start",
   TextDelta: "text-delta",
+  ReasoningDelta: "reasoning-delta",
   ToolCall: "tool-call",
   ToolResult: "tool-result",
   MsgEnd: "message-end",
@@ -72,6 +73,14 @@ export interface TextDeltaData {
   delta: string;
 }
 
+/** A chunk of the model's reasoning/thinking (separate stream from the answer). */
+export interface ReasoningDeltaData {
+  threadId: string;
+  runId: string;
+  messageId: string;
+  delta: string;
+}
+
 export interface ToolCallData {
   threadId: string;
   runId: string;
@@ -121,6 +130,7 @@ export type EventData =
   | RunStartedData
   | MessageStartData
   | TextDeltaData
+  | ReasoningDeltaData
   | ToolCallData
   | ToolResultData
   | MessageEndData
