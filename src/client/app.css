@@ -434,9 +434,13 @@ body.selecting #selectBtn { order: 4; }
 .empty code { font-family: var(--mono); font-size: 12.5px; background: var(--bg-sunk);
   border: 1px solid var(--rule); border-radius: var(--radius-xs); padding: 1px 5px; }
 
-.jump { position: absolute; left: 50%; transform: translateX(-50%); bottom: 12px;
-  font-family: var(--mono); font-size: 12px; color: var(--ink-muted); background: var(--bg);
-  border: 1px solid var(--rule-strong); border-radius: var(--radius-pill); padding: 4px 12px; cursor: pointer; display: none; }
+.jump { position: absolute; left: 50%; transform: translateX(-50%); bottom: 14px;
+  width: 34px; height: 34px; display: none; align-items: center; justify-content: center;
+  color: var(--ink-muted); background: var(--bg-raise); border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-pill); cursor: pointer; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.14);
+  transition: background 0.12s ease, color 0.12s ease; }
+.jump:hover { background: var(--bg-sunk); color: var(--ink); }
+.jump svg { width: 18px; height: 18px; }
 
 /* ---- composer dock ----------------------------------------------------- */
 .dock { border-top: 0; background: var(--bg); }

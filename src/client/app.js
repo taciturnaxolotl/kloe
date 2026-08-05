@@ -1404,7 +1404,7 @@ import {
   document.addEventListener("keydown", function (e) { if (e.key === "Escape") closePicker(); });
   scroll.addEventListener("scroll", function () {
     atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;
-    jump.style.display = atBottom ? "none" : "block";
+    jump.style.display = atBottom ? "none" : "flex";
   });
   jump.addEventListener("click", function () { atBottom = true; jump.style.display = "none"; scroll.scrollTop = scroll.scrollHeight; });
   // Keep the view pinned to the bottom while `atBottom` as the thread grows —
