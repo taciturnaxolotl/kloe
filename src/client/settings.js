@@ -293,13 +293,17 @@ import { requireAuth, setPfp } from "./authguard.js";
   }
 
   (async function () {
-    var me = await requireAuth();
+    // Fire all three requests at once — the auth check shouldn't gate the data
+    // fetches behind an extra round trip. The sidebar renders from its cache
+    // immediately (mountSidebar) and refreshes when loadSidebar resolves.
+    var mePromise = requireAuth();
+    loadSidebar();
+    var modelsPromise = fetch("/api/models").then(function (r) { return r.json(); });
+    var me = await mePromise;
     if (!me) return; // redirecting to login
     setPfp(me);
-    loadSidebar();
     try {
-      var res = await fetch("/api/models");
-      allModels = ((await res.json()).models) || [];
+      allModels = ((await modelsPromise).models) || [];
       render();
     } catch (e) {
       content.innerHTML = '<p class="lede">Failed to load models: ' + e.message + "</p>";
