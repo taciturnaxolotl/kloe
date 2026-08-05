@@ -344,7 +344,17 @@ export class LocalFetchProvider implements FetchProvider {
       break;
     }
     if (!res) throw new Error("fetch failed");
-    if (!res.ok) throw new Error(`fetch failed: ${res.status} ${res.statusText}`);
+    if (!res.ok) {
+      // Surface a snippet of the error body (many servers explain the failure
+      // there) so the model gets more than a bare status code.
+      let detail = "";
+      try {
+        const { text } = await readCapped(res, 4096);
+        const t = isProbablyText(text) ? text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() : "";
+        if (t) detail = " — " + t.slice(0, 200);
+      } catch { /* ignore a body we can't read */ }
+      throw new Error(`fetch failed: ${res.status} ${res.statusText}${detail}`);
+    }
 
     const contentType = (res.headers.get("content-type") || "").toLowerCase();
     const { text, capped } = await readCapped(res, this.opts.maxBytes);
@@ -381,6 +391,13 @@ export class LocalFetchProvider implements FetchProvider {
       }
     } else {
       content = `[${contentType || "binary"} content — not rendered as text]`;
+    }
+
+    // Extraction can come back empty — a JS-rendered SPA shell, or a page with no
+    // article text. Return a clear note (not a blank row) so the model knows why.
+    if (!content.trim()) {
+      content = "No readable content could be extracted — the page may be empty or render its content with JavaScript (which this fetcher does not execute).";
+      format = "text";
     }
 
     let truncated = capped;

@@ -146,6 +146,20 @@ test("a raw .md served as text/plain is prose-rendered (format:markdown, title f
   expect(r.title).toBe("Readme");
 });
 
+test("a page with no extractable content returns a note, not an empty body", async () => {
+  const shell = "<html><head><title>App</title></head><body><div id=root></div></body></html>"; // JS-rendered shell
+  const p = new LocalFetchProvider(opts({ fetchImpl: (async () => htmlRes(shell)) as unknown as typeof fetch }));
+  const r = await p.fetch("https://spa.example.com/about");
+  expect(r.content.trim().length).toBeGreaterThan(0);
+  expect(r.content).toContain("No readable content");
+});
+
+test("an HTTP error includes a snippet of the error body", async () => {
+  const res = new Response("<html><body>Sorry, that page was not found here.</body></html>", { status: 404, headers: { "content-type": "text/html" } });
+  const p = new LocalFetchProvider(opts({ fetchImpl: (async () => res) as unknown as typeof fetch }));
+  await expect(p.fetch("https://example.com/missing")).rejects.toThrow(/404.*not found here/i);
+});
+
 test("a text file with a generic content-type passes through as raw text", async () => {
   const code = "fn main() {\n    println!(\"hi\");\n}\n";
   const res = new Response(code, { headers: { "content-type": "application/octet-stream" } });
