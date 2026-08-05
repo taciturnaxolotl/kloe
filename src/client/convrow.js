@@ -63,9 +63,9 @@ export function convRow(c, opts) {
   if (cb) row.appendChild(cb);
   row.appendChild(icon); row.appendChild(main); row.appendChild(end);
 
-  function openMenu(x, y, align) {
+  function openMenu(x, y, align, trigger) {
     openChatMenu(x, y, {
-      id: c.id, title: c.title, dialogs: opts.dialogs, reload: opts.reload, align: align,
+      id: c.id, title: c.title, dialogs: opts.dialogs, reload: opts.reload, align: align, trigger: trigger,
       extra: opts.extra ? opts.extra(c, ref) : [],
     });
   }
@@ -81,7 +81,7 @@ export function convRow(c, opts) {
   more.addEventListener("click", function (ev) {
     ev.stopPropagation();
     var r = more.getBoundingClientRect();
-    openMenu(r.right, r.bottom + 4, "right");
+    openMenu(r.right, r.bottom + 4, "right", more);
   });
 
   return row;

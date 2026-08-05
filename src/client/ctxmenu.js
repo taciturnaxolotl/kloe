@@ -3,14 +3,16 @@
  *   showContextMenu(x, y, items, opts)   items: [{ label, danger, onClick }]
  * `opts.align` anchors the horizontal edge at x: "left" (default, menu opens
  * rightward — right for a cursor) or "right" (menu's right edge sits at x, so it
- * opens leftward — right for a ⋮ button at the right of a row). Only one is open
- * at a time; it closes on outside click, Esc, scroll, or resize, and is clamped
- * to the viewport. Styling lives in app.css (.ctxmenu).
+ * opens leftward — right for a ⋮ button at the right of a row). `opts.trigger`
+ * is the element that opened the menu; re-invoking with the same trigger while
+ * open toggles it shut. Only one is open at a time; it closes on outside click,
+ * Esc, scroll, or resize, and is clamped to the viewport. Styling lives in
+ * app.css (.ctxmenu).
  */
-var current = null, wired = false;
+var current = null, currentTrigger = null, wired = false;
 
 export function closeContextMenu() {
-  if (current) { current.remove(); current = null; }
+  if (current) { current.remove(); current = null; currentTrigger = null; }
 }
 function wire() {
   if (wired) return;
@@ -23,6 +25,9 @@ function wire() {
 
 export function showContextMenu(x, y, items, opts) {
   opts = opts || {};
+  // Re-clicking the same trigger (a ⋮ button) while its menu is open toggles it
+  // shut, rather than closing and reopening an identical menu in place.
+  if (current && opts.trigger && currentTrigger === opts.trigger) { closeContextMenu(); return; }
   closeContextMenu();
   wire();
   var menu = document.createElement("div");
@@ -49,4 +54,5 @@ export function showContextMenu(x, y, items, opts) {
   menu.style.left = Math.max(6, Math.min(left, window.innerWidth - w - 6)) + "px";
   menu.style.top = Math.max(6, Math.min(y, window.innerHeight - h - 6)) + "px";
   current = menu;
+  currentTrigger = opts.trigger || null;
 }

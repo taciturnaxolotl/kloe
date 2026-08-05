@@ -212,7 +212,7 @@ import { MORE_ICON, PENCIL_ICON, PLUS_ICON, TRASH_ICON, FILE_ICON } from "./icon
         await fetch("/api/projects/" + encodeURIComponent(projectId), { method: "DELETE" }).catch(function () {});
         window.location.href = "/projects";
       } },
-    ], { align: "right" });
+    ], { align: "right", trigger: this });
   });
 
   $("newChat").addEventListener("click", function () { window.location.href = "/?new=1&project=" + encodeURIComponent(projectId); });
