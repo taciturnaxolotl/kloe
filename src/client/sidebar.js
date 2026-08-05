@@ -1,47 +1,21 @@
 /*
- * The app sidebar, shared by the chat SPA and the Conversations page. It owns
- * the rail markup (injected into an empty <nav id="rail">) so there's a single
- * source of truth, renders the Recents list, and wires the nav + collapse/
- * overlay toggle. The host page supplies what "open a conversation" and "new
- * chat" mean (SPA navigation vs a full page load) and which conversation is
- * active. The panel toggle (#menu) lives in each page's own header. When the
- * host passes `dialogs`, right-clicking a recent opens the Rename/Delete menu.
+ * The app sidebar, shared by the chat SPA and the Conversations page. The rail's
+ * static chrome is baked into each page's HTML as an app shell (so it paints
+ * before the JS bundle loads); this module wires that chrome up, renders the
+ * Recents list, and handles the collapse/overlay toggle. The host page supplies
+ * what "open a conversation" and "new chat" mean (SPA navigation vs a full page
+ * load) and which conversation is active. The panel toggle (#menu) lives in each
+ * page's own header. When the host passes `dialogs`, right-clicking a recent
+ * opens the Rename/Delete menu.
  */
 import { openChatMenu } from "./chatmenu.js";
 import { installSpeculation } from "./prefetch.js";
-import {
-  CONV_ICON, SEARCH_ICON, PANEL_ICON, NEWCHAT_ICON, CHATS_ICON, SETTINGS_ICON,
-} from "./icons.js";
+import { CONV_ICON } from "./icons.js";
 
-var RAIL_HTML =
-  '<div class="railhead">' +
-    '<span class="brand">kloe</span>' +
-    '<div class="railactions">' +
-      '<a class="icon" id="searchBtn" href="/conversations" aria-label="Search conversations" title="Search conversations">' +
-        SEARCH_ICON +
-      '</a>' +
-      '<button class="icon railx" id="railClose" type="button" aria-label="Close sidebar" title="Close sidebar">' +
-        PANEL_ICON +
-      '</button>' +
-    '</div>' +
-  '</div>' +
-  '<div class="railnav">' +
-    '<button class="navrow" id="new" type="button">' +
-      NEWCHAT_ICON +
-      '<span>New chat</span>' +
-    '</button>' +
-    '<a class="navrow" id="chatsBtn" href="/conversations">' +
-      CHATS_ICON +
-      '<span>Conversations</span>' +
-    '</a>' +
-  '</div>' +
-  '<div class="raillabel">Recents</div>' +
-  '<div class="raillist" id="railList"></div>' +
-  '<a class="railfoot" href="/settings" title="Settings">' +
-    '<img class="railpfp" id="railpfp" alt="" hidden>' +
-    '<span class="railgreet" id="railgreet" hidden></span>' +
-    SETTINGS_ICON +
-  '</a>';
+// The rail's static chrome (brand, nav links, footer) lives in each page's HTML
+// as an app shell, so it paints before app.js even downloads. mountSidebar just
+// wires it up and fills in the dynamic parts (recents, pfp/greet). Those inline
+// icons mirror icons.js (Lucide) — keep the two in sync.
 
 var RECENTS = 8;
 
@@ -67,8 +41,7 @@ function writeRecents(list) {
 
 export function mountSidebar(config) {
   var $ = function (id) { return document.getElementById(id); };
-  var appEl = $("app"), rail = $("rail"), scrim = $("scrim");
-  rail.innerHTML = RAIL_HTML;
+  var appEl = $("app"), scrim = $("scrim");
   var railList = $("railList");
 
   var railMql = window.matchMedia("(max-width: 720px)");
