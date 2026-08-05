@@ -189,6 +189,10 @@ export async function* run(
     } else if (part.type === "tool-result") {
       yield { kind: "tool-result", toolCallId: part.toolCallId, toolName: part.toolName, output: part.output };
     } else if (part.type === "tool-error") {
+      // A tool's execute threw (e.g. the search backend errored). The SDK feeds
+      // it back to the model as an error result; log it too so a flaky tool is
+      // visible in the server logs, not just buried in the transcript.
+      console.error(`[run ${opts.runId}] tool ${part.toolName} failed:`, part.error);
       yield {
         kind: "tool-result",
         toolCallId: part.toolCallId,

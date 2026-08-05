@@ -20,12 +20,19 @@ import { createSearchProvider, type SearchProvider } from "./search";
 function webSearch(provider: SearchProvider) {
   return tool({
     description:
-      "Search the web for up-to-date information. Returns a list of results, " +
-      "each with a title, URL, and snippet. Use for recent events, facts, or " +
-      "anything beyond your training data.",
+      "Search the web for current information, beyond your training data. Returns " +
+      "results with title, URL, and snippet. Write a specific, keyword-focused " +
+      "query with the key entities and context (e.g. \"OpenAI GPT-5 release date\"), " +
+      "not a conversational question. Search operators (site:, intitle:, inurl:, " +
+      "define:, related:) are unsupported and make the search fail.",
     inputSchema: jsonSchema<{ query: string }>({
       type: "object",
-      properties: { query: { type: "string", description: "The search query (1–50 words)" } },
+      properties: {
+        query: {
+          type: "string",
+          description: "Keyword-focused query: specific entities and context, not a full sentence. No operators.",
+        },
+      },
       required: ["query"],
       additionalProperties: false,
     }),

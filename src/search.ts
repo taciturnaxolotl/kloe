@@ -49,7 +49,20 @@ export class CeramicSearchProvider implements SearchProvider {
       body: JSON.stringify({ query }),
     });
     if (!res.ok) {
-      throw new Error(`ceramic search failed: ${res.status} ${res.statusText}`);
+      // Ceramic returns RFC 7807 problem+json on errors — surface its `detail`
+      // (and `code`/`requestId`) instead of a bare status, so the model and the
+      // logs get the actual reason (e.g. "Query string cannot be empty").
+      let detail = res.statusText;
+      try {
+        const body = (await res.json()) as { detail?: string; title?: string; code?: string; requestId?: string };
+        const msg = body.detail || body.title;
+        if (msg) detail = msg;
+        if (body.code) detail += ` (${body.code})`;
+        if (body.requestId) detail += ` [req ${body.requestId}]`;
+      } catch {
+        // non-JSON error body; keep the status text
+      }
+      throw new Error(`ceramic search failed: ${res.status} ${detail}`);
     }
     const data = (await res.json()) as {
       result?: { results?: Array<{ title?: string; url?: string; description?: string }> };

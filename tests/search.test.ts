@@ -48,6 +48,12 @@ test("a non-OK response throws", async () => {
   await expect(p.search("q")).rejects.toThrow(/ceramic search failed/);
 });
 
+test("a problem+json error surfaces its detail, code, and requestId", async () => {
+  const body = { title: "Unprocessable Content", detail: "Query string cannot be empty.", code: "invalid_parameter", requestId: "abc-123" };
+  const p = new CeramicSearchProvider({ apiKey: "k", fetchImpl: jsonFetch(body, 422) });
+  await expect(p.search("")).rejects.toThrow(/Query string cannot be empty\..*invalid_parameter.*abc-123/);
+});
+
 test("createSearchProvider selects the backend (and disables gracefully)", () => {
   expect(createSearchProvider({ provider: "none", maxResults: 5 })).toBeNull();
   expect(createSearchProvider({ provider: "ceramic", maxResults: 5 })).toBeNull(); // no key
