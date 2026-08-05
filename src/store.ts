@@ -237,7 +237,34 @@ CREATE TABLE IF NOT EXISTS blob_refs (
   PRIMARY KEY (sha256, conversation_id)
 );
 CREATE INDEX IF NOT EXISTS idx_blob_refs_conv ON blob_refs (conversation_id);
+
+-- Auth sessions (indiko OAuth). The cookie holds an opaque high-entropy id; the
+-- row carries the user's identity (sub) and cached profile JSON. Expired rows
+-- are swept periodically. Only used when auth is enabled.
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  sub TEXT NOT NULL,
+  data TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions (expires_at);
 `;
+
+/** Cached profile fields for a signed-in user (from the OAuth token response). */
+export interface SessionProfile {
+  name?: string;
+  email?: string;
+  picture?: string;
+  url?: string;
+}
+/** A live auth session: the cookie id, the user's stable subject, and profile. */
+export interface Session {
+  id: string;
+  sub: string;
+  expiresAt: number;
+  profile: SessionProfile;
+}
 
 /**
  * Durable stores for one node: the append-only event log, the conversations
@@ -567,6 +594,37 @@ export class Store {
   /** Drops a blob's metadata row (bytes are removed from the BlobStore separately). */
   deleteBlob(sha256: string): void {
     this.deleteBlobStmt.run(sha256);
+  }
+
+  // ---- auth sessions -----------------------------------------------------
+
+  /** Creates a session; `id` is the opaque high-entropy cookie value. */
+  createSession(id: string, sub: string, profile: SessionProfile, expiresAt: number): void {
+    this.db
+      .query("INSERT INTO sessions (id, sub, data, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
+      .run(id, sub, JSON.stringify(profile), Date.now(), expiresAt);
+  }
+
+  /** The session for a cookie id, or undefined if missing/expired (expired rows are dropped). */
+  getSession(id: string): Session | undefined {
+    const row = this.db.query("SELECT sub, data, expires_at FROM sessions WHERE id = ?").get(id) as
+      | { sub: string; data: string; expires_at: number }
+      | null;
+    if (!row) return undefined;
+    if (row.expires_at <= Date.now()) {
+      this.deleteSession(id);
+      return undefined;
+    }
+    return { id, sub: row.sub, expiresAt: row.expires_at, profile: JSON.parse(row.data) as SessionProfile };
+  }
+
+  deleteSession(id: string): void {
+    this.db.query("DELETE FROM sessions WHERE id = ?").run(id);
+  }
+
+  /** Drops expired sessions (periodic sweep). */
+  sweepSessions(now: number = Date.now()): void {
+    this.db.query("DELETE FROM sessions WHERE expires_at <= ?").run(now);
   }
 
   /**

@@ -82,6 +82,10 @@ a { color: var(--accent); }
   border-top: 1px solid var(--rule); color: var(--ink-muted); text-decoration: none; font-size: 13px; }
 .railfoot:hover { color: var(--ink); background: var(--bg-sunk); }
 .railfoot svg { width: 16px; height: 16px; }
+/* Signed-in avatar next to Settings; pushes the gear + label to the right. */
+.railpfp { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; flex: none;
+  border: 1px solid var(--rule); }
+.railfoot .railpfp:not([hidden]) + svg { margin-left: auto; }
 
 /* ---- conversations page ------------------------------------------------ */
 .chatscroll { flex: 1; overflow-y: auto; min-height: 0; scrollbar-gutter: stable; }

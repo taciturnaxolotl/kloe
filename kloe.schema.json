@@ -172,6 +172,53 @@
         "userAgent": "Mozilla/5.0 (compatible; kloe/1.0; +https://kloe.dunkirk.sh)"
       }
     },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "issuer": {
+          "type": "string",
+          "default": ""
+        },
+        "baseUrl": {
+          "type": "string",
+          "default": ""
+        },
+        "allowedSubs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "sessionTtlDays": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 30
+        },
+        "appName": {
+          "type": "string",
+          "default": "kloe"
+        },
+        "logoUri": {
+          "type": "string",
+          "default": ""
+        }
+      },
+      "required": [],
+      "default": {
+        "enabled": false,
+        "issuer": "",
+        "baseUrl": "",
+        "allowedSubs": [],
+        "sessionTtlDays": 30,
+        "appName": "kloe",
+        "logoUri": ""
+      }
+    },
     "prompt": {
       "type": "object",
       "properties": {

@@ -20,6 +20,7 @@
  */
 import * as smd from "streaming-markdown";
 import { mountSidebar } from "./sidebar.js";
+import { requireAuth, setPfp } from "./authguard.js";
 import { mountDialogs } from "./confirm.js";
 
 (function () {
@@ -1119,6 +1120,9 @@ import { mountDialogs } from "./confirm.js";
 
   // ---- boot --------------------------------------------------------------
   (async function init() {
+    var me = await requireAuth();
+    if (!me) return; // redirecting to login
+    setPfp(me);
     await Promise.all([loadModels(), loadConversations()]);
     // Deep links from the conversations page: ?new starts fresh, ?c=<id> opens
     // a specific conversation. Strip the query afterward so a reload is clean.

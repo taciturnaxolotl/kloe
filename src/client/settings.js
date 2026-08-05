@@ -6,6 +6,7 @@
  */
 import { mountSidebar } from "./sidebar.js";
 import { mountDialogs } from "./confirm.js";
+import { requireAuth, setPfp } from "./authguard.js";
 
 (function () {
   "use strict";
@@ -292,6 +293,9 @@ import { mountDialogs } from "./confirm.js";
   }
 
   (async function () {
+    var me = await requireAuth();
+    if (!me) return; // redirecting to login
+    setPfp(me);
     loadSidebar();
     try {
       var res = await fetch("/api/models");

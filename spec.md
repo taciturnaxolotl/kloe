@@ -317,10 +317,25 @@ execution frameworks — DBOS, Restate, Inngest — productize claim/checkpoint/
 replay if you'd rather not hand-roll, at the cost of a dependency.)
  
 ## Auth
- 
+
 - Use cookie/session auth so native `EventSource` works unmodified (it can't set
   custom headers). Bearer-token-in-header would force a `fetch`+`ReadableStream`
   reader and cost you native auto-reconnect. Cookie is the clean path.
+- **Implemented** against an indiko-style OAuth 2.0 / OIDC server (`src/auth.ts`),
+  as a **public client**: Authorization Code + PKCE, no secret. `client_id` is
+  kloe's own `/client-metadata.json` (a Client ID Metadata Document) and the
+  redirect is `/auth/callback`, both derived from `auth.baseUrl`; the IdP's
+  endpoints come from OIDC discovery on `auth.issuer`. On callback we verify
+  `state` + `iss`, exchange the code, check `allowedSubs` (empty = any
+  authenticated user), and **mint our own opaque cookie session** (SQLite
+  `sessions`, swept on expiry) rather than keeping the provider's tokens.
+- **Gate:** `/api/*` (including the SSE stream) requires a session — 401
+  otherwise; `/health` stays open. Pages stay public; the SPA calls `/api/me` on
+  boot and, on a 401, redirects to `/auth/login` (client-side, like indiko's own
+  dashboard), preserving `returnTo`. Disabled by default, so local dev and
+  single-user setups run open. Cookie is `HttpOnly`, `SameSite=Lax`, and `Secure`
+  when `baseUrl` is https. The signed-in avatar shows in the rail footer next to
+  Settings.
 ## Frontend
  
 Built as vanilla ES modules (`src/client/`), no framework and no build tooling —

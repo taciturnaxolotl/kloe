@@ -28,6 +28,14 @@
     "timeoutMs": 15000,
     "allowPrivate": false
   },
+  "auth": {
+    "enabled": false,
+    "issuer": "https://indiko.dunkirk.sh",
+    "baseUrl": "https://kloe.dunkirk.sh",
+    "allowedSubs": [],
+    "sessionTtlDays": 30,
+    "appName": "kloe"
+  },
   "prompt": {
     "name": "Kloe",
     "tagline": "your homelab chat",

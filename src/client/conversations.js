@@ -7,6 +7,7 @@
 import { mountSidebar } from "./sidebar.js";
 import { mountDialogs } from "./confirm.js";
 import { openChatMenu } from "./chatmenu.js";
+import { requireAuth, setPfp } from "./authguard.js";
 
 (function () {
   "use strict";
@@ -192,6 +193,9 @@ import { openChatMenu } from "./chatmenu.js";
   });
 
   (async function () {
+    var me = await requireAuth();
+    if (!me) return; // redirecting to login
+    setPfp(me);
     await loadSidebar();
     loadMain("");
     search.focus();

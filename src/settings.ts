@@ -107,6 +107,27 @@ const ServerSchema = v.object({
 });
 
 /**
+ * OAuth/OIDC auth via an indiko-style server. Disabled by default (local dev and
+ * single-user setups need no login). When enabled, `/api/*` requires a session
+ * and the client redirects to `/auth/login`. Public client (URL client_id +
+ * PKCE, no secret): `clientId` is the /client-metadata.json doc and `redirectUri`
+ * is /auth/callback, both derived from `baseUrl`. `allowedSubs` empty → any
+ * authenticated user; otherwise only those subject URLs may sign in.
+ */
+const AuthSchema = v.object({
+  enabled: v.optional(v.boolean(), false),
+  /** The OIDC issuer origin, e.g. https://indiko.dunkirk.sh */
+  issuer: v.optional(v.string(), ""),
+  /** kloe's own public origin, e.g. https://kloe.dunkirk.sh (used to derive client_id + redirect). */
+  baseUrl: v.optional(v.string(), ""),
+  /** Allowed subject URLs (indiko `me`/`sub`); empty = any authenticated user. */
+  allowedSubs: v.optional(v.array(v.string()), []),
+  sessionTtlDays: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 30),
+  appName: v.optional(v.string(), "kloe"),
+  logoUri: v.optional(v.string(), ""),
+});
+
+/**
  * System-prompt persona/preferences. Rendered into `prompt.tpl` per run (see
  * prompt.ts). All freeform and optional — an empty config yields a sane default
  * assistant grounded in the current date and the exposed tools.
@@ -134,6 +155,7 @@ export const ConfigSchema = v.object({
   catwalk: section(CatwalkSchema),
   search: section(SearchSchema),
   fetch: section(FetchSchema),
+  auth: section(AuthSchema),
   prompt: section(PromptSchema),
   providers: v.optional(v.array(ProviderSchema), []),
 });

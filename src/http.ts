@@ -8,6 +8,7 @@ import { withBody } from "./validate";
 import { PromptBody, SteerBody, ModelPatchBody, RenameBody } from "./schemas";
 import { ACTOR_IDLE_TTL_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
 import { getConfig } from "./settings";
+import { gateApi, getSession, sessionUser } from "./auth";
 import type { BlobStore } from "./blobs";
 
 /**
@@ -387,8 +388,18 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
   // for the next poll tick (that poll delay is up to ~1s of pure queue-wait on
   // every message). No-op in tests, which drive jobs manually.
   const kick = deps.kick ?? (() => {});
-  return {
+  const routes = {
     "/health": { GET: () => Response.json({ ok: true }) },
+
+    // Who's signed in — the SPA renders the avatar from this and, on a 401
+    // (auth on, no session), redirects to /auth/login. When auth is OFF the gate
+    // is a no-op, so this returns {authenticated:false} and the SPA stays open.
+    "/api/me": {
+      GET: (req: Bun.BunRequest<"/api/me">) => {
+        const s = getSession(req, store);
+        return s ? Response.json(sessionUser(s)) : Response.json({ authenticated: false });
+      },
+    },
 
     // Content-addressed blobs: upload (raw body) → sha256; fetch by sha256.
     "/api/blobs": {
@@ -485,4 +496,7 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       }),
     },
   };
+  // When auth is enabled, every /api/* route requires a session (401 otherwise);
+  // /health stays open. A no-op when auth is off.
+  return gateApi(routes as never, store) as typeof routes;
 }

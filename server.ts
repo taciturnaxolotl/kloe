@@ -4,6 +4,7 @@ import conversationsHTML from "./src/client/conversations.html";
 import { Store } from "./src/store";
 import { initInference } from "./src/inference";
 import { apiRoutes, getActor, evictIdleActors } from "./src/http";
+import { handleLogin, handleCallback, handleLogout, clientMetadata } from "./src/auth";
 import { JobDriver } from "./src/drive";
 import { createBlobStore } from "./src/blobs";
 import { sweepOrphanBlobs } from "./src/gc";
@@ -37,6 +38,7 @@ if (import.meta.main) {
   setInterval(() => {
     store.reap(Date.now());
     evictIdleActors();
+    store.sweepSessions();
   }, REAP_INTERVAL_MS);
 
   // Blob GC: reclaim orphaned blobs (no conversation references them) past the
@@ -126,6 +128,12 @@ if (import.meta.main) {
       "/": indexHTML,
       "/settings": settingsHTML,
       "/conversations": conversationsHTML,
+      // Auth (indiko OAuth). Inert unless auth.enabled — the SPA only navigates
+      // here after a 401. /client-metadata.json is the public client document.
+      "/client-metadata.json": () => clientMetadata(),
+      "/auth/login": (req: Request) => handleLogin(req),
+      "/auth/callback": (req: Request) => handleCallback(req, store),
+      "/auth/logout": (req: Request) => handleLogout(req, store),
       ...staticRoutes,
       ...vendorRoutes,
       ...assetRoutes,
