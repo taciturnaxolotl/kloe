@@ -40,6 +40,36 @@ import { mountDialogs } from "./confirm.js";
     _enrich.then(function (fn) { fn(el); });
   }
 
+  // Defer a completed block's enrichment until its turn scrolls into view. On a
+  // long conversation this avoids highlighting every off-screen turn up front —
+  // the biggest load cost — and doesn't fetch the Shiki/KaTeX chunks until
+  // something visible needs them. Falls back to immediate enrich if there's no
+  // turn ancestor or no IntersectionObserver.
+  var enrichObserver = null;
+  var enrichPending = new WeakMap(); // turn element -> [blocks awaiting enrich]
+  function ensureEnrichObserver() {
+    if (enrichObserver || !window.IntersectionObserver) return enrichObserver;
+    enrichObserver = new IntersectionObserver(function (entries) {
+      for (var i = 0; i < entries.length; i++) {
+        if (!entries[i].isIntersecting) continue;
+        var turn = entries[i].target;
+        enrichObserver.unobserve(turn);
+        var list = enrichPending.get(turn);
+        enrichPending.delete(turn);
+        if (list) for (var j = 0; j < list.length; j++) enrich(list[j]);
+      }
+    }, { root: scroll, rootMargin: "800px 0px" }); // enrich a bit before it's visible
+    return enrichObserver;
+  }
+  function queueEnrich(el) {
+    var obs = ensureEnrichObserver();
+    var turn = obs && el && el.closest ? el.closest(".turn") : null;
+    if (!turn) { enrich(el); return; }
+    var list = enrichPending.get(turn);
+    if (!list) { list = []; enrichPending.set(turn, list); obs.observe(turn); }
+    list.push(el);
+  }
+
   // Right-pointing chevron for timeline step rows; rotates 90° (→ down) when open.
   var CHEV = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
   // Step icons for the activity stepper (16px, stroke=currentColor).
@@ -222,7 +252,7 @@ import { mountDialogs } from "./confirm.js";
     var np = newParser(el);
     smd.parser_write(np.parser, text);
     smd.parser_end(np.parser);
-    enrich(el);
+    queueEnrich(el);
     return finalize(np.renderer);
   }
 
@@ -304,6 +334,9 @@ import { mountDialogs } from "./confirm.js";
     streaming = false;
     lastUsage = null;
     if (flushHandle) { cancelAnimationFrame(flushHandle); flushHandle = null; }
+    // Drop pending enrichment for the turns we just removed (new turns re-observe).
+    if (enrichObserver) enrichObserver.disconnect();
+    enrichPending = new WeakMap();
   }
   function makeTurn(who, cls) {
     var t = document.createElement("article");
@@ -526,7 +559,7 @@ import { mountDialogs } from "./confirm.js";
     if (!rr.ended) {
       if (rr.buf) { smd.parser_write(rr.parser, rr.buf); rr.buf = ""; }
       smd.parser_end(rr.parser); rr.ended = true;
-      enrich(rr.body);
+      queueEnrich(rr.body);
     }
     rr.row.classList.remove("thinking");
     rr.row.open = false; // thinking done → tuck the chain-of-thought away
@@ -749,7 +782,7 @@ import { mountDialogs } from "./confirm.js";
       if (p.buf) { smd.parser_write(p.parser, p.buf); p.buf = ""; }
       smd.parser_end(p.parser);
       if (finalize(p.renderer)) stripped = true;
-      enrich(p.el);
+      queueEnrich(p.el);
     }
     rec.turn.classList.remove("generating");
     if (finishReason === "aborted") {
