@@ -87,6 +87,9 @@ import {
 
   // ---- state -------------------------------------------------------------
   var convId = null;          // current conversation id
+  // Opened from a project page (/?project=<id>): file the new chat into it once
+  // its first message creates the conversation.
+  var pendingProject = new URLSearchParams(location.search).get("project");
   var source = null;          // active EventSource
   var streaming = false;      // a run is in flight for the current conversation
   var atBottom = true;
@@ -1155,6 +1158,13 @@ import {
       if (wasNew && content) {
         title.textContent = content.slice(0, 80); setDocTitle(content.slice(0, 80));
         setUrl("/c/" + encodeURIComponent(convId), true); // a new chat is now saved — reflect it in the URL
+        if (pendingProject) {
+          fetch("/api/conversations/" + encodeURIComponent(convId) + "/project", {
+            method: "PUT", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ projectId: pendingProject }),
+          }).catch(function () {});
+          pendingProject = null;
+        }
         setTimeout(loadConversations, 400);
       }
     } catch (e) {

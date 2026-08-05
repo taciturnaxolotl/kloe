@@ -1,6 +1,8 @@
 import indexHTML from "./src/client/index.html";
 import settingsHTML from "./src/client/settings.html";
 import conversationsHTML from "./src/client/conversations.html";
+import projectsHTML from "./src/client/projects.html";
+import projectHTML from "./src/client/project.html";
 import { Store } from "./src/store";
 import { initInference } from "./src/inference";
 import { apiRoutes, getActor, evictIdleActors } from "./src/http";
@@ -159,6 +161,8 @@ if (import.meta.main) {
       "/c/:id": indexHTML, // deep link to a conversation — the SPA reads the id from the path
       "/settings": settingsHTML,
       "/conversations": conversationsHTML,
+      "/projects": projectsHTML,
+      "/p/:id": projectHTML, // project detail — the page reads the id from the path
       // Auth (indiko OAuth). Inert unless auth.enabled — the SPA only navigates
       // here after a 401. /client-metadata.json is the public client document.
       "/client-metadata.json": () => clientMetadata(),
