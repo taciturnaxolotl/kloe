@@ -91,6 +91,29 @@ export function isPrivateIp(ip: string): boolean {
 }
 
 /**
+ * Rewrites known URLs to a cleaner source before fetching. GitHub blob pages are
+ * heavy HTML that Readability mangles; the raw host serves the file itself. Kept
+ * small and host-specific — a transparent "get better content" step.
+ */
+export function rewriteForFetch(raw: string): string {
+  let u: URL;
+  try { u = new URL(raw); } catch { return raw; }
+  const host = u.hostname.replace(/^www\./, "");
+  if (host === "github.com") {
+    const rawBase = "https://raw.githubusercontent.com";
+    const p = u.pathname.replace(/\/+$/, "");
+    let m: RegExpMatchArray | null;
+    // A file: /owner/repo/blob/<ref>/<path> → the raw file.
+    if ((m = p.match(/^\/([^/]+)\/([^/]+)\/blob\/(.+)$/))) return `${rawBase}/${m[1]}/${m[2]}/${m[3]}`;
+    // A directory or branch: /owner/repo/tree/<ref>(/<path>) → that dir's README.
+    if ((m = p.match(/^\/([^/]+)\/([^/]+)\/tree\/(.+)$/))) return `${rawBase}/${m[1]}/${m[2]}/${m[3]}/README.md`;
+    // The repo root: /owner/repo → the default-branch README (HEAD resolves it).
+    if ((m = p.match(/^\/([^/]+)\/([^/]+)$/))) return `${rawBase}/${m[1]}/${m[2]}/HEAD/README.md`;
+  }
+  return raw;
+}
+
+/**
  * Validates a URL for fetching: http(s) only, host not `localhost`, and every
  * resolved address public (unless `allowPrivate`). Returns the parsed URL or
  * throws with a caller-safe message.
@@ -275,7 +298,7 @@ export class LocalFetchProvider implements FetchProvider {
 
     // Follow redirects manually so every hop is re-validated against the SSRF
     // policy (an allowed URL can 30x into the private network).
-    let current = rawUrl;
+    let current = rewriteForFetch(rawUrl); // e.g. github blob → raw file
     let res: Response | null = null;
     for (let hop = 0; hop <= FETCH_MAX_REDIRECTS; hop++) {
       const url = await assertAllowedUrl(current, this.opts.allowPrivate, lookup);
@@ -328,6 +351,12 @@ export class LocalFetchProvider implements FetchProvider {
       format = "markdown";
     } else if (contentType.includes("text/") || contentType.includes("json") || contentType === "") {
       content = text.trim(); // plain text / JSON: verbatim
+      // …unless it's a markdown file served as text/plain (e.g. a raw README on
+      // GitHub) — then prose-render it.
+      if (/\.(md|markdown)$/i.test(new URL(current).pathname)) {
+        format = "markdown";
+        title = content.match(/^#\s+(.+)$/m)?.[1]?.trim() || current;
+      }
     } else {
       content = `[${contentType || "binary"} content — not rendered as text]`;
     }

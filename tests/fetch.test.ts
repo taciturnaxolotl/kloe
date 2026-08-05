@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { isPrivateIp, assertAllowedUrl, LocalFetchProvider, createFetchProvider } from "../src/fetch";
+import { isPrivateIp, assertAllowedUrl, LocalFetchProvider, createFetchProvider, rewriteForFetch } from "../src/fetch";
 
 const publicLookup = async () => [{ address: "93.184.216.34", family: 4 }];
 const privateLookup = async () => [{ address: "192.168.1.10", family: 4 }];
@@ -123,6 +123,27 @@ test("an Atom feed uses the alternate link and entry titles", async () => {
   const r = await p.fetch("https://ex.com/atom");
   expect(r.title).toBe("Atom Feed");
   expect(r.content).toContain("[Post A](https://ex.com/a)");
+});
+
+test("rewriteForFetch maps GitHub URLs to raw content/READMEs", () => {
+  expect(rewriteForFetch("https://github.com/o/r/blob/main/src/x.ts"))
+    .toBe("https://raw.githubusercontent.com/o/r/main/src/x.ts");
+  expect(rewriteForFetch("https://github.com/o/r"))
+    .toBe("https://raw.githubusercontent.com/o/r/HEAD/README.md"); // repo root → README
+  expect(rewriteForFetch("https://github.com/o/r/"))
+    .toBe("https://raw.githubusercontent.com/o/r/HEAD/README.md"); // trailing slash
+  expect(rewriteForFetch("https://github.com/o/r/tree/dev/pkg"))
+    .toBe("https://raw.githubusercontent.com/o/r/dev/pkg/README.md"); // dir → its README
+  expect(rewriteForFetch("https://github.com/o")).toBe("https://github.com/o"); // user profile unchanged
+  expect(rewriteForFetch("https://example.com/blob/main/x")).toBe("https://example.com/blob/main/x"); // non-github unchanged
+});
+
+test("a raw .md served as text/plain is prose-rendered (format:markdown, title from H1)", async () => {
+  const res = new Response("# Readme\n\nhello", { headers: { "content-type": "text/plain" } });
+  const p = new LocalFetchProvider(opts({ fetchImpl: (async () => res) as unknown as typeof fetch }));
+  const r = await p.fetch("https://raw.githubusercontent.com/o/r/main/README.md");
+  expect(r.format).toBe("markdown");
+  expect(r.title).toBe("Readme");
 });
 
 test("createFetchProvider honors the enabled flag", () => {
