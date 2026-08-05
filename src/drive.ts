@@ -5,7 +5,7 @@ import { LOCAL_SUB, lardEnabled } from "./lard";
 import { ingestConversation } from "./ingest";
 import { getConfig } from "./settings";
 import { ConversationActor, type RunStep } from "./actor";
-import { run, modelSupportsImages } from "./inference";
+import { run, modelSupportsImages, type RunProject } from "./inference";
 import type { BlobStore } from "./blobs";
 import { LEASE_GRACE_MS, HEARTBEAT_INTERVAL_MS } from "./config";
 
@@ -149,10 +149,11 @@ export class JobDriver {
     // Resolve who owns this conversation so the run's tools + memory bind to
     // that user's lard token (local user when unstamped / auth off).
     const owner = this.store.getConversationOwner(actor.conversationId) ?? LOCAL_SUB;
+    const project = this.projectContext(actor.conversationId);
     await actor.runText(
       spec.runId,
       spec.messageId,
-      (signal) => this.streamTimed(messages, spec, signal, owner, timing),
+      (signal) => this.streamTimed(messages, spec, signal, owner, project, timing),
       (seq) => {
         // Advance the job's durable checkpoint + lease on each flush so a
         // crash mid-run is re-claimed from the last flushed seq.
@@ -183,14 +184,27 @@ export class JobDriver {
   }
 
   /** The provider stream, tapped to record first-token time and chunk count. */
+  // A conversation's project context (pinned lard project + uploaded files), or
+  // undefined when it's unfiled or the project carries nothing to inject.
+  private projectContext(conversationId: string): RunProject | undefined {
+    const projectId = this.store.getConversationProject(conversationId);
+    if (!projectId) return undefined;
+    const proj = this.store.getProject(projectId);
+    const files = this.store.projectContextFiles(projectId)
+      .map((f) => ({ filename: f.filename, body: f.body }));
+    if (!proj?.lardProject && !files.length) return undefined;
+    return { lardProject: proj?.lardProject, contextFiles: files };
+  }
+
   private async *streamTimed(
     messages: ModelMessage[],
     spec: RunSpec,
     signal: AbortSignal,
     owner: string,
+    project: RunProject | undefined,
     timing?: RunTiming,
   ): AsyncGenerator<RunStep> {
-    for await (const step of run(messages, { runId: spec.runId, model: spec.model, abortSignal: signal, store: this.store, owner })) {
+    for await (const step of run(messages, { runId: spec.runId, model: spec.model, abortSignal: signal, store: this.store, owner, project })) {
       if (timing && step.kind === "text") {
         if (!timing.firstTokenAt) timing.firstTokenAt = Date.now();
         timing.chunks++;

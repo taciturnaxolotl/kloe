@@ -162,8 +162,13 @@ function contextFiles(paths: string[]): Array<{ Path: string; Content: string }>
  * this run (so the <tools> section — and its "reach for tools" nudge — appears
  * only when there are tools to reach for).
  */
-export function buildSystemPrompt(opts: { tools: ToolSet; now?: Date; memory?: string }): string {
+export function buildSystemPrompt(opts: {
+  tools: ToolSet; now?: Date; memory?: string;
+  /** Per-project context files, injected alongside the globally configured ones. */
+  contextFiles?: Array<{ filename: string; body: string }>;
+}): string {
   const p = getConfig().prompt;
+  const projectFiles = (opts.contextFiles ?? []).map((f) => ({ Path: f.filename, Content: f.body }));
   const data: Record<string, unknown> = {
     Memory: opts.memory?.trim() ?? "",
     Name: p.name,
@@ -176,7 +181,7 @@ export function buildSystemPrompt(opts: { tools: ToolSet; now?: Date; memory?: s
     Boundaries: p.boundaries ?? "",
     Platform: p.platform ?? "",
     Tools: toolsBlock(opts.tools),
-    ContextFiles: contextFiles(p.contextFiles),
+    ContextFiles: contextFiles(p.contextFiles).concat(projectFiles),
   };
   // Collapse the blank-line runs Go-style block actions leave behind (an
   // `{{if}}…{{end}}` that renders nothing still leaves its surrounding newlines).

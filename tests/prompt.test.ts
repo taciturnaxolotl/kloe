@@ -43,6 +43,17 @@ test("buildSystemPrompt includes the date and a tools section only when tools ex
   expect(withTools).toContain("web_search: Search the web.");
 });
 
+test("buildSystemPrompt injects a project's context files as <file> blocks", () => {
+  cfg({});
+  const out = buildSystemPrompt({
+    tools: {} as ToolSet,
+    now: new Date("2026-08-04"),
+    contextFiles: [{ filename: "spec.md", body: "The widget must be blue." }],
+  });
+  expect(out).toContain('<file path="spec.md">');
+  expect(out).toContain("The widget must be blue.");
+});
+
 test("buildSystemPrompt renders configured persona and drops emoji when asked", () => {
   cfg({ name: "Nova", personality: "Terse and precise.", noEmoji: true });
   const out = buildSystemPrompt({ tools: {} as ToolSet, now: new Date("2026-08-04") });

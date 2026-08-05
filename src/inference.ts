@@ -120,6 +120,13 @@ export function resolveModel(modelRef: string): LanguageModel {
   return limiter ? limiter.wrap(model) : model;
 }
 
+/** Project-scoped context to fold into a run: the pinned lard project (whose
+ *  area is pulled into memory) and the project's uploaded context files. */
+export interface RunProject {
+  lardProject?: string;
+  contextFiles?: Array<{ filename: string; body: string }>;
+}
+
 export interface RunOptions {
   model: string;
   runId: string;
@@ -128,6 +135,8 @@ export interface RunOptions {
   /** For per-user lard: the run's store + the conversation owner's `sub`. */
   store?: Store;
   owner?: string;
+  /** Set when the conversation is filed under a project. */
+  project?: RunProject;
 }
 
 export async function* run(
@@ -154,12 +163,14 @@ export async function* run(
   // prompt. Best-effort — a failed/absent fetch never blocks the run.
   let memory = "";
   if (opts.store && opts.owner && lardEnabled() && lardConnected(opts.store, opts.owner)) {
-    try { memory = contextToText(await getContext(opts.store, opts.owner)); }
+    // A project pins a lard project so its area is pulled alongside the profile.
+    try { memory = contextToText(await getContext(opts.store, opts.owner, opts.project?.lardProject)); }
     catch (e) { console.error("lard context:", (e as Error).message); }
   }
-  // System prompt: grounds the turn in the current date, the durable memory, and
-  // which tools it may reach for (built from the set actually exposed above).
-  const system = buildSystemPrompt({ tools, memory });
+  // System prompt: grounds the turn in the current date, the durable memory, the
+  // project's context files, and which tools it may reach for (built from the
+  // set actually exposed above).
+  const system = buildSystemPrompt({ tools, memory, contextFiles: opts.project?.contextFiles });
   const result = streamText({
     model,
     system,

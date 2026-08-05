@@ -41,6 +41,32 @@ function afterSeqFor(req: Request, conversationId: string): number {
   }
 }
 
+// Context-file gating: keep uploads to text. A denylist of common binary
+// extensions gives a clear early "no", and a content sniff catches the rest —
+// binary decoded as UTF-8 carries NUL and replacement (U+FFFD) chars.
+const BINARY_EXT = new Set([
+  "xls", "xlsx", "xlsm", "ods", "doc", "docx", "ppt", "pptx", "pdf",
+  "png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "ico", "svg", "heic",
+  "zip", "gz", "tar", "rar", "7z", "bz2", "xz",
+  "mp3", "wav", "flac", "ogg", "mp4", "mov", "avi", "mkv", "webm",
+  "exe", "dll", "so", "dylib", "bin", "wasm", "class", "o", "a",
+  "ttf", "otf", "woff", "woff2", "sqlite", "db",
+]);
+function isBinaryName(name: string): boolean {
+  const i = name.lastIndexOf(".");
+  return i >= 0 && BINARY_EXT.has(name.slice(i + 1).toLowerCase());
+}
+function looksBinary(s: string): boolean {
+  if (s.indexOf("\u0000") !== -1) return true; // NUL never appears in real text
+  const n = Math.min(s.length, 8192);
+  let bad = 0;
+  for (let i = 0; i < n; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 0xfffd || (c < 9) || (c > 13 && c < 32)) bad++; // U+FFFD or a control char
+  }
+  return n > 0 && bad / n > 0.02;
+}
+
 /** Sentinel enqueued into an idle stream so proxies keep the connection open. */
 const KEEPALIVE = Symbol("keepalive");
 type StreamItem = WireEvent | typeof KEEPALIVE;
@@ -722,6 +748,13 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         const name = (new URL(req.url).searchParams.get("name") || "file.txt").slice(0, 200);
         const body = await req.text();
         if (body.length > 512 * 1024) return Response.json({ error: "file too large (max 512KB text)" }, { status: 413 });
+        // Context files are injected verbatim into the prompt, so only text is
+        // useful (and safe). A spreadsheet/image/PDF decodes to a UTF-8 string
+        // riddled with NUL and replacement chars — reject those, and known
+        // binary extensions, with a clear message.
+        if (isBinaryName(name) || looksBinary(body)) {
+          return Response.json({ error: "only text files can be added as context (no spreadsheets, images, or other binary files)" }, { status: 415 });
+        }
         const cid = randomUUID();
         store.addProjectContext(cid, req.params.id, name, body);
         return Response.json({ id: cid }, { status: 201 });

@@ -159,16 +159,38 @@ import { MORE_ICON, PENCIL_ICON, PLUS_ICON, TRASH_ICON, FILE_ICON } from "./icon
     });
   }
 
+  // Context files are injected verbatim into the project's chats, so only text
+  // is useful. Pre-check by type/extension (the server also enforces this) and
+  // explain the rejection rather than uploading garbage.
+  var BINARY_EXT = /\.(xlsx?|xlsm|ods|docx?|pptx?|pdf|png|jpe?g|gif|webp|bmp|tiff?|ico|svg|heic|zip|gz|tar|rar|7z|bz2|xz|mp3|wav|flac|ogg|mp4|mov|avi|mkv|webm|exe|dll|so|dylib|bin|wasm|class|ttf|otf|woff2?|sqlite|db)$/i;
+  function isTextFile(f) {
+    if (BINARY_EXT.test(f.name)) return false;
+    if (f.type && !/^text\//.test(f.type)) {
+      // Allow a few text-ish application/* types; reject the rest (images, etc.).
+      return /^application\/(json|xml|x-yaml|yaml|toml|x-sh|javascript|csv)$|^$/.test(f.type) || /\+xml$|\+json$/.test(f.type);
+    }
+    return true;
+  }
+
   $("ctxAdd").addEventListener("click", function () { $("fileInput").click(); });
   $("fileInput").addEventListener("change", async function () {
     var file = this.files && this.files[0];
     this.value = "";
     if (!file) return;
+    if (!isTextFile(file)) {
+      dialogs.confirm({ title: "Only text files", body: "“" + file.name + "” isn’t a text file. Add plain-text notes, markdown, JSON, CSV, and the like — not spreadsheets, images, or other binary files.", ok: "OK" });
+      return;
+    }
     var text = await file.text();
     try {
-      await fetch("/api/projects/" + encodeURIComponent(projectId) + "/context?name=" + encodeURIComponent(file.name), {
+      var r = await fetch("/api/projects/" + encodeURIComponent(projectId) + "/context?name=" + encodeURIComponent(file.name), {
         method: "POST", headers: { "content-type": "text/plain" }, body: text,
       });
+      if (!r.ok) {
+        var err = await r.json().catch(function () { return {}; });
+        dialogs.confirm({ title: "Couldn’t add file", body: err.error || "The file was rejected.", ok: "OK" });
+        return;
+      }
       renderContext();
     } catch (_) { /* ignore */ }
   });
