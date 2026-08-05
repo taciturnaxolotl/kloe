@@ -6,7 +6,7 @@ import { getRegistry } from "./inference";
 import { sseBlock } from "./sse";
 import { parseEventId, Event } from "./events";
 import { withBody } from "./validate";
-import { PromptBody, SteerBody, ModelPatchBody, RenameBody } from "./schemas";
+import { PromptBody, SteerBody, ModelPatchBody, RenameBody, ProjectCreateBody, ProjectPatchBody, ProjectAssignBody } from "./schemas";
 import { ACTOR_IDLE_TTL_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
 import { getConfig } from "./settings";
 import { gateApi, getSession, sessionUser, authEnabled } from "./auth";
@@ -429,6 +429,15 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     return null;
   };
 
+  // Same, for a project: you may only touch a project you own (404 hides others').
+  const guardProject = (req: Request, id: string): Response | null => {
+    if (!authEnabled()) return null;
+    const owner = store.getProjectOwner(id);
+    const sub = getSession(req, store)?.sub;
+    if (owner !== undefined && owner !== sub) return Response.json({ error: "not found" }, { status: 404 });
+    return null;
+  };
+
   const routes = {
     "/health": { GET: () => Response.json({ ok: true }) },
 
@@ -620,6 +629,55 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         store.renameConversation(req.params.id, data.title);
         return Response.json({ ok: true });
       }),
+    },
+
+    // File (or unfile) a conversation into a project.
+    "/api/conversations/:id/project": {
+      PUT: withBody(ProjectAssignBody, (data, req: Bun.BunRequest<"/api/conversations/:id/project">) => {
+        const denied = guardConv(req, req.params.id);
+        if (denied) return denied;
+        if (data.projectId) { const pd = guardProject(req, data.projectId); if (pd) return pd; }
+        store.setConversationProject(req.params.id, data.projectId);
+        if (data.projectId) store.touchProject(data.projectId);
+        return Response.json({ ok: true });
+      }),
+    },
+
+    // ---- projects ----
+    "/api/projects": {
+      GET: (req: Bun.BunRequest<"/api/projects">) => {
+        const owner = authEnabled() ? getSession(req, store)?.sub : undefined;
+        return Response.json({ projects: store.listProjects(owner) });
+      },
+      POST: withBody(ProjectCreateBody, (data, req: Bun.BunRequest<"/api/projects">) => {
+        const id = randomUUID();
+        store.createProject(id, data.name, data.description, getSession(req, store)?.sub);
+        return Response.json({ id }, { status: 201 });
+      }),
+    },
+    "/api/projects/:id": {
+      GET: (req: Bun.BunRequest<"/api/projects/:id">) => {
+        const denied = guardProject(req, req.params.id);
+        if (denied) return denied;
+        const project = store.getProject(req.params.id);
+        if (!project) return Response.json({ error: "not found" }, { status: 404 });
+        const owner = authEnabled() ? getSession(req, store)?.sub : undefined;
+        return Response.json({ project, conversations: store.listConversations(owner, req.params.id) });
+      },
+      PATCH: withBody(ProjectPatchBody, (data, req: Bun.BunRequest<"/api/projects/:id">) => {
+        const denied = guardProject(req, req.params.id);
+        if (denied) return denied;
+        if (!store.getProject(req.params.id)) return Response.json({ error: "not found" }, { status: 404 });
+        // An empty lardProject string clears the pin.
+        store.updateProject(req.params.id, { name: data.name, description: data.description, lardProject: data.lardProject === undefined ? undefined : data.lardProject || null });
+        return Response.json({ ok: true });
+      }),
+      DELETE: (req: Bun.BunRequest<"/api/projects/:id">) => {
+        const denied = guardProject(req, req.params.id);
+        if (denied) return denied;
+        store.deleteProject(req.params.id);
+        return Response.json({ ok: true });
+      },
     },
   };
   // When auth is enabled, every /api/* route requires a session (401 otherwise);

@@ -107,6 +107,22 @@ export interface ConversationSummary {
   title: string | null;
 }
 
+/** A project groups conversations and pins shared context (a lard memory project). */
+export interface Project {
+  id: string;
+  name: string;
+  description?: string;
+  /** Pinned lard memory project id (scopes context + ingest). */
+  lardProject?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** A project as shown in the gallery — with a count of its conversations. */
+export interface ProjectSummary extends Project {
+  chatCount: number;
+}
+
 /** A search hit: a conversation plus an excerpt of the matching message. */
 export interface ConversationSearchResult extends ConversationSummary {
   /** Text around the match (title match → excerpt of the first message). */
@@ -250,6 +266,19 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions (expires_at);
 
+-- Projects group conversations and carry shared context. A project is owned by
+-- one kloe user, optionally pins a lard memory project, and its conversations
+-- reference it via conversations.project_id (nullable — "unfiled" chats).
+CREATE TABLE IF NOT EXISTS projects (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  description  TEXT,
+  owner_sub    TEXT,
+  lard_project TEXT,
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+);
+
 -- Per-user OAuth device-grant tokens for the lard memory server. One row per
 -- kloe user (sub); "local" is the implicit user when kloe auth is disabled.
 -- Never in the event log. access_token is refreshed lazily via refresh_token.
@@ -350,6 +379,12 @@ export class Store {
     } catch {
       // column already exists
     }
+    // Migration: which project a conversation belongs to (NULL = unfiled).
+    try {
+      this.db.exec("ALTER TABLE conversations ADD COLUMN project_id TEXT");
+    } catch {
+      // column already exists
+    }
 
     this.readStmt = this.db.prepare(
       `SELECT seq, event, data FROM events
@@ -412,7 +447,7 @@ export class Store {
 
     this.listConversationsStmt = this.db.prepare(
       `SELECT c.id AS id, c.created_at AS created_at, c.last_seq AS last_seq, c.custom_title AS custom_title,
-              c.owner_sub AS owner_sub,
+              c.owner_sub AS owner_sub, c.project_id AS project_id,
               (SELECT e.data FROM events e
                WHERE e.conversation_id = c.id AND e.event = 'user-message'
                ORDER BY e.seq ASC LIMIT 1) AS first_user,
@@ -517,9 +552,11 @@ export class Store {
    * derived from its first user message. Used by the chat rail. The title
    * subquery pulls the earliest `user-message` event's content per conversation.
    */
-  listConversations(owner?: string): ConversationSummary[] {
-    const rows = this.listConversationsStmt.all() as Array<ConversationRow & { owner_sub: string | null }>;
-    return rows.filter((r) => !owner || r.owner_sub === owner).map(rowToSummary);
+  listConversations(owner?: string, projectId?: string): ConversationSummary[] {
+    const rows = this.listConversationsStmt.all() as Array<ConversationRow & { owner_sub: string | null; project_id: string | null }>;
+    return rows
+      .filter((r) => (!owner || r.owner_sub === owner) && (projectId === undefined || r.project_id === projectId))
+      .map(rowToSummary);
   }
 
   /**
@@ -689,6 +726,71 @@ export class Store {
   getConversationOwner(id: string): string | undefined {
     const row = this.db.query("SELECT owner_sub FROM conversations WHERE id = ?").get(id) as { owner_sub: string | null } | null;
     return row?.owner_sub ?? undefined;
+  }
+
+  // ---- projects ----------------------------------------------------------
+  createProject(id: string, name: string, description: string | undefined, owner: string | undefined): void {
+    const now = Date.now();
+    this.db
+      .query("INSERT INTO projects (id, name, description, owner_sub, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(id, name, description ?? null, owner ?? null, now, now);
+  }
+
+  getProject(id: string): Project | undefined {
+    const r = this.db
+      .query("SELECT id, name, description, lard_project, created_at, updated_at FROM projects WHERE id = ?")
+      .get(id) as { id: string; name: string; description: string | null; lard_project: string | null; created_at: number; updated_at: number } | null;
+    if (!r) return undefined;
+    return { id: r.id, name: r.name, description: r.description ?? undefined, lardProject: r.lard_project ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at };
+  }
+
+  getProjectOwner(id: string): string | undefined {
+    const r = this.db.query("SELECT owner_sub FROM projects WHERE id = ?").get(id) as { owner_sub: string | null } | null;
+    return r?.owner_sub ?? undefined;
+  }
+
+  /** Projects for the gallery, newest-updated first, with a chat count. */
+  listProjects(owner?: string): ProjectSummary[] {
+    const rows = this.db
+      .query(
+        `SELECT p.id, p.name, p.description, p.lard_project, p.owner_sub, p.created_at, p.updated_at,
+                (SELECT COUNT(*) FROM conversations c WHERE c.project_id = p.id) AS chat_count
+         FROM projects p ORDER BY p.updated_at DESC`,
+      )
+      .all() as Array<{ id: string; name: string; description: string | null; lard_project: string | null; owner_sub: string | null; created_at: number; updated_at: number; chat_count: number }>;
+    return rows
+      .filter((r) => !owner || r.owner_sub === owner)
+      .map((r) => ({ id: r.id, name: r.name, description: r.description ?? undefined, lardProject: r.lard_project ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at, chatCount: r.chat_count }));
+  }
+
+  updateProject(id: string, fields: { name?: string; description?: string | null; lardProject?: string | null }): void {
+    const sets: string[] = [];
+    const vals: Array<string | null> = [];
+    if (fields.name !== undefined) { sets.push("name = ?"); vals.push(fields.name); }
+    if (fields.description !== undefined) { sets.push("description = ?"); vals.push(fields.description); }
+    if (fields.lardProject !== undefined) { sets.push("lard_project = ?"); vals.push(fields.lardProject); }
+    if (!sets.length) return;
+    sets.push("updated_at = ?");
+    this.db.query(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`).run(...vals, Date.now(), id);
+  }
+
+  /** Bump a project's updated_at (e.g. when one of its chats gets a new message). */
+  touchProject(id: string): void {
+    this.db.query("UPDATE projects SET updated_at = ? WHERE id = ?").run(Date.now(), id);
+  }
+
+  deleteProject(id: string): void {
+    this.db.query("UPDATE conversations SET project_id = NULL WHERE project_id = ?").run(id); // unfile its chats
+    this.db.query("DELETE FROM projects WHERE id = ?").run(id);
+  }
+
+  setConversationProject(conversationId: string, projectId: string | null): void {
+    this.db.query("UPDATE conversations SET project_id = ? WHERE id = ?").run(projectId, conversationId);
+  }
+
+  getConversationProject(conversationId: string): string | undefined {
+    const r = this.db.query("SELECT project_id FROM conversations WHERE id = ?").get(conversationId) as { project_id: string | null } | null;
+    return r?.project_id ?? undefined;
   }
 
   /**

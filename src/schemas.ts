@@ -45,6 +45,26 @@ export const RenameBody = v.object({
 });
 export type RenameBody = v.InferOutput<typeof RenameBody>;
 
+export const ProjectCreateBody = v.object({
+	name: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(120)),
+	description: v.optional(v.pipe(v.string(), v.maxLength(2000))),
+});
+export type ProjectCreateBody = v.InferOutput<typeof ProjectCreateBody>;
+
+export const ProjectPatchBody = v.object({
+	name: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(120))),
+	description: v.optional(v.pipe(v.string(), v.maxLength(2000))),
+	/** Pin (or "" to clear) a lard memory project id. */
+	lardProject: v.optional(v.pipe(v.string(), v.maxLength(200))),
+});
+export type ProjectPatchBody = v.InferOutput<typeof ProjectPatchBody>;
+
+export const ProjectAssignBody = v.object({
+	/** null → unfile the conversation. */
+	projectId: v.nullable(v.pipe(v.string(), v.maxLength(120))),
+});
+export type ProjectAssignBody = v.InferOutput<typeof ProjectAssignBody>;
+
 /**
  * PATCH /api/models — partial curation update. `displayName: null` clears the
  * override; omitted fields keep their stored value (merge happens in the handler).
