@@ -91,7 +91,7 @@ if (import.meta.main) {
   // Bun.build) and serve its outputs from /assets/. The client loads /assets/
   // enrich.js via a runtime URL, so the app entry never pulls these libs and
   // grammars load per-language only when a code/math block appears.
-  const enrichAssets = new Map<string, Blob>();
+  const enrichAssets = new Map<string, Bun.BuildArtifact>();
   async function buildEnrich() {
     const build = await Bun.build({
       entrypoints: [new URL("./src/client/enrich.js", import.meta.url).pathname],
@@ -125,13 +125,21 @@ if (import.meta.main) {
       const file = req.params.file;
       const a = enrichAssets.get(file);
       if (!a) return new Response("not found", { status: 404 });
-      // Chunks are content-hashed → immutable. The entry (enrich.js) has a fixed
-      // name but changes on rebuild, so it must revalidate or an old bundle
-      // sticks in the browser forever.
+      // Chunks are content-hashed → immutable, cached forever. The entry
+      // (enrich.js) keeps a fixed name but its content hash rides an ETag: the
+      // browser revalidates each load (no-cache) but gets a tiny 304 when it
+      // hasn't changed, and only re-downloads the body when it actually did — so
+      // rebuilds propagate without re-fetching the bundle on every page load.
+      const etag = `"${a.hash}"`;
       const cache = /^chunk-/.test(file)
         ? "public, max-age=31536000, immutable"
         : "no-cache";
-      return new Response(a, { headers: { "Content-Type": a.type || "text/javascript", "Cache-Control": cache } });
+      if (req.headers.get("If-None-Match") === etag) {
+        return new Response(null, { status: 304, headers: { ETag: etag, "Cache-Control": cache } });
+      }
+      return new Response(a, {
+        headers: { "Content-Type": a.type || "text/javascript", "Cache-Control": cache, ETag: etag },
+      });
     },
   };
 
