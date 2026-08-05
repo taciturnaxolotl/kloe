@@ -396,9 +396,10 @@ body.selecting #selectBtn { order: 4; }
   white-space: nowrap; color: var(--ink-faint); font-size: 0.9em; }
 
 /* KaTeX math. Inline flows with text; display centers on its own line. */
-.turn .body .math-inline { white-space: nowrap; }
-.turn .body .math-display { display: block; overflow-x: auto; margin: 12px 0; text-align: center; }
-.turn .body .math-inline .katex, .turn .body .math-display .katex { font-size: 1.02em; }
+/* smd emits <equation-inline>/<equation-block>; KaTeX renders into them (enrich.js). */
+.turn .body equation-inline { white-space: nowrap; }
+.turn .body equation-block { display: block; overflow-x: auto; margin: 12px 0; text-align: center; }
+.turn .body equation-inline .katex, .turn .body equation-block .katex { font-size: 1.02em; }
 
 .turn.pending { opacity: .6; }
 .turn.failed .body { color: var(--ink-muted); }

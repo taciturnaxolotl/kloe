@@ -115,45 +115,21 @@ async function katex() {
   }
   return _katex;
 }
-// $$…$$ (display) or $…$ (inline, single line, non-empty). Escaped \$ is left alone.
-var MATH = /\$\$([\s\S]+?)\$\$|(?<!\\)\$([^$\n]+?)\$/g;
-function renderMathText(text, k) {
-  MATH.lastIndex = 0;
-  if (text.indexOf("$") < 0) return null;
-  var parts = [], last = 0, changed = false, m;
-  while ((m = MATH.exec(text))) {
-    if (m.index > last) parts.push(document.createTextNode(text.slice(last, m.index)));
-    var display = m[1] != null, tex = display ? m[1] : m[2];
-    var span = document.createElement("span");
-    span.className = display ? "math-display" : "math-inline";
-    try { span.innerHTML = k.renderToString(tex, { displayMode: display, throwOnError: false }); }
-    catch (_) { span.textContent = m[0]; }
-    parts.push(span); changed = true; last = MATH.lastIndex;
-  }
-  if (!changed) return null;
-  if (last < text.length) parts.push(document.createTextNode(text.slice(last)));
-  var frag = document.createDocumentFragment();
-  parts.forEach(function (p) { frag.appendChild(p); });
-  return frag;
-}
+// streaming-markdown tokenizes $…$ → <equation-inline> and $$…$$ →
+// <equation-block> (the delimiters are consumed and the LaTeX preserved inside),
+// so we render those elements with KaTeX rather than scanning text for `$`.
 async function enrichMath(root) {
-  if (root.textContent.indexOf("$") < 0) return; // nothing to do → don't load katex
+  var eqs = root.querySelectorAll("equation-inline:not([data-tex]), equation-block:not([data-tex])");
+  if (!eqs.length) return; // no math → don't load katex
   var k = await katex();
-  var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode: function (n) {
-      if (!n.nodeValue || n.nodeValue.indexOf("$") < 0) return NodeFilter.FILTER_REJECT;
-      for (var p = n.parentElement; p && p !== root; p = p.parentElement) {
-        var t = p.tagName;
-        if (t === "CODE" || t === "PRE" || p.classList.contains("katex")) return NodeFilter.FILTER_REJECT;
-      }
-      return NodeFilter.FILTER_ACCEPT;
-    },
-  });
-  var nodes = [];
-  while (walker.nextNode()) nodes.push(walker.currentNode);
-  for (var i = 0; i < nodes.length; i++) {
-    var frag = renderMathText(nodes[i].nodeValue, k);
-    if (frag) nodes[i].parentNode.replaceChild(frag, nodes[i]);
+  for (var i = 0; i < eqs.length; i++) {
+    var el = eqs[i];
+    var tex = el.textContent;
+    if (!tex) continue;
+    var display = el.tagName.toLowerCase() === "equation-block";
+    try { el.innerHTML = k.renderToString(tex, { displayMode: display, throwOnError: false }); }
+    catch (_) { /* invalid LaTeX — leave the raw source visible */ }
+    el.setAttribute("data-tex", "1"); // don't re-render on a later enrich pass
   }
 }
 
