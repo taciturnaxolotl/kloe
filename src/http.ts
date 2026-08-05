@@ -10,7 +10,7 @@ import { PromptBody, SteerBody, ModelPatchBody, RenameBody, ProjectCreateBody, P
 import { ACTOR_IDLE_TTL_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
 import { getConfig } from "./settings";
 import { gateApi, getSession, sessionUser, authEnabled } from "./auth";
-import { lardEnabled, lardConnected, lardDisconnect, LOCAL_SUB, memoryList, memoryProjects, memoryRead, memoryWrite, getContext } from "./lard";
+import { lardEnabled, lardConnected, lardDisconnect, LOCAL_SUB, memoryList, memoryProjects, memoryRead, memoryWrite, memoryDelete, getContext } from "./lard";
 import type { BlobStore } from "./blobs";
 
 /**
@@ -511,6 +511,14 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         if (!path) return Response.json({ error: "missing path" }, { status: 400 });
         if (!lardEnabled() || !lardConnected(store, sub)) return Response.json({ error: "not connected" }, { status: 409 });
         try { await memoryWrite(store, sub, path, await req.text()); return Response.json({ ok: true }); }
+        catch (e) { return Response.json({ error: (e as Error).message }, { status: 502 }); }
+      },
+      DELETE: async (req: Bun.BunRequest<"/api/lard/subject">) => {
+        const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
+        const path = new URL(req.url).searchParams.get("path");
+        if (!path) return Response.json({ error: "missing path" }, { status: 400 });
+        if (!lardEnabled() || !lardConnected(store, sub)) return Response.json({ error: "not connected" }, { status: 409 });
+        try { await memoryDelete(store, sub, path); return Response.json({ ok: true }); }
         catch (e) { return Response.json({ error: (e as Error).message }, { status: 502 }); }
       },
     },

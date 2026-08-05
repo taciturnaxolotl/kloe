@@ -8,7 +8,8 @@
  */
 import { mountSidebar } from "./sidebar.js";
 import { mountDialogs } from "./confirm.js";
-import { GRIP_ICON as GRIP, BRAIN_ICON, USER_ICON, USERS_ICON, HASH_ICON, FOLDER_ICON, PENCIL_ICON } from "./icons.js";
+import { GRIP_ICON as GRIP, BRAIN_ICON, USER_ICON, USERS_ICON, HASH_ICON, FOLDER_ICON, PENCIL_ICON, MORE_ICON, TRASH_ICON } from "./icons.js";
+import { showContextMenu } from "./ctxmenu.js";
 import { requireAuth, setPfp } from "./authguard.js";
 import * as smd from "streaming-markdown";
 
@@ -443,36 +444,66 @@ import * as smd from "streaming-markdown";
       var badge = document.createElement("span"); badge.className = "lardvbadge"; badge.textContent = KIND_SINGULAR[s.kind];
       titleWrap.appendChild(badge);
     }
-    var action = document.createElement("button"); action.className = "lardbtn"; action.type = "button";
-    var head2 = document.createElement("div"); head2.className = "lardvactions"; head2.appendChild(action);
+    // Read mode uses a ⋮ menu (Edit / Delete); edit mode swaps in Cancel + Save.
+    var menuBtn = document.createElement("button"); menuBtn.className = "lardvmenu"; menuBtn.type = "button";
+    menuBtn.setAttribute("aria-label", "Subject options"); menuBtn.innerHTML = MORE_ICON;
+    var cancel = document.createElement("button"); cancel.className = "lardbtn"; cancel.type = "button"; cancel.textContent = "Cancel";
+    var save = document.createElement("button"); save.className = "lardbtn primary"; save.type = "button"; save.textContent = "Save";
+    var head2 = document.createElement("div"); head2.className = "lardvactions";
+    head2.appendChild(menuBtn); head2.appendChild(cancel); head2.appendChild(save);
     head.appendChild(titleWrap); head.appendChild(head2);
     var pathEl = document.createElement("div"); pathEl.className = "lardvpath"; pathEl.textContent = path;
 
     var prose = document.createElement("div"); prose.className = "lardprose";
     v.appendChild(head); v.appendChild(pathEl); v.appendChild(prose);
 
+    menuBtn.onclick = function (e) {
+      e.stopPropagation();
+      var r = menuBtn.getBoundingClientRect();
+      showContextMenu(r.right, r.bottom + 4, [
+        { label: "Edit", icon: PENCIL_ICON, onClick: showEdit },
+        { label: "Delete subject", icon: TRASH_ICON, danger: true, onClick: deleteSubject },
+      ], { align: "right", trigger: menuBtn });
+    };
+
+    async function deleteSubject() {
+      var ok = await dialogs.confirm({
+        title: "Delete this subject?",
+        body: "“" + (s.name || path) + "” will be permanently removed from your memory. This can’t be undone.",
+        ok: "Delete", danger: true,
+      });
+      if (!ok) return;
+      try { await fetch("/api/lard/subject?path=" + encodeURIComponent(path), { method: "DELETE" }); }
+      catch (_) { return; }
+      lardSubjects = lardSubjects.filter(function (x) { return x.path !== path; });
+      activeSubjectPath = null;
+      renderSubjectList(document.getElementById("lardSearch").value);
+      document.getElementById("lardViewer").innerHTML = '<p class="lardhint">Select a subject to read or edit it.</p>';
+    }
+
     function showRead() {
-      action.innerHTML = PENCIL_ICON + "<span>Edit</span>"; action.classList.remove("primary");
+      menuBtn.hidden = false; cancel.hidden = true; save.hidden = true;
       prose.className = "lardprose";
       if (body.trim()) renderMarkdown(prose, body);
       else prose.innerHTML = '<p class="lardhint">This subject is empty.</p>';
-      action.onclick = showEdit;
     }
     function showEdit() {
+      menuBtn.hidden = true; cancel.hidden = false; save.hidden = false;
+      cancel.onclick = showRead; // discard: fall back to the stored body
       prose.className = "lardprose editing";
       prose.innerHTML = "";
       var ta = document.createElement("textarea"); ta.className = "lardedit"; ta.value = body; ta.spellcheck = false;
       prose.appendChild(ta); ta.focus();
-      action.innerHTML = "<span>Save</span>"; action.classList.add("primary"); action.disabled = true;
-      ta.addEventListener("input", function () { action.disabled = ta.value === body; });
-      action.onclick = async function () {
-        action.disabled = true; action.textContent = "Saving…";
+      save.textContent = "Save"; save.disabled = true;
+      ta.addEventListener("input", function () { save.disabled = ta.value === body; });
+      ta.addEventListener("keydown", function (e) { if (e.key === "Escape") { e.preventDefault(); showRead(); } });
+      save.onclick = async function () {
+        save.disabled = true; save.textContent = "Saving…";
         try {
           await fetch("/api/lard/subject?path=" + encodeURIComponent(path), { method: "PUT", headers: { "content-type": "text/markdown" }, body: ta.value });
           body = ta.value;
-          // Reflect an edited description/name back into the list cache.
           showRead();
-        } catch (_) { action.disabled = false; action.textContent = "Save"; }
+        } catch (_) { save.disabled = false; save.textContent = "Save"; }
       };
     }
     showRead();

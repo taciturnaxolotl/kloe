@@ -197,6 +197,9 @@ export function memoryWrite(store: Store, sub: string, path: string, body: strin
   // lard decodes a JSON envelope ({body, description, aliases, repos, version}) — not raw markdown.
   return api(store, sub, "/memory/" + cleanPath(path), { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ body }) });
 }
+export function memoryDelete(store: Store, sub: string, path: string): Promise<unknown> {
+  return api(store, sub, "/memory/" + cleanPath(path), { method: "DELETE" });
+}
 export function memoryAppend(store: Store, sub: string, path: string, line: string): Promise<unknown> {
   return api(store, sub, "/memory/" + cleanPath(path), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ line }) });
 }
