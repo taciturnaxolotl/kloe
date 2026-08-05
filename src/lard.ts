@@ -194,10 +194,11 @@ export function memoryProjects(store: Store, sub: string): Promise<LardProject[]
 export function memoryList(store: Store, sub: string): Promise<unknown> { return api(store, sub, "/memory"); }
 export function memoryRead(store: Store, sub: string, path: string): Promise<string> { return api(store, sub, "/memory/" + cleanPath(path)); }
 export function memoryWrite(store: Store, sub: string, path: string, body: string): Promise<unknown> {
-  return api(store, sub, "/memory/" + cleanPath(path), { method: "PUT", headers: { "content-type": "text/markdown" }, body });
+  // lard decodes a JSON envelope ({body, description, aliases, repos, version}) — not raw markdown.
+  return api(store, sub, "/memory/" + cleanPath(path), { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ body }) });
 }
 export function memoryAppend(store: Store, sub: string, path: string, line: string): Promise<unknown> {
-  return api(store, sub, "/memory/" + cleanPath(path), { method: "POST", headers: { "content-type": "text/plain" }, body: line });
+  return api(store, sub, "/memory/" + cleanPath(path), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ line }) });
 }
 
 // ---- in-app connect: authorization code + PKCE ---------------------------

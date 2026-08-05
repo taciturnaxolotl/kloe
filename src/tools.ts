@@ -119,6 +119,32 @@ function lardTools(store: Store, sub: string): ToolSet {
 /** Extra context a run passes in so per-user tools (lard) bind to the right token. */
 export interface ToolContext { store?: Store; owner?: string; }
 
+/**
+ * Wrap every tool's `execute` so a failure returns a clean, recoverable message
+ * instead of throwing. A thrown execute is not fatal on its own (the SDK feeds
+ * it back as a tool-error), but a raw throw dumps a stack trace to the logs and
+ * hands the model an opaque `Error` object; a caught, phrased result keeps the
+ * turn moving and tells the model it may simply try something else. Backends
+ * fail routinely — a 404 page, a 400 from a strict API — so this is the norm,
+ * not the exception.
+ */
+export function harden(tools: ToolSet): ToolSet {
+  for (const [name, t] of Object.entries(tools)) {
+    const orig = t.execute;
+    if (!orig) continue;
+    t.execute = async (input: unknown, options: Parameters<NonNullable<Tool["execute"]>>[1]) => {
+      try {
+        return await orig(input as never, options);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`[tool ${name}] ${msg}`);
+        return `Tool "${name}" failed: ${msg}. This is not fatal — try a different input or approach, or tell the user plainly what went wrong.`;
+      }
+    };
+  }
+  return tools;
+}
+
 /** The tools available to a run; empty → no tools passed to the provider. */
 export function toolSet(ctx: ToolContext = {}): ToolSet {
   const tools: ToolSet = {};
@@ -129,5 +155,5 @@ export function toolSet(ctx: ToolContext = {}): ToolSet {
   if (ctx.store && ctx.owner && lardEnabled() && lardConnected(ctx.store, ctx.owner)) {
     Object.assign(tools, lardTools(ctx.store, ctx.owner));
   }
-  return tools;
+  return harden(tools);
 }
