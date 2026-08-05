@@ -141,6 +141,21 @@ export interface ConversationSearchResult extends ConversationSummary {
   snippet: string | null;
 }
 
+// The conversation-list SELECT (owner + optional project filters are appended
+// as a WHERE by listConversations). `last_activity` is the newest event time,
+// falling back to createdAt; the LEFT JOIN carries the project name for the
+// header breadcrumb.
+const LIST_CONVERSATIONS_SELECT =
+  `SELECT c.id AS id, c.created_at AS created_at, c.last_seq AS last_seq, c.custom_title AS custom_title,
+          c.owner_sub AS owner_sub, c.project_id AS project_id, p.name AS project_name,
+          (SELECT e.data FROM events e
+           WHERE e.conversation_id = c.id AND e.event = 'user-message'
+           ORDER BY e.seq ASC LIMIT 1) AS first_user,
+          COALESCE((SELECT MAX(e.created_at) FROM events e
+                    WHERE e.conversation_id = c.id), c.created_at) AS last_activity
+   FROM conversations c
+   LEFT JOIN projects p ON p.id = c.project_id`;
+
 /** The row shape returned by the conversation-list / search queries. */
 interface ConversationRow {
   id: string;
@@ -364,7 +379,6 @@ export class Store {
   private reapStmt: ReturnType<Database["prepare"]>;
   private requeueStmt: ReturnType<Database["prepare"]>;
   private finishStmt: ReturnType<Database["prepare"]>;
-  private listConversationsStmt: ReturnType<Database["prepare"]>;
   private searchConversationsStmt: ReturnType<Database["prepare"]>;
   private listSettingsStmt: ReturnType<Database["prepare"]>;
   private getSettingStmt: ReturnType<Database["prepare"]>;
@@ -478,18 +492,6 @@ export class Store {
       `UPDATE jobs SET status = ?, lease_until = 0 WHERE id = ?`,
     );
 
-    this.listConversationsStmt = this.db.prepare(
-      `SELECT c.id AS id, c.created_at AS created_at, c.last_seq AS last_seq, c.custom_title AS custom_title,
-              c.owner_sub AS owner_sub, c.project_id AS project_id, p.name AS project_name,
-              (SELECT e.data FROM events e
-               WHERE e.conversation_id = c.id AND e.event = 'user-message'
-               ORDER BY e.seq ASC LIMIT 1) AS first_user,
-              COALESCE((SELECT MAX(e.created_at) FROM events e
-                        WHERE e.conversation_id = c.id), c.created_at) AS last_activity
-       FROM conversations c
-       LEFT JOIN projects p ON p.id = c.project_id
-       ORDER BY last_activity DESC`,
-    );
     // Full-text-ish search over titles AND message contents: a conversation
     // matches when any user-message content or assistant text-delta LIKEs the
     // query. `match_text` grabs the first matching message so the UI can show an
@@ -587,10 +589,16 @@ export class Store {
    * subquery pulls the earliest `user-message` event's content per conversation.
    */
   listConversations(owner?: string, projectId?: string): ConversationSummary[] {
-    const rows = this.listConversationsStmt.all() as Array<ConversationRow & { owner_sub: string | null; project_id: string | null }>;
-    return rows
-      .filter((r) => (!owner || r.owner_sub === owner) && (projectId === undefined || r.project_id === projectId))
-      .map(rowToSummary);
+    // Filter in SQL, not JS, so a big log doesn't materialize every row (owner,
+    // and — for a project's chat list — its project) just to drop most of them.
+    const where: string[] = [];
+    const binds: string[] = [];
+    if (owner) { where.push("c.owner_sub = ?"); binds.push(owner); }
+    if (projectId !== undefined) { where.push("c.project_id = ?"); binds.push(projectId); }
+    const sql = LIST_CONVERSATIONS_SELECT +
+      (where.length ? " WHERE " + where.join(" AND ") : "") +
+      " ORDER BY last_activity DESC";
+    return (this.db.query(sql).all(...binds) as ConversationRow[]).map(rowToSummary);
   }
 
   /**

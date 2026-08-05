@@ -377,6 +377,14 @@ import * as smd from "streaming-markdown";
     catch (_) { list.innerHTML = '<p class="lardhint">Failed to load memory.</p>'; return; }
     renderSubjectList("");
   }
+  // After an edit, re-pull the listing so the rail reflects any name/description
+  // lard derived from the new body — quietly, keeping the current selection and
+  // search rather than repainting a "Loading…" state.
+  async function refreshSubjectMeta() {
+    try { lardSubjects = (await (await fetch("/api/lard/memory")).json()).listing || lardSubjects; }
+    catch (_) { return; }
+    renderSubjectList(document.getElementById("lardSearch").value);
+  }
 
   var activeSubjectPath = null;
   function renderSubjectList(query) {
@@ -503,6 +511,7 @@ import * as smd from "streaming-markdown";
           await fetch("/api/lard/subject?path=" + encodeURIComponent(path), { method: "PUT", headers: { "content-type": "text/markdown" }, body: ta.value });
           body = ta.value;
           showRead();
+          refreshSubjectMeta();
         } catch (_) { save.disabled = false; save.textContent = "Save"; }
       };
     }
