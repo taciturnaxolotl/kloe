@@ -5,7 +5,7 @@
   "module": "server.ts",
   "scripts": {
     "dev": "bun --watch server.ts",
-    "start": "bun server.ts",
+    "start": "NODE_ENV=production bun server.ts",
     "test": "bun test",
     "schema": "bun scripts/gen-schema.ts"
   },

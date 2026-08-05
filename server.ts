@@ -10,6 +10,7 @@ import { createBlobStore } from "./src/blobs";
 import { sweepOrphanBlobs } from "./src/gc";
 import { getConfig } from "./src/settings";
 import { REAP_INTERVAL_MS, BLOB_GC_GRACE_MS, BLOB_GC_INTERVAL_MS } from "./src/config";
+import { watch } from "node:fs";
 
 /**
  * Web entrypoint. Bun's native `routes` serve the HTML pages (transpiled,
@@ -89,17 +90,35 @@ if (import.meta.main) {
   // build enrich.js as its own SPLIT bundle here (splitting DOES work in
   // Bun.build) and serve its outputs from /assets/. The client loads /assets/
   // enrich.js via a runtime URL, so the app entry never pulls these libs and
-  // grammars load per-language only when a code/math block appears. Rebuilt on
-  // each (re)start — `--watch` picks up enrich.js edits.
-  const enrichBuild = await Bun.build({
-    entrypoints: [new URL("./src/client/enrich.js", import.meta.url).pathname],
-    target: "browser",
-    splitting: true,
-    minify: true,
-  });
+  // grammars load per-language only when a code/math block appears.
   const enrichAssets = new Map<string, Blob>();
-  for (const out of enrichBuild.outputs) {
-    enrichAssets.set(out.path.replace(/^\.?\//, ""), out);
+  async function buildEnrich() {
+    const build = await Bun.build({
+      entrypoints: [new URL("./src/client/enrich.js", import.meta.url).pathname],
+      target: "browser",
+      splitting: true,
+      minify: true,
+    });
+    enrichAssets.clear();
+    for (const out of build.outputs) enrichAssets.set(out.path.replace(/^\.?\//, ""), out);
+  }
+  await buildEnrich();
+  // `bun --watch` restarts on server.ts + its imports, but enrich.js is built
+  // from a path (never imported), so its edits wouldn't otherwise rebuild. In
+  // dev, watch the client sources and rebuild the bundle in place; the no-cache
+  // entry header (below) then lets a plain browser reload pick it up.
+  if (Bun.env.NODE_ENV !== "production") {
+    const dir = new URL("./src/client/", import.meta.url).pathname;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    watch(dir, { recursive: true }, (_evt, file) => {
+      if (file && !/\.(js|css)$/.test(file)) return; // ignore editor temp files
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        buildEnrich()
+          .then(() => console.log("[enrich] rebuilt"))
+          .catch((err) => console.error("[enrich] rebuild failed:", err));
+      }, 80);
+    });
   }
   const assetRoutes = {
     "/assets/:file": (req: Bun.BunRequest<"/assets/:file">) => {
