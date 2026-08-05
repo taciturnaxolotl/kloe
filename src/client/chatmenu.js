@@ -3,7 +3,7 @@
  * Conversations page. openChatMenu(x, y, ctx) shows Rename + Delete (plus any
  * `ctx.extra` items) and performs the actions against the API, calling
  * `ctx.reload()` afterward.
- *   ctx: { id, title, dialogs, reload, extra?: [{ label, danger, onClick }] }
+ *   ctx: { id, title, dialogs, reload, align?, extra?: [{ label, danger, onClick }] }
  */
 import { showContextMenu } from "./ctxmenu.js";
 import { TRASH_ICON as TRASH } from "./icons.js";
@@ -44,5 +44,5 @@ export function openChatMenu(x, y, ctx) {
   var items = (ctx.extra || []).slice();
   items.push({ label: "Rename", onClick: function () { renameChat(ctx); } });
   items.push({ label: "Delete", icon: TRASH, danger: true, onClick: function () { deleteChat(ctx); } });
-  showContextMenu(x, y, items);
+  showContextMenu(x, y, items, { align: ctx.align });
 }

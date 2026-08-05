@@ -63,9 +63,9 @@ export function convRow(c, opts) {
   if (cb) row.appendChild(cb);
   row.appendChild(icon); row.appendChild(main); row.appendChild(end);
 
-  function openMenu(x, y) {
+  function openMenu(x, y, align) {
     openChatMenu(x, y, {
-      id: c.id, title: c.title, dialogs: opts.dialogs, reload: opts.reload,
+      id: c.id, title: c.title, dialogs: opts.dialogs, reload: opts.reload, align: align,
       extra: opts.extra ? opts.extra(c, ref) : [],
     });
   }
@@ -75,11 +75,13 @@ export function convRow(c, opts) {
     else window.location.href = "/c/" + encodeURIComponent(c.id);
   }
   row.addEventListener("click", open);
+  // Right-click opens at the cursor (left-aligned); the ⋮ button sits at the
+  // row's right edge, so its menu right-aligns to sit over the row, not past it.
   row.addEventListener("contextmenu", function (ev) { ev.preventDefault(); openMenu(ev.clientX, ev.clientY); });
   more.addEventListener("click", function (ev) {
     ev.stopPropagation();
     var r = more.getBoundingClientRect();
-    openMenu(r.right, r.bottom + 4);
+    openMenu(r.right, r.bottom + 4, "right");
   });
 
   return row;

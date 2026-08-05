@@ -1,8 +1,11 @@
 /*
  * A lightweight floating context menu shared across pages.
- *   showContextMenu(x, y, items)   items: [{ label, danger, onClick }]
- * Only one is open at a time; it closes on outside click, Esc, scroll, or
- * resize, and is clamped to the viewport. Styling lives in app.css (.ctxmenu).
+ *   showContextMenu(x, y, items, opts)   items: [{ label, danger, onClick }]
+ * `opts.align` anchors the horizontal edge at x: "left" (default, menu opens
+ * rightward — right for a cursor) or "right" (menu's right edge sits at x, so it
+ * opens leftward — right for a ⋮ button at the right of a row). Only one is open
+ * at a time; it closes on outside click, Esc, scroll, or resize, and is clamped
+ * to the viewport. Styling lives in app.css (.ctxmenu).
  */
 var current = null, wired = false;
 
@@ -18,7 +21,8 @@ function wire() {
   window.addEventListener("scroll", closeContextMenu, true);
 }
 
-export function showContextMenu(x, y, items) {
+export function showContextMenu(x, y, items, opts) {
+  opts = opts || {};
   closeContextMenu();
   wire();
   var menu = document.createElement("div");
@@ -41,7 +45,8 @@ export function showContextMenu(x, y, items) {
   });
   document.body.appendChild(menu);
   var w = menu.offsetWidth, h = menu.offsetHeight;
-  menu.style.left = Math.max(6, Math.min(x, window.innerWidth - w - 6)) + "px";
+  var left = opts.align === "right" ? x - w : x;
+  menu.style.left = Math.max(6, Math.min(left, window.innerWidth - w - 6)) + "px";
   menu.style.top = Math.max(6, Math.min(y, window.innerHeight - h - 6)) + "px";
   current = menu;
 }
