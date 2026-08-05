@@ -1117,13 +1117,24 @@ import { mountDialogs } from "./confirm.js";
     jump.style.display = atBottom ? "none" : "block";
   });
   jump.addEventListener("click", function () { atBottom = true; jump.style.display = "none"; scroll.scrollTop = scroll.scrollHeight; });
+  // Keep the view pinned to the bottom while `atBottom` as the thread grows —
+  // opening a large conversation, async enrich (code/math), and images all add
+  // height AFTER the last scroll, which otherwise leaves us short of the end.
+  if (window.ResizeObserver) {
+    new ResizeObserver(function () { if (atBottom) scroll.scrollTop = scroll.scrollHeight; }).observe(thread);
+  }
 
   // ---- boot --------------------------------------------------------------
   (async function init() {
-    var me = await requireAuth();
+    // Fire the auth check and the data loads together so /api/me doesn't add a
+    // serial round-trip to every page load. If unauthenticated we redirect (the
+    // loads may 401 harmlessly as we navigate away).
+    var mePromise = requireAuth();
+    var dataPromise = Promise.all([loadModels(), loadConversations()]);
+    var me = await mePromise;
     if (!me) return; // redirecting to login
     setPfp(me);
-    await Promise.all([loadModels(), loadConversations()]);
+    await dataPromise;
     // Deep links from the conversations page: ?new starts fresh, ?c=<id> opens
     // a specific conversation. Strip the query afterward so a reload is clean.
     var params = new URLSearchParams(location.search);
