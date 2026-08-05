@@ -32,19 +32,23 @@ async function getJSON<T>(url: string): Promise<T> {
 }
 
 // ---- discovery (cached) --------------------------------------------------
-interface Endpoints { authorization?: string; token: string; deviceAuthorization: string; }
+// `resource` is lard's own canonical identifier from its protected-resource
+// metadata — the exact string we must send as the RFC 8707 `resource` (and that
+// lard checks the token's `aud` against). Sending its advertised value rather
+// than a guess from baseUrl avoids audience mismatches if the two ever diverge.
+interface Endpoints { authorization?: string; token: string; deviceAuthorization: string; resource: string; }
 let discoveryCache: Promise<Endpoints> | null = null;
 export function resetLardCache(): void { discoveryCache = null; }
 function discover(): Promise<Endpoints> {
   if (!discoveryCache) {
     discoveryCache = (async () => {
       const base = trimSlash(cfg().baseUrl);
-      const prm = await getJSON<{ authorization_servers?: string[] }>(base + "/.well-known/oauth-protected-resource");
+      const prm = await getJSON<{ authorization_servers?: string[]; resource?: string }>(base + "/.well-known/oauth-protected-resource");
       const as = trimSlash(prm.authorization_servers?.[0] ?? "");
       if (!as) throw new Error("lard: the server advertises no authorization server");
       const meta = await getJSON<{ authorization_endpoint?: string; token_endpoint?: string; device_authorization_endpoint?: string }>(as + "/.well-known/oauth-authorization-server");
       if (!meta.token_endpoint || !meta.device_authorization_endpoint) throw new Error("lard: authorization server metadata is missing endpoints");
-      return { authorization: meta.authorization_endpoint, token: meta.token_endpoint, deviceAuthorization: meta.device_authorization_endpoint };
+      return { authorization: meta.authorization_endpoint, token: meta.token_endpoint, deviceAuthorization: meta.device_authorization_endpoint, resource: prm.resource || base };
     })().catch((e) => { discoveryCache = null; throw e; });
   }
   return discoveryCache;
@@ -83,7 +87,7 @@ async function tokenRequest(params: Record<string, string>): Promise<Response> {
   const c = await resolveClient();
   const form = new URLSearchParams({ ...params, client_id: c.id });
   if (c.secret) form.set("client_secret", c.secret);
-  form.set("resource", trimSlash(cfg().baseUrl));
+  form.set("resource", eps.resource);
   return postForm(eps.token, form);
 }
 
@@ -94,7 +98,7 @@ async function startDevice(): Promise<DeviceStart> {
   const eps = await discover();
   const form = new URLSearchParams({ client_id: (await resolveClient()).id });
   if (cfg().scopes) form.set("scope", cfg().scopes);
-  form.set("resource", trimSlash(cfg().baseUrl)); // RFC 8707: bind to lard (audience)
+  form.set("resource", eps.resource); // RFC 8707: bind to lard (audience)
   const res = await postForm(eps.deviceAuthorization, form);
   const j = (await res.json()) as Record<string, string | number>;
   if (!j.device_code || !j.verification_uri) throw new Error(`lard: device authorization failed (${res.status})`);
@@ -233,7 +237,7 @@ export async function handleLardConnect(req: Request, store: Store): Promise<Res
   url.searchParams.set("state", state);
   url.searchParams.set("code_challenge", challenge);
   url.searchParams.set("code_challenge_method", "S256");
-  url.searchParams.set("resource", trimSlash(cfg().baseUrl)); // RFC 8707: audience = lard
+  url.searchParams.set("resource", eps.resource); // RFC 8707: audience = lard (from lard's PRM)
   return redirectTo(url.href, lardCookie(JSON.stringify({ state, verifier, sub: sub ?? LOCAL_SUB }), 600));
 }
 
