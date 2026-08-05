@@ -15,7 +15,7 @@ function seed(store: Store, id: string, events: Array<[string, unknown]>): void 
   }
 }
 
-test("buildSession folds user + streamed assistant turns", () => {
+test("buildSession sends user turns only (lard ignores assistant text)", () => {
   const store = new Store(":memory:");
   seed(store, "c1", [
     ["user-message", { content: "who is kieran?" }],
@@ -31,10 +31,9 @@ test("buildSession folds user + streamed assistant turns", () => {
   expect(s!.source).toBe("kloe");
   expect(s!.turns.map((t) => [t.role, t.content])).toEqual([
     ["user", "who is kieran?"],
-    ["assistant", "Kieran is a developer."], // deltas coalesced into one turn
-    ["user", "thanks"],
+    ["user", "thanks"], // assistant turn is dropped
   ]);
-  expect(s!.turns.map((t) => t.index)).toEqual([0, 1, 2]);
+  expect(s!.turns.map((t) => t.index)).toEqual([0, 1]);
   expect(typeof s!.turns[0]!.ts).toBe("string"); // ISO timestamp
 });
 
