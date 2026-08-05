@@ -94,6 +94,7 @@ async function startDevice(): Promise<DeviceStart> {
   const eps = await discover();
   const form = new URLSearchParams({ client_id: (await resolveClient()).id });
   if (cfg().scopes) form.set("scope", cfg().scopes);
+  form.set("resource", trimSlash(cfg().baseUrl)); // RFC 8707: bind to lard (audience)
   const res = await postForm(eps.deviceAuthorization, form);
   const j = (await res.json()) as Record<string, string | number>;
   if (!j.device_code || !j.verification_uri) throw new Error(`lard: device authorization failed (${res.status})`);
