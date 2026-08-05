@@ -71,6 +71,23 @@ test("LocalFetchProvider rejects a redirect into a private address (SSRF)", asyn
   await expect(p.fetch("https://example.com/a")).rejects.toThrow(/private|reserved/);
 });
 
+test("non-HTML (JSON/plain text) is returned verbatim as format:text, not markdown", async () => {
+  const json = '{"ok":true,"items":[1,2,3]}';
+  const res = new Response(json, { headers: { "content-type": "application/json" } });
+  const p = new LocalFetchProvider(opts({ fetchImpl: (async () => res) as unknown as typeof fetch }));
+  const r = await p.fetch("https://api.example.com/data.json");
+  expect(r.format).toBe("text");
+  expect(r.content).toBe(json);
+});
+
+test("HTML extraction and negotiated markdown both report format:markdown", async () => {
+  const htmlP = new LocalFetchProvider(opts({ fetchImpl: (async () => htmlRes("<html><body><article><h1>Hi</h1><p>" + "x ".repeat(30) + "</p></article></body></html>")) as unknown as typeof fetch }));
+  expect((await htmlP.fetch("https://example.com/")).format).toBe("markdown");
+  const mdRes = new Response("# T\n\nbody", { headers: { "content-type": "text/markdown" } });
+  const mdP = new LocalFetchProvider(opts({ fetchImpl: (async () => mdRes) as unknown as typeof fetch }));
+  expect((await mdP.fetch("https://example.com/")).format).toBe("markdown");
+});
+
 test("markdown served directly is used verbatim (content negotiation), title from H1", async () => {
   const md = "# Real Title\n\nSome **markdown** body with a [link](https://x.com).";
   const res = new Response(md, { headers: { "content-type": "text/markdown; charset=utf-8" } });

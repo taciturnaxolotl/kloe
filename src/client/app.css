@@ -363,10 +363,12 @@ body.selecting #selectBtn { order: 4; }
   line-height: 1.5; white-space: pre-wrap; word-break: break-word; margin: 2px 0; }
 .turn .body .stepper .step.tool .targs { color: var(--ink-faint); }
 .turn .body .stepper .step.tool .tout.err { color: var(--err); }
-/* fetch_url result: a linked page title above the rendered page content. */
-.turn .body .stepper .fetchtitle { display: block; font-family: var(--sans); font-weight: 500;
-  color: var(--ink); text-decoration: none; margin: 0 0 6px; }
-.turn .body .stepper .fetchtitle:hover { text-decoration: underline; }
+/* fetch_url row: favicon + page title (label), hostname out-link on the right. */
+.turn .body .stepper .stepicon .favicon { width: 15px; height: 15px; border-radius: 3px; display: block; }
+.turn .body .stepper .step .stephost { flex: none; margin-left: 10px; display: inline-flex; align-items: center;
+  gap: 4px; color: var(--ink-faint); text-decoration: none; }
+.turn .body .stepper .step .stephost:hover { color: var(--ink-muted); }
+.turn .body .stepper .step .stephost svg { width: 12px; height: 12px; }
 .turn .body .stepper .tnote { color: var(--ink-faint); font-size: 0.9em; margin-top: 4px; }
 
 /* Search results card: favicon + title + domain, each row a link. */

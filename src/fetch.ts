@@ -29,8 +29,10 @@ export interface FetchResult {
   /** The final URL after redirects. */
   url: string;
   title: string;
-  /** Main content as markdown (or plain text for non-HTML). */
+  /** Extracted/negotiated markdown, or raw text (JSON, plain text, generic XML). */
   content: string;
+  /** How to render `content`: prose markdown vs verbatim preformatted text. */
+  format: "markdown" | "text";
   /** True when `content` was cut to the char cap. */
   truncated: boolean;
 }
@@ -306,23 +308,26 @@ export class LocalFetchProvider implements FetchProvider {
 
     let title = current;
     let content: string;
+    let format: "markdown" | "text" = "text";
     if (contentType.includes("markdown")) {
       // The server negotiated markdown directly — use it verbatim (no lossy
       // HTML round-trip), and lift the first H1 as the title.
       content = text.trim();
       title = content.match(/^#\s+(.+)$/m)?.[1]?.trim() || current;
+      format = "markdown";
     } else if (looksLikeFeed(contentType, text)) {
       const feed = feedToMarkdown(text);
-      if (feed) { title = feed.title; content = feed.markdown; }
-      else content = text.trim(); // malformed feed → hand back the raw XML
+      if (feed) { title = feed.title; content = feed.markdown; format = "markdown"; }
+      else content = text.trim(); // malformed feed → hand back the raw XML (text)
     } else if (contentType.includes("xml")) {
       content = text.trim(); // generic XML: raw, don't force it through the HTML pipeline
     } else if (contentType.includes("html") || /^\s*<(!doctype|html|head|body|div|p|article|main|section)\b/i.test(text)) {
       const out = htmlToMarkdown(text, current);
       title = out.title;
       content = out.markdown;
+      format = "markdown";
     } else if (contentType.includes("text/") || contentType.includes("json") || contentType === "") {
-      content = text.trim();
+      content = text.trim(); // plain text / JSON: verbatim
     } else {
       content = `[${contentType || "binary"} content — not rendered as text]`;
     }
@@ -332,7 +337,7 @@ export class LocalFetchProvider implements FetchProvider {
       content = content.slice(0, this.opts.maxChars) + `\n\n…[truncated to ${this.opts.maxChars} chars]`;
       truncated = true;
     }
-    return { url: current, title, content, truncated };
+    return { url: current, title, content, format, truncated };
   }
 }
 

@@ -47,6 +47,7 @@ import { mountDialogs } from "./confirm.js";
   var ICON_GLOBE = '<svg ' + SVG + '><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.5 2.5 15.5 0 18M12 3c-2.5 2.5-2.5 15.5 0 18"/></svg>';
   var ICON_TOOL = '<svg ' + SVG + '><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2-2 2.6-2.6z"/></svg>';
   var ICON_PAGE = '<svg ' + SVG + '><path d="M6 2h7l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/><path d="M13 2v5h5"/><path d="M8 13h8M8 17h6"/></svg>';
+  var ICON_EXT = '<svg ' + SVG + '><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>';
 
   var SEND ='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>';
 
@@ -563,8 +564,13 @@ import { mountDialogs } from "./confirm.js";
     var a = openActivity(rec);
     blockEndReasoning(a); // the thinking that led to this call is done
     var ui = toolUI(data.toolName);
-    var step = makeStepIn(a, "tool thinking", ui.icon, true);
-    step.label.textContent = ui.row(data.input, data.toolName);
+    var step = makeStepIn(a, "tool thinking" + (ui.summaryDom ? " " + data.toolName : ""), ui.icon, true);
+    if (ui.summaryDom) {
+      // The tool fully owns its summary (custom icon / label / right-side link).
+      step.label = ui.summaryDom(step.row.querySelector("summary"), data.input).label;
+    } else {
+      step.label.textContent = ui.row(data.input, data.toolName);
+    }
     // Unknown tools show their raw args (a known tool conveys its input via the
     // row label + a custom result renderer, so args would be redundant there).
     if (ui === DEFAULT_TOOL) {
@@ -626,13 +632,20 @@ import { mountDialogs } from "./confirm.js";
     });
     t.body.appendChild(card);
   }
-  // A fetched page: a linked title + its content rendered as markdown.
+  // A fetched page: the summary row's label becomes the page title (the hostname
+  // link is already in the summary), and the body holds the content.
   function renderFetchResult(t, output) {
-    var head = document.createElement("a");
-    head.className = "fetchtitle"; head.href = output.url; head.target = "_blank"; head.rel = "noopener noreferrer nofollow";
-    head.textContent = output.title || output.url;
-    t.body.appendChild(head);
-    if (output.content) renderStaticMd(t.body, output.content);
+    if (output.title && t.label) t.label.textContent = output.title;
+    if (output.content) {
+      // Only markdown gets prose-rendered; raw text/JSON/XML stays verbatim in a
+      // preformatted block, so non-HTML content doesn't get mangled by the parser.
+      if (output.format === "text") {
+        var pre = document.createElement("div"); pre.className = "tout"; pre.textContent = output.content;
+        t.body.appendChild(pre);
+      } else {
+        renderStaticMd(t.body, output.content);
+      }
+    }
     if (output.truncated) { var n = document.createElement("div"); n.className = "tnote"; n.textContent = "(truncated)"; t.body.appendChild(n); }
   }
   // Generic result body: the value as text/JSON. `errorResult` is the same, in red.
@@ -668,7 +681,27 @@ import { mountDialogs } from "./confirm.js";
     },
     fetch_url: {
       icon: ICON_PAGE,
-      row: function (input) { return domainOf(input && input.url) || "fetch_url"; },
+      // Full custom summary: favicon + the page title (filled in on result), with
+      // the hostname as a clickable out-link on the right. No chevron — click the
+      // row to expand. Returns the label element so the result can set the title.
+      summaryDom: function (sum, input) {
+        var url = (input && input.url) || "";
+        var hostName = domainOf(url) || "link";
+        sum.innerHTML = "";
+        var icon = document.createElement("span"); icon.className = "stepicon";
+        var img = document.createElement("img"); img.className = "favicon"; img.alt = ""; img.loading = "lazy";
+        img.src = "https://icons.duckduckgo.com/ip3/" + hostName + ".ico";
+        img.onerror = function () { icon.innerHTML = ICON_PAGE; }; // no favicon → page icon
+        icon.appendChild(img);
+        var label = document.createElement("span"); label.className = "steplabel"; label.textContent = hostName;
+        var link = document.createElement("a"); link.className = "stephost";
+        link.href = url; link.target = "_blank"; link.rel = "noopener noreferrer nofollow";
+        var hspan = document.createElement("span"); hspan.textContent = hostName;
+        link.appendChild(hspan); link.insertAdjacentHTML("beforeend", ICON_EXT);
+        link.addEventListener("click", function (e) { e.stopPropagation(); }); // open the link, don't toggle
+        sum.appendChild(icon); sum.appendChild(label); sum.appendChild(link);
+        return { label: label };
+      },
       summary: function (steps, active) {
         var verb = active ? "Reading" : "Read";
         if (steps.length > 1) return verb + " " + steps.length + " pages";
