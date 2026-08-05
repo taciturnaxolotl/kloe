@@ -312,6 +312,9 @@ body.selecting #selectBtn { order: 4; }
 .turn .body .activity-head .chev { width: 12px; height: 12px; flex: none; color: var(--ink-faint);
   opacity: .55; transition: transform .12s ease; margin-left: 2px; }
 .turn .body .activity[open] > .activity-head .chev { transform: rotate(90deg); }
+/* A single-step block needs no summarizing header — it would just duplicate the
+   lone step. Hide it; the block stays open (JS) so that one step stands alone. */
+.turn .body .activity.single > .activity-head { display: none; }
 
 /* The stepper (shown when open). */
 .turn .body .stepper { position: relative; display: flex; flex-direction: column; margin: 3px 0 2px; }

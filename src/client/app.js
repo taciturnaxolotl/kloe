@@ -401,7 +401,7 @@ import { mountDialogs } from "./confirm.js";
     return {
       details: d, stepper: stepper,
       headIcon: sum.querySelector(".stepicon"), headLabel: sum.querySelector(".activity-label"),
-      openReasoning: null, firstReasoning: null, thoughtLabel: "",
+      openReasoning: null, firstReasoning: null, thoughtLabel: "", stepCount: 0,
       searches: [], otherTools: [], activeTool: null,
     };
   }
@@ -422,7 +422,9 @@ import { mountDialogs } from "./confirm.js";
     var a = rec.activity;
     if (!a) return;
     blockEndReasoning(a);
-    a.details.open = false;
+    // Multi-step blocks collapse to their summary header; a single-step block has
+    // no header (it would duplicate the step), so it stays open showing that row.
+    if (a.stepCount > 1) a.details.open = false;
     blockUpdateHead(a);
     rec.activity = null;
   }
@@ -475,6 +477,12 @@ import { mountDialogs } from "./confirm.js";
       label = row.querySelector(".steplabel");
     }
     a.stepper.appendChild(row);
+    a.details.open = true; // working → reveal the steps
+    // A block with one step needs no summarizing header (it would just duplicate
+    // that step); the ".single" class hides the header so the lone step stands
+    // alone. The header earns its place only once there are multiple steps.
+    a.stepCount++;
+    a.details.classList.toggle("single", a.stepCount === 1);
     return { row: row, label: label, body: body };
   }
   // The reasoning step currently streaming in the open block. Shimmers "Thinking"
@@ -491,7 +499,7 @@ import { mountDialogs } from "./confirm.js";
     if (!a.firstReasoning) a.firstReasoning = rr;
     if (!rec.firstReasoning) { rec.firstReasoning = rr; rec.firstReasoningBlock = a; }
     a.openReasoning = rr;
-    a.details.open = true; // working → reveal the stepper
+    rr.row.open = true; // stream the chain-of-thought open so it can be watched
     blockUpdateHead(a);
     autoScroll();
     return rr;
@@ -512,6 +520,7 @@ import { mountDialogs } from "./confirm.js";
       enrich(rr.body);
     }
     rr.row.classList.remove("thinking");
+    rr.row.open = false; // thinking done → tuck the chain-of-thought away
     if (rr.label.textContent === "Thinking") rr.label.textContent = "Thought";
     if (!a.thoughtLabel) a.thoughtLabel = "Thought"; // upgraded to a duration at message-end
     blockUpdateHead(a);
@@ -565,7 +574,6 @@ import { mountDialogs } from "./confirm.js";
     rec.toolSteps[data.toolCallId] = t;
     if (isSearch) { a.searches.push(query || ""); a.activeTool = { toolName: "web_search", query: query }; }
     else { a.otherTools.push(data.toolName); a.activeTool = { toolName: data.toolName }; }
-    a.details.open = true; // working → reveal the stepper
     blockUpdateHead(a);
     autoScroll();
     return t;
@@ -574,6 +582,7 @@ import { mountDialogs } from "./confirm.js";
     var t = (rec.toolSteps && rec.toolSteps[data.toolCallId]) || toolStep(rec, data);
     t.row.classList.remove("thinking");
     if (data.isError) {
+      console.error("[kloe tool error]", data.toolName, data.output);
       t.row.classList.add("errored");
       var err = document.createElement("div"); err.className = "tout err"; err.textContent = toolValue(data.output);
       t.body.appendChild(err);
