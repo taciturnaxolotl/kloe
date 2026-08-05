@@ -578,16 +578,7 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
 
 /* Settings → Memory (lard). */
 .lardhint { color: var(--ink-faint); font-size: 13px; margin: 0; }
-.lardbtn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 13px; border-radius: var(--radius-md);
-  border: 1px solid var(--rule-strong); background: var(--bg-raise); color: var(--ink);
-  font-size: 13px; font-weight: 500; text-decoration: none; cursor: pointer; white-space: nowrap;
-  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease; }
-.lardbtn svg { width: 14px; height: 14px; }
-.lardbtn:hover:not(:disabled) { background: var(--bg-sunk); }
-.lardbtn:disabled { opacity: 0.5; cursor: default; }
-.lardbtn[hidden], .lardvmenu[hidden] { display: none; } /* a display rule otherwise beats [hidden] */
-.lardbtn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.lardbtn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, #000); }
+.lardvmenu[hidden] { display: none; } /* a display rule otherwise beats [hidden] */
 
 /* Connection card: an icon medallion, a two-line status, and the action. */
 .lardconn { display: flex; align-items: center; gap: 14px; padding: 16px;
@@ -600,7 +591,7 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
 .lardconn-text { flex: 1; min-width: 0; }
 .lardconn-title { font-size: 14.5px; font-weight: 600; }
 .lardconn-sub { font-size: 12.5px; color: var(--ink-muted); margin-top: 2px; }
-.lardconn .lardbtn { flex: none; }
+.lardconn .btn { flex: none; }
 
 /* Inspector: a subject browser rail + a viewer/editor. */
 .lardinspect { display: grid; grid-template-columns: 244px 1fr; gap: 18px; margin-top: 18px;

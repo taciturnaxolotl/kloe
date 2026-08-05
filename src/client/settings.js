@@ -342,7 +342,7 @@ import * as smd from "streaming-markdown";
       : "Connect lard so chats can read and update your durable context.";
     text.appendChild(title); text.appendChild(sub);
     var btn = document.createElement(connected ? "button" : "a");
-    btn.className = "lardbtn " + (connected ? "" : "primary");
+    btn.className = "btn " + (connected ? "" : "primary");
     if (connected) {
       btn.type = "button"; btn.textContent = "Disconnect";
       btn.onclick = async function () {
@@ -447,8 +447,8 @@ import * as smd from "streaming-markdown";
     // Read mode uses a ⋮ menu (Edit / Delete); edit mode swaps in Cancel + Save.
     var menuBtn = document.createElement("button"); menuBtn.className = "lardvmenu"; menuBtn.type = "button";
     menuBtn.setAttribute("aria-label", "Subject options"); menuBtn.innerHTML = MORE_ICON;
-    var cancel = document.createElement("button"); cancel.className = "lardbtn"; cancel.type = "button"; cancel.textContent = "Cancel";
-    var save = document.createElement("button"); save.className = "lardbtn primary"; save.type = "button"; save.textContent = "Save";
+    var cancel = document.createElement("button"); cancel.className = "btn"; cancel.type = "button"; cancel.textContent = "Cancel";
+    var save = document.createElement("button"); save.className = "btn primary"; save.type = "button"; save.textContent = "Save";
     var head2 = document.createElement("div"); head2.className = "lardvactions";
     head2.appendChild(menuBtn); head2.appendChild(cancel); head2.appendChild(save);
     head.appendChild(titleWrap); head.appendChild(head2);
