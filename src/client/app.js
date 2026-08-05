@@ -861,19 +861,44 @@ import { mountDialogs } from "./confirm.js";
   // especially over a tunnel), then open the live SSE stream for only the events
   // after what we already have. The history events reconstruct the steer queue
   // on their own, so no separate fetch is needed.
+  // Optimistic prefetch: the most-recently-opened conversation (remembered in
+  // localStorage) is usually the one we open on the next load, so start fetching
+  // its history in parallel with the boot calls instead of waiting for the
+  // conversation list to arrive first. `{ id, promise }` is consumed by
+  // loadHistoryThenStream when the ids match, saving a serial round-trip.
+  var prefetch = null;
+  function prefetchEvents(id) {
+    if (!id) return;
+    prefetch = {
+      id: id,
+      promise: fetch("/api/conversations/" + encodeURIComponent(id) + "/events")
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .catch(function () { return null; }),
+    };
+  }
+
   function openStream(id) {
     if (source) { source.close(); source = null; }
     if (connTimer) { clearTimeout(connTimer); connTimer = null; }
     convId = id;
     atBottom = true; // a freshly opened conversation should land at the end
+    try { localStorage.setItem("kloe:lastConv", id); } catch (_) { /* private mode */ }
     void loadHistoryThenStream(id);
   }
   async function loadHistoryThenStream(id) {
     var events = null;
+    // The boot prefetch is single-use: take it only if it's for this
+    // conversation, and clear it either way so it can't be reused stale later.
+    var pre = prefetch && prefetch.id === id ? prefetch.promise : null;
+    prefetch = null;
     try {
-      var res = await fetch("/api/conversations/" + encodeURIComponent(id) + "/events");
-      if (convId !== id) return; // switched conversations while loading
-      events = await res.json();
+      if (pre) {
+        events = await pre;
+      } else {
+        var res = await fetch("/api/conversations/" + encodeURIComponent(id) + "/events");
+        if (convId !== id) return; // switched conversations while loading
+        events = await res.json();
+      }
       if (convId !== id) return;
     } catch (_) { /* render empty + let the stream replay from the start */ }
     // Swap in ONE step: the previous conversation stays on screen until the new
@@ -1158,9 +1183,11 @@ import { mountDialogs } from "./confirm.js";
 
   // ---- boot --------------------------------------------------------------
   (async function init() {
-    // Fire the auth check and the data loads together so /api/me doesn't add a
-    // serial round-trip to every page load. If unauthenticated we redirect (the
-    // loads may 401 harmlessly as we navigate away).
+    // Fire the auth check, the data loads, AND the last conversation's history
+    // all together, so nothing waits serially: /api/me, the model + conversation
+    // lists, and the (usually reopened) conversation's /events overlap in one
+    // round-trip window instead of chaining.
+    try { prefetchEvents(localStorage.getItem("kloe:lastConv")); } catch (_) { /* private mode */ }
     var mePromise = requireAuth();
     var dataPromise = Promise.all([loadModels(), loadConversations()]);
     var me = await mePromise;
