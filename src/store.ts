@@ -414,6 +414,10 @@ export class Store {
     } catch {
       // column already exists
     }
+    // Index the foreign key so the gallery's per-project chat COUNT, the
+    // project-detail chat list, and unfiling on delete don't scan every
+    // conversation. Created after the ALTER so the column exists.
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations (project_id)");
 
     this.readStmt = this.db.prepare(
       `SELECT seq, event, data FROM events

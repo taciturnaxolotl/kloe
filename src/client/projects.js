@@ -18,6 +18,16 @@ import { requireAuth, setPfp } from "./authguard.js";
     reload: loadSidebar,
   });
 
+  // The list survives a navigation in sessionStorage so the grid paints
+  // instantly on the next visit; the fetch below revalidates.
+  var LIST_CACHE = "kloe:projects";
+  function readCache() {
+    try { return JSON.parse(sessionStorage.getItem(LIST_CACHE) || "null"); } catch (_) { return null; }
+  }
+  function writeCache(list) {
+    try { sessionStorage.setItem(LIST_CACHE, JSON.stringify(list || [])); } catch (_) {}
+  }
+
   function fmtDate(ms) {
     var d = new Date(ms), now = new Date();
     var startOfDay = function (x) { return new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime(); };
@@ -59,9 +69,9 @@ import { requireAuth, setPfp } from "./authguard.js";
   async function load() {
     try {
       var list = (await (await fetch("/api/projects")).json()).projects || [];
-      render(list);
+      render(list); writeCache(list);
     } catch (_) {
-      grid.innerHTML = '<div class="chatsempty">Failed to load projects</div>';
+      if (!grid.children.length) grid.innerHTML = '<div class="chatsempty">Failed to load projects</div>';
     }
   }
 
@@ -87,10 +97,16 @@ import { requireAuth, setPfp } from "./authguard.js";
   });
 
   (async function () {
+    // Fire the data fetches immediately, in parallel with the auth check, and
+    // paint cached cards right away so the grid isn't blank across the round
+    // trips. On a 401 requireAuth navigates away and the fetches are abandoned.
+    var loaded = load();
+    loadSidebar();
+    var cached = readCache();
+    if (cached && cached.length) render(cached);
     var me = await requireAuth();
     if (!me) return;
     setPfp(me);
-    loadSidebar();
-    load();
+    await loaded;
   })();
 })();
