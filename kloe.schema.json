@@ -244,6 +244,10 @@
           "type": "string",
           "default": ""
         },
+        "clientSecret": {
+          "type": "string",
+          "default": ""
+        },
         "scopes": {
           "type": "string",
           "default": "profile offline_access"
@@ -263,6 +267,7 @@
         "enabled": false,
         "baseUrl": "",
         "clientId": "",
+        "clientSecret": "",
         "scopes": "profile offline_access",
         "collector": "kloe",
         "timeoutMs": 15000

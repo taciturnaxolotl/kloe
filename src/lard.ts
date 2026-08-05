@@ -50,12 +50,18 @@ function discover(): Promise<Endpoints> {
   return discoveryCache;
 }
 
-// A configured client id wins; otherwise ask lard which collector client to be.
-async function clientId(): Promise<string> {
-  if (cfg().clientId) return cfg().clientId;
+// The single OAuth client identity kloe presents to lard's AS, used by EVERY
+// flow (device grant, auth-code connect, refresh) so a token can always be
+// refreshed with the same client that obtained it. A dedicated lard.clientId
+// wins; otherwise reuse kloe's own auth client (confidential clientId+secret, or
+// its CIMD doc); as a last resort ask lard which collector client to be.
+async function resolveClient(): Promise<{ id: string; secret?: string }> {
+  const l = cfg(), a = getConfig().auth;
+  if (l.clientId) return { id: l.clientId, secret: l.clientSecret || undefined };
+  if (a.clientId || a.baseUrl) return { id: a.clientId || trimSlash(a.baseUrl) + "/client-metadata.json", secret: a.clientSecret || undefined };
   const reg = await getJSON<{ client_id?: string }>(trimSlash(cfg().baseUrl) + "/auth/collector");
-  if (!reg.client_id) throw new Error("lard: no clientId configured and the server publishes none");
-  return reg.client_id;
+  if (!reg.client_id) throw new Error("lard: no client configured and the server publishes none");
+  return { id: reg.client_id };
 }
 
 function tokenFrom(j: { access_token: string; refresh_token?: string; expires_in?: number }): LardToken {
@@ -69,13 +75,24 @@ async function postForm(url: string, form: URLSearchParams): Promise<Response> {
     signal: AbortSignal.timeout(cfg().timeoutMs),
   });
 }
+// A token-endpoint request carrying the client id, its secret if confidential,
+// and the RFC 8707 resource indicator (required by the current MCP auth spec so
+// the token is bound to lard as its audience).
+async function tokenRequest(params: Record<string, string>): Promise<Response> {
+  const eps = await discover();
+  const c = await resolveClient();
+  const form = new URLSearchParams({ ...params, client_id: c.id });
+  if (c.secret) form.set("client_secret", c.secret);
+  form.set("resource", trimSlash(cfg().baseUrl));
+  return postForm(eps.token, form);
+}
 
 // ---- device grant (login) ------------------------------------------------
 export interface DeviceStart { deviceCode: string; userCode: string; verificationUri: string; verificationUriComplete?: string; interval: number; expiresIn: number; }
 
 async function startDevice(): Promise<DeviceStart> {
   const eps = await discover();
-  const form = new URLSearchParams({ client_id: await clientId() });
+  const form = new URLSearchParams({ client_id: (await resolveClient()).id });
   if (cfg().scopes) form.set("scope", cfg().scopes);
   const res = await postForm(eps.deviceAuthorization, form);
   const j = (await res.json()) as Record<string, string | number>;
@@ -88,10 +105,9 @@ async function startDevice(): Promise<DeviceStart> {
 }
 
 async function pollDevice(deviceCode: string): Promise<{ token?: LardToken; status?: string }> {
-  const eps = await discover();
-  const form = new URLSearchParams({ grant_type: DEVICE_GRANT, device_code: deviceCode, client_id: await clientId() });
   let res: Response;
-  try { res = await postForm(eps.token, form); } catch { return { status: "authorization_pending" }; } // transient blip → keep waiting
+  try { res = await tokenRequest({ grant_type: DEVICE_GRANT, device_code: deviceCode }); }
+  catch { return { status: "authorization_pending" }; } // transient blip → keep waiting
   const j = (await res.json()) as { access_token?: string; refresh_token?: string; expires_in?: number; error?: string };
   if (j.error) return { status: j.error };
   if (!j.access_token) throw new Error(`lard: token endpoint returned ${res.status}`);
@@ -119,9 +135,7 @@ export async function deviceLogin(onPrompt: (d: DeviceStart) => void): Promise<L
 // ---- token lifecycle (per user) ------------------------------------------
 async function refresh(tok: LardToken): Promise<LardToken> {
   if (!tok.refreshToken) throw new Error("lard: access token expired and no refresh token — reconnect");
-  const eps = await discover();
-  const form = new URLSearchParams({ grant_type: "refresh_token", refresh_token: tok.refreshToken, client_id: await clientId() });
-  const res = await postForm(eps.token, form);
+  const res = await tokenRequest({ grant_type: "refresh_token", refresh_token: tok.refreshToken });
   const j = (await res.json()) as { access_token?: string; refresh_token?: string; expires_in?: number };
   if (!res.ok || !j.access_token) throw new Error("lard: refresh was rejected — reconnect");
   return tokenFrom({ access_token: j.access_token, refresh_token: j.refresh_token || tok.refreshToken, expires_in: j.expires_in });
@@ -194,12 +208,6 @@ function lardCookie(value: string, maxAgeSec: number): string {
   const secure = trimSlash(getConfig().auth.baseUrl).startsWith("https") ? "; Secure" : "";
   return `${LARD_COOKIE}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}${secure}`;
 }
-// kloe's OAuth identity to the shared AS: a pre-registered lard.clientId wins,
-// else reuse kloe's own client (its auth clientId / CIMD document).
-function connectClientId(): string {
-  const a = getConfig().auth;
-  return cfg().clientId || a.clientId || trimSlash(a.baseUrl) + "/client-metadata.json";
-}
 const connectRedirectUri = (): string => trimSlash(getConfig().auth.baseUrl) + "/lard/callback";
 const redirectTo = (path: string, cookie?: string): Response => {
   const headers = new Headers({ Location: path });
@@ -218,7 +226,7 @@ export async function handleLardConnect(req: Request, store: Store): Promise<Res
   const state = b64url(randomBytes(16));
   const url = new URL(eps.authorization);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("client_id", connectClientId());
+  url.searchParams.set("client_id", (await resolveClient()).id);
   url.searchParams.set("redirect_uri", connectRedirectUri());
   url.searchParams.set("scope", cfg().scopes);
   url.searchParams.set("state", state);
@@ -239,12 +247,10 @@ export async function handleLardCallback(req: Request, store: Store): Promise<Re
   const back = (ok: boolean) => redirectTo("/settings?lard=" + (ok ? "connected" : "error"), clear);
   if (!code || !state || !saved.state || state !== saved.state) return back(false);
   try {
-    const eps = await discover();
-    const res = await postForm(eps.token, new URLSearchParams({
+    const res = await tokenRequest({
       grant_type: "authorization_code", code,
-      client_id: connectClientId(), redirect_uri: connectRedirectUri(),
-      code_verifier: saved.verifier ?? "",
-    }));
+      redirect_uri: connectRedirectUri(), code_verifier: saved.verifier ?? "",
+    });
     const j = (await res.json()) as { access_token?: string; refresh_token?: string; expires_in?: number };
     if (!res.ok || !j.access_token) return back(false);
     store.setLardToken(saved.sub || LOCAL_SUB, tokenFrom(j as { access_token: string }));

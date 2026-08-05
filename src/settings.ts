@@ -112,8 +112,10 @@ const LardSchema = v.object({
   enabled: v.optional(v.boolean(), false),
   /** lard server base URL, e.g. https://lard.dunkirk.sh */
   baseUrl: v.optional(v.string(), ""),
-  /** OAuth client id for the device grant; empty → fetch lard's /auth/collector registration. */
+  /** OAuth client id for lard. Empty → reuse kloe's own auth client (its clientId/CIMD). */
   clientId: v.optional(v.string(), ""),
+  /** Secret for a confidential lard clientId. Empty → reuse kloe's auth.clientSecret (or public). */
+  clientSecret: v.optional(v.string(), ""),
   /** Scopes requested at login; `offline_access` yields a refresh token. */
   scopes: v.optional(v.string(), "profile offline_access"),
   /** Collector name stamped on ingested sessions. */
