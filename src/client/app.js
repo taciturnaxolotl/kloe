@@ -338,6 +338,10 @@ import { mountDialogs } from "./confirm.js";
     if (enrichObserver) enrichObserver.disconnect();
     enrichPending = new WeakMap();
   }
+  // While backfilling older history, `renderAnchor` is the turn to insert BEFORE
+  // (so older turns stack in order above the already-rendered newest ones); null
+  // means append (live turns, and the newest-first phase).
+  var renderAnchor = null;
   function makeTurn(who, cls) {
     var t = document.createElement("article");
     t.className = "turn" + (cls ? " " + cls : "");
@@ -345,7 +349,7 @@ import { mountDialogs } from "./confirm.js";
       '<div class="label"><span class="who' + (who === "You" ? " user" : "") + '"></span><span class="meta"></span></div>' +
       '<div class="body" aria-live="polite"></div>';
     t.querySelector(".who").textContent = who;
-    thread.appendChild(t);
+    if (renderAnchor) thread.insertBefore(t, renderAnchor); else thread.appendChild(t);
     return t;
   }
 
@@ -903,14 +907,19 @@ import { mountDialogs } from "./confirm.js";
   // its history in parallel with the boot calls instead of waiting for the
   // conversation list to arrive first. `{ id, promise }` is consumed by
   // loadHistoryThenStream when the ids match, saving a serial round-trip.
+  var TAIL_TURNS = 3; // how many recent turns to render instantly at the bottom
+  function eventsUrl(id, query) {
+    return "/api/conversations/" + encodeURIComponent(id) + "/events" + (query ? "?" + query : "");
+  }
+  function seqOfId(eid) { return Number(eid.slice(eid.lastIndexOf(":") + 1)); }
+
+  // Optimistic prefetch: the most-recently-opened conversation (localStorage) is
+  // usually the one we open next, so start fetching its TAIL (the bottom turns)
+  // in parallel with the boot calls. Resolves to the Response so it can stream.
   var prefetch = null;
   function prefetchEvents(id) {
     if (!id) return;
-    // Resolve to the Response (not parsed) so the history can be read as a stream.
-    prefetch = {
-      id: id,
-      promise: fetch("/api/conversations/" + encodeURIComponent(id) + "/events").catch(function () { return null; }),
-    };
+    prefetch = { id: id, promise: fetch(eventsUrl(id, "tailTurns=" + TAIL_TURNS)).catch(function () { return null; }) };
   }
 
   function openStream(id) {
@@ -921,57 +930,69 @@ import { mountDialogs } from "./confirm.js";
     try { localStorage.setItem("kloe:lastConv", id); } catch (_) { /* private mode */ }
     void loadHistoryThenStream(id);
   }
+  // Bottom-first: render the last few turns instantly at the bottom, open the live
+  // stream, then backfill everything older ABOVE (scroll anchoring keeps the
+  // bottom stable) — so a big conversation is usable immediately and never blanks.
   async function loadHistoryThenStream(id) {
-    // The boot prefetch is single-use: take it only if it's for this
-    // conversation, and clear it either way so it can't be reused stale later.
-    var pre = prefetch && prefetch.id === id ? prefetch.promise : null;
+    var pre = prefetch && prefetch.id === id ? prefetch.promise : null; // single-use
     prefetch = null;
     var res = null;
-    try { res = pre ? await pre : await fetch("/api/conversations/" + encodeURIComponent(id) + "/events"); }
+    try { res = pre ? await pre : await fetch(eventsUrl(id, "tailTurns=" + TAIL_TURNS)); }
     catch (_) { res = null; }
     if (convId !== id) return; // switched conversations while loading
-    var lastId = await streamHistory(res, id);
+    var tail = await streamInto(res, id, null, true); // phase 1: newest turns at the bottom
     if (convId !== id) return;
-    connectStream(id, lastId);
+    connectStream(id, tail.lastId); // live tail from the newest event we have
+    if (tail.rendered && tail.firstSeq > 1) void backfill(id, tail.firstSeq); // older turns, in the background
   }
-  // Read the NDJSON history as it streams (the browser decompresses the brotli
-  // response on the fly) and render events incrementally, so a big conversation
-  // fills in from ~first-paint instead of blanking until the whole thing loads.
-  // Returns the last event id (for the SSE tail cursor).
-  async function streamHistory(res, id) {
-    if (!res || !res.ok || !res.body || !res.body.getReader) { clearThread(); return null; }
-    var reader = res.body.getReader();
-    var decoder = new TextDecoder();
-    var buf = "", lastId = null, cleared = false;
-    // Swap the previous conversation out only on the first event (no empty flash),
-    // and suppress per-event autoScroll — we pin to the bottom once per chunk.
+  // Fetch + render everything older than `beforeSeq`, inserting it ABOVE the
+  // current top turn. The browser's scroll anchoring holds the viewport, so this
+  // is invisible unless the user scrolls up into it.
+  async function backfill(id, beforeSeq) {
+    var res = null;
+    try { res = await fetch(eventsUrl(id, "before=" + beforeSeq)); } catch (_) { return; }
+    if (convId !== id || !res) return;
+    await streamInto(res, id, thread.firstChild, false); // prepend before the current top; don't scroll
+  }
+  // Read an NDJSON history stream (the browser decompresses the brotli response on
+  // the fly) and apply events incrementally. `prepend` (a turn element) inserts
+  // new turns before it; null appends. Applies each network chunk synchronously
+  // with the anchor set, then clears it — so live SSE events (which fire only
+  // between awaits) are never misplaced by the prepend anchor.
+  async function streamInto(res, id, prepend, scrollBottom) {
+    var out = { lastId: null, firstSeq: Infinity, rendered: false };
+    if (!res || !res.ok || !res.body || !res.body.getReader) { if (!prepend) clearThread(); return out; }
+    var reader = res.body.getReader(), decoder = new TextDecoder(), buf = "";
+    var cleared = !!prepend; // backfill prepends onto existing content; never clears
     function applyLine(line) {
       if (!line) return;
       var ev; try { ev = JSON.parse(line); } catch (_) { return; }
-      if (!cleared) { clearThread(); cleared = true; bulkLoading = true; }
+      if (!cleared) { clearThread(); cleared = true; } // swap on first event → no empty flash
       applyEvent(ev.event, ev.data);
-      lastId = ev.id;
+      out.lastId = ev.id; out.rendered = true;
+      var s = seqOfId(ev.id); if (s < out.firstSeq) out.firstSeq = s;
     }
     bulkLoading = true;
     try {
       for (;;) {
         var chunk = await reader.read();
-        if (convId !== id) { try { reader.cancel(); } catch (_) {} bulkLoading = false; return null; }
+        if (convId !== id) { try { reader.cancel(); } catch (_) {} bulkLoading = false; return out; }
         if (chunk.done) break;
         buf += decoder.decode(chunk.value, { stream: true });
+        renderAnchor = prepend; // scoped to this synchronous burst
         var nl;
         while ((nl = buf.indexOf("\n")) >= 0) { applyLine(buf.slice(0, nl)); buf = buf.slice(nl + 1); }
-        flush(); // render what's parsed so far
-        scroll.scrollTop = scroll.scrollHeight; // follow the bottom as it fills in
+        renderAnchor = null;
+        flush();
+        if (scrollBottom) scroll.scrollTop = scroll.scrollHeight; // follow the bottom as it fills
       }
-      buf += decoder.decode();
-      applyLine(buf); // trailing line (no newline)
-    } catch (_) { /* stream dropped — keep what rendered; the SSE tail fills the gap */ }
+      renderAnchor = prepend; buf += decoder.decode(); applyLine(buf); renderAnchor = null;
+    } catch (_) { /* stream dropped — keep what rendered; the SSE tail fills any gap */ }
     bulkLoading = false;
     if (!cleared) clearThread(); // empty conversation
     flush();
-    scroll.scrollTop = scroll.scrollHeight;
-    return lastId;
+    if (scrollBottom) scroll.scrollTop = scroll.scrollHeight;
+    return out;
   }
   function connectStream(id, afterId) {
     var url = "/api/conversations/" + encodeURIComponent(id) + "/stream";

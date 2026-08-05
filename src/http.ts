@@ -4,7 +4,7 @@ import { Store } from "./store";
 import { ConversationActor, type Subscriber, type WireEvent } from "./actor";
 import { getRegistry } from "./inference";
 import { sseBlock } from "./sse";
-import { parseEventId } from "./events";
+import { parseEventId, Event } from "./events";
 import { withBody } from "./validate";
 import { PromptBody, SteerBody, ModelPatchBody, RenameBody } from "./schemas";
 import { ACTOR_IDLE_TTL_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
@@ -495,12 +495,31 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       },
     },
     "/api/conversations/:id/events": {
-      // NDJSON (one event per line) so the client can parse + render it
-      // incrementally as the compressed stream arrives, rather than waiting for
-      // the whole array. Brotli'd; the browser decompresses the stream on the fly.
+      // History as NDJSON (one event per line) so the client parses + renders it
+      // incrementally as the compressed stream arrives. Brotli'd; the browser
+      // decompresses on the fly. For bottom-first loading the client fetches the
+      // last few turns (`?tailTurns=N`) to fill the viewport instantly, then
+      // backfills everything older (`?before=<seq>`) above. No params → full log.
       GET: (req: Bun.BunRequest<"/api/conversations/:id/events">) => {
-        const ndjson = getActor(req.params.id, store).replay(0).map((e) => JSON.stringify(e)).join("\n");
-        return compressed(req, ndjson, "application/x-ndjson");
+        const url = new URL(req.url);
+        const all = getActor(req.params.id, store).replay(0);
+        const seqOf = (e: { id: string }) => { try { return parseEventId(e.id).seq; } catch { return 0; } };
+        let events = all;
+        const beforeParam = url.searchParams.get("before");
+        const tailParam = url.searchParams.get("tailTurns");
+        if (beforeParam !== null) {
+          const before = Number(beforeParam);
+          if (Number.isFinite(before)) events = all.filter((e) => seqOf(e) < before);
+        } else if (tailParam !== null) {
+          const tailTurns = Number(tailParam);
+          // A "turn" starts at a user-message; keep everything from the Nth-from-last one.
+          const userSeqs = all.filter((e) => e.event === Event.User).map(seqOf);
+          if (tailTurns > 0 && userSeqs.length > tailTurns) {
+            const cut = userSeqs[userSeqs.length - tailTurns]!;
+            events = all.filter((e) => seqOf(e) >= cut);
+          }
+        }
+        return compressed(req, events.map((e) => JSON.stringify(e)).join("\n"), "application/x-ndjson");
       },
     },
     "/api/conversations/:id": {

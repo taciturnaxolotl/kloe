@@ -241,6 +241,29 @@ test("batch /events + /stream?after= loads history then only the tail", async ()
   expect(tail.every((f) => Number(f.id.split(":")[1]!) > lastSeq)).toBe(true);
 });
 
+test("/events ?tailTurns and ?before partition the history (bottom-first backfill)", async () => {
+  const conv = "s2c";
+  const actor = getActor(conv, store);
+  for (let i = 0; i < 3; i++) {
+    actor.appendUser("q" + i, "r" + i);
+    await actor.runText("r" + i, "m" + i, async function* (_s) { yield { kind: "text", chunk: "a" + i }; });
+  }
+  const parse = async (q: string) =>
+    ((await (await fetch(`${base}/api/conversations/${conv}/events${q}`)).text())
+      .split("\n").filter(Boolean).map((l) => JSON.parse(l))) as Array<{ id: string; event: string }>;
+  const seq = (e: { id: string }) => Number(e.id.split(":")[1]);
+
+  const all = await parse("");
+  const tail = await parse("?tailTurns=1"); // just the last turn
+  expect(tail.length).toBeGreaterThan(0);
+  expect(tail[0]!.event).toBe("user-message"); // cut lands on a turn boundary
+  const cut = seq(tail[0]!);
+  const older = await parse("?before=" + cut);
+  expect(older.every((e) => seq(e) < cut)).toBe(true); // strictly older
+  expect(tail.every((e) => seq(e) >= cut)).toBe(true);
+  expect(older.length + tail.length).toBe(all.length); // exact partition: no gap, no overlap
+});
+
 test("a Last-Event-ID from a different conversation replays from the start", async () => {
   const conv = "s3";
   const actor = getActor(conv, store);
