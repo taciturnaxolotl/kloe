@@ -229,33 +229,41 @@ import {
     return null;
   }
   // Wrap math spans in backticks (code is preserved verbatim by smd) so their
-  // LaTeX survives; skip fenced/inline code so real `$` there is untouched.
+  // LaTeX survives; skip fenced/inline code so real `$` there is untouched. O(n):
+  // sticky regexes match at the cursor without slicing, and untouched runs are
+  // copied in one slice at the next math/stray-`$` (never char-by-char).
+  var FENCE_RE = /[ \t]*(`{3,}|~{3,})/y;
+  var TICK_RE = /`+/y;
   function protectMath(src) {
     if (src.indexOf("$") < 0) return src;
-    var out = "", i = 0, n = src.length, fence = null;
+    var parts = [], i = 0, n = src.length, fence = null, plain = 0;
     while (i < n) {
-      if ((i === 0 || src[i - 1] === "\n")) {
-        var fm = /^[ \t]*(`{3,}|~{3,})/.exec(src.slice(i));
+      if (i === 0 || src[i - 1] === "\n") {
+        FENCE_RE.lastIndex = i;
+        var fm = FENCE_RE.exec(src); // sticky → only matches at i
         if (fm) {
           if (!fence) fence = fm[1][0]; else if (fm[1][0] === fence) fence = null;
-          var e = src.indexOf("\n", i); e = e < 0 ? n : e + 1; out += src.slice(i, e); i = e; continue;
+          var e = src.indexOf("\n", i); i = e < 0 ? n : e + 1; continue; // stays in `plain`
         }
       }
-      if (fence) { var e2 = src.indexOf("\n", i); e2 = e2 < 0 ? n : e2 + 1; out += src.slice(i, e2); i = e2; continue; }
+      if (fence) { var e2 = src.indexOf("\n", i); i = e2 < 0 ? n : e2 + 1; continue; }
       var c = src[i];
-      if (c === "`") {
-        var run = /^`+/.exec(src.slice(i))[0];
+      if (c === "`") { // inline code span → copy verbatim (stays in `plain`)
+        TICK_RE.lastIndex = i; var run = TICK_RE.exec(src)[0];
         var cl = src.indexOf(run, i + run.length);
-        var e3 = cl < 0 ? n : cl + run.length; out += src.slice(i, e3); i = e3; continue;
+        i = cl < 0 ? n : cl + run.length; continue;
       }
       if (c === "$") {
         var m = matchDollar(src, i);
-        if (m && m.tex.indexOf("`") < 0) { out += "`" + MATH_MARK + (m.display ? "D" : "") + m.tex + "`"; i = m.end; continue; }
-        out += DOLLAR_MASK; i++; continue; // stray/unwrappable `$` → literal
+        if (i > plain) parts.push(src.slice(plain, i));
+        if (m && m.tex.indexOf("`") < 0) { parts.push("`" + MATH_MARK + (m.display ? "D" : "") + m.tex + "`"); i = m.end; }
+        else { parts.push(DOLLAR_MASK); i++; } // stray/unwrappable `$` → literal
+        plain = i; continue;
       }
-      out += c; i++;
+      i++;
     }
-    return out;
+    if (n > plain) parts.push(src.slice(plain, n));
+    return parts.join("");
   }
   function makeRenderer(root) {
     var r = smd.default_renderer(root);
