@@ -150,22 +150,67 @@ function looksSwallowed(tex, inline) {
   return tex.length > 800;
 }
 
-// Recover swallowed content: drop the stray `$` (unbalanced anyway) and re-render
-// the text as markdown in place. smd emits no raw HTML; we harden links to match
-// app.js. Lazy-imported so the parser only ships if this rare path is hit.
+// Recover swallowed content in place. We can't feed the text back to smd as-is
+// (the stray `$` would swallow again), so we mask every `$` with a sentinel first
+// — smd then builds the real markdown (headings, tables, prose) without treating
+// anything as an equation. Afterwards we restore the `$` and render the
+// well-formed, single-line $…$/$$…$$ spans with KaTeX; a lone/unbalanced `$`
+// simply stays as literal text. Lazy-imported so this only ships when hit.
+var SENTINEL = ""; // private-use char, won't occur in real content
 async function unswallow(el, text) {
   var smd = await import("streaming-markdown");
   var span = document.createElement("span");
   var p = smd.parser(smd.default_renderer(span));
-  smd.parser_write(p, text.replace(/\$/g, ""));
+  smd.parser_write(p, text.split("$").join(SENTINEL));
   smd.parser_end(p);
-  var links = span.querySelectorAll("a[href]");
+  var links = span.querySelectorAll("a[href]"); // link hardening, matching app.js
   for (var i = 0; i < links.length; i++) {
     if (/^\s*(javascript|vbscript|data):/i.test(links[i].getAttribute("href") || "")) links[i].setAttribute("href", "#");
     links[i].setAttribute("target", "_blank");
     links[i].setAttribute("rel", "noopener noreferrer nofollow");
   }
+  restoreSentinel(span);        // sentinel → `$` in every text node (incl. code)
+  renderInlineMath(span, await katex());
   el.replaceWith(span);
+}
+function restoreSentinel(root) {
+  var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  var nodes = []; while (w.nextNode()) nodes.push(w.currentNode);
+  for (var i = 0; i < nodes.length; i++) {
+    if (nodes[i].nodeValue.indexOf(SENTINEL) >= 0) nodes[i].nodeValue = nodes[i].nodeValue.split(SENTINEL).join("$");
+  }
+}
+// Render balanced, single-line $…$ / $$…$$ in a subtree's text nodes (skipping
+// code). Unbalanced `$` never match, so they're left as-is. Only the recovery
+// path needs this — normally smd tokenizes `$` into equation elements for us.
+var MATH_RE = /\$\$([^\n]+?)\$\$|\$([^$\n]+?)\$/g;
+function renderInlineMath(root, k) {
+  var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: function (n) {
+      if (!n.nodeValue || n.nodeValue.indexOf("$") < 0) return NodeFilter.FILTER_REJECT;
+      for (var p = n.parentElement; p && p !== root; p = p.parentElement) {
+        if (p.tagName === "CODE" || p.tagName === "PRE") return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  var nodes = []; while (w.nextNode()) nodes.push(w.currentNode);
+  for (var i = 0; i < nodes.length; i++) {
+    var text = nodes[i].nodeValue; MATH_RE.lastIndex = 0;
+    var frag = document.createDocumentFragment(), last = 0, changed = false, m;
+    while ((m = MATH_RE.exec(text))) {
+      if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+      var display = m[1] != null, tex = display ? m[1] : m[2];
+      var eq = document.createElement(display ? "equation-block" : "equation-inline");
+      eq.setAttribute("data-tex", "1"); // already rendered — skip on a later pass
+      try { eq.innerHTML = k.renderToString(tex, { displayMode: display, throwOnError: true }); }
+      catch (_) { eq.textContent = m[0]; }
+      frag.appendChild(eq); changed = true; last = MATH_RE.lastIndex;
+    }
+    if (!changed) continue;
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    nodes[i].parentNode.replaceChild(frag, nodes[i]);
+  }
 }
 
 /** Enhance a finalized block: highlight code, render math. Fire-and-forget. */
