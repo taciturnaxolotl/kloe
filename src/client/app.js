@@ -41,6 +41,11 @@ import { mountDialogs } from "./confirm.js";
 
   // Right-pointing chevron for timeline step rows; rotates 90° (→ down) when open.
   var CHEV = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
+  // Step icons for the activity stepper (16px, stroke=currentColor).
+  var SVG = 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
+  var ICON_CLOCK = '<svg ' + SVG + '><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
+  var ICON_GLOBE = '<svg ' + SVG + '><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.5 2.5 15.5 0 18M12 3c-2.5 2.5-2.5 15.5 0 18"/></svg>';
+  var ICON_TOOL = '<svg ' + SVG + '><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2-2 2.6-2.6z"/></svg>';
 
   var SEND ='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>';
 
@@ -225,7 +230,7 @@ import { mountDialogs } from "./confirm.js";
     var painted = false;
     for (var id in msgs) {
       var r = msgs[id];
-      var or = r.openReasoning;
+      var or = r.activity && r.activity.openReasoning;
       if (or && or.buf) { smd.parser_write(or.parser, or.buf); or.buf = ""; painted = true; updateReasoningPreview(or); }
       var ts = r.textSink;
       if (ts && ts.buf) { smd.parser_write(ts.parser, ts.buf); ts.buf = ""; painted = true; liveMeta(r); }
@@ -361,33 +366,168 @@ import { mountDialogs } from "./confirm.js";
     var t = makeTurn("Assistant", "generating");
     var rec = {
       turn: t, body: t.querySelector(".body"), meta: t.querySelector(".meta"),
-      // Segments append to body in arrival order, so reasoning, tool steps, and
-      // answer text interleave exactly as the model emits them. `textSink` is the
-      // open prose block; `tl` the open timeline run; `openReasoning` the reasoning
-      // step currently streaming. `proses`/`reasonings` hold every block for the
-      // final flush. A tool step or text delta closes the other kind of segment,
-      // so the next of its kind starts a fresh block below.
-      textSink: null, tl: null, openReasoning: null,
-      proses: [], reasonings: [], firstReasoning: null, tools: null,
+      // The turn body is an ordered run of segments: answer prose blocks and
+      // activity blocks (each a self-contained stepper of thinking + tools).
+      // They interleave in arrival order — a run of thinking/tools between two
+      // chunks of answer text becomes its own stepper, sitting between them.
+      activity: null,           // the currently open activity block (see newActivityBlock)
+      proses: [],               // every answer prose block (for the final flush)
+      textSink: null,           // the currently open prose { el, parser, renderer, buf }
+      toolSteps: null,          // toolCallId -> tool step (carries its block)
+      firstReasoning: null,     // first reasoning step of the whole turn (gets the duration)
+      firstReasoningBlock: null,
       startedAt: Date.now(), firstDeltaAt: 0,
     };
     msgs[messageId] = rec;
     autoScroll();
     return rec;
   }
-  // ---- interleaved segments ----------------------------------------------
-  // A turn's body is an ordered run of segments — prose blocks (answer text) and
-  // timeline runs (reasoning + tool steps as collapsed rows). They interleave in
-  // arrival order: a tool step or a text delta closes the other kind of segment,
-  // so text that resumes after a tool starts a fresh prose block BELOW it, and a
-  // faithful reasoning→tool→text→tool transcript renders top to bottom.
+  // ---- activity stepper (interleaved) ------------------------------------
+  // Each contiguous run of thinking + tool steps is one collapsible block: a
+  // vertical stepper with icons on a connector rail. Auto-opened while the model
+  // works, auto-collapsed to a one-line summary header once the answer text
+  // resumes (or the turn ends). A turn may hold several, interleaved with prose.
 
-  // The open prose block, accepting text deltas. Opening it ends the current
-  // thinking and closes the timeline run, so the next step opens a new run below.
+  function newActivityBlock(rec) {
+    var d = document.createElement("details");
+    d.className = "block activity";
+    var sum = document.createElement("summary");
+    sum.className = "activity-head";
+    sum.innerHTML = '<span class="stepicon"></span><span class="steplabel activity-label"></span>' + CHEV;
+    var stepper = document.createElement("div");
+    stepper.className = "stepper";
+    d.appendChild(sum); d.appendChild(stepper);
+    rec.body.appendChild(d); // in arrival order, below whatever preceded it
+    return {
+      details: d, stepper: stepper,
+      headIcon: sum.querySelector(".stepicon"), headLabel: sum.querySelector(".activity-label"),
+      openReasoning: null, firstReasoning: null, thoughtLabel: "",
+      searches: [], otherTools: [], activeTool: null,
+    };
+  }
+  // The current open activity block. Opening one closes the current prose block
+  // (flushing it), so a later text delta starts a fresh prose block below.
+  function openActivity(rec) {
+    if (rec.textSink) {
+      if (rec.textSink.buf) { smd.parser_write(rec.textSink.parser, rec.textSink.buf); rec.textSink.buf = ""; }
+      rec.textSink = null;
+    }
+    if (rec.activity) return rec.activity;
+    rec.activity = newActivityBlock(rec);
+    return rec.activity;
+  }
+  // Close the current activity block: finish its thinking, collapse it, settle
+  // its header. The next thinking/tool step opens a new block below.
+  function closeActivity(rec) {
+    var a = rec.activity;
+    if (!a) return;
+    blockEndReasoning(a);
+    a.details.open = false;
+    blockUpdateHead(a);
+    rec.activity = null;
+  }
+  // The header for one block: while a step is live, reflect it ("Thinking",
+  // "Searching the web for cats"); once settled, summarize — tools win over
+  // thinking, so a block that searched reads "Searched the web for cats" and a
+  // pure-thinking block reads "Thought for Ns". No "Done".
+  function blockHeadState(a) {
+    if (a.openReasoning) return { icon: ICON_CLOCK, label: "Thinking", working: true };
+    if (a.activeTool) {
+      var t = a.activeTool;
+      if (t.toolName === "web_search")
+        return { icon: ICON_GLOBE, label: t.query ? "Searching the web for " + t.query : "Searching the web", working: true };
+      return { icon: ICON_TOOL, label: t.toolName, working: true };
+    }
+    if (a.searches.length) {
+      var q = a.searches[a.searches.length - 1];
+      return { icon: ICON_GLOBE, working: false, label: a.searches.length > 1
+        ? "Searched the web · " + a.searches.length + " searches"
+        : (q ? "Searched the web for " + q : "Searched the web") };
+    }
+    if (a.otherTools.length)
+      return { icon: ICON_TOOL, working: false, label: a.otherTools.length > 1 ? "Used " + a.otherTools.length + " tools" : "Used " + a.otherTools[0] };
+    if (a.firstReasoning) return { icon: ICON_CLOCK, label: a.thoughtLabel || "Thought", working: false };
+    return null;
+  }
+  function blockUpdateHead(a) {
+    var s = blockHeadState(a);
+    if (!s) return;
+    a.headIcon.innerHTML = s.icon;
+    a.headLabel.textContent = s.label;
+    a.details.classList.toggle("working", s.working);
+  }
+  // A stepper row in block `a`. `expandable` rows are <details> (reasoning,
+  // tools). Returns the row, its label span, and (if any) its body.
+  function makeStepIn(a, cls, icon, expandable) {
+    var row, label, body = null;
+    if (expandable) {
+      row = document.createElement("details");
+      row.className = "step " + cls;
+      var sum = document.createElement("summary");
+      sum.innerHTML = '<span class="stepicon">' + icon + '</span><span class="steplabel"></span>' + CHEV;
+      body = document.createElement("div"); body.className = "stepbody";
+      row.appendChild(sum); row.appendChild(body);
+      label = sum.querySelector(".steplabel");
+    } else {
+      row = document.createElement("div");
+      row.className = "step " + cls;
+      row.innerHTML = '<span class="stepicon">' + icon + '</span><span class="steplabel"></span>';
+      label = row.querySelector(".steplabel");
+    }
+    a.stepper.appendChild(row);
+    return { row: row, label: label, body: body };
+  }
+  // The reasoning step currently streaming in the open block. Shimmers "Thinking"
+  // while live, then settles to "Thought"; the turn's first reasoning gets the
+  // server's authoritative duration at message-end.
+  function openReasoning(rec) {
+    var a = openActivity(rec);
+    if (a.openReasoning) return a.openReasoning;
+    var step = makeStepIn(a, "reasoning thinking", ICON_CLOCK, true);
+    step.label.textContent = "Thinking";
+    var np = newParser(step.body);
+    var rr = { row: step.row, label: step.label, body: step.body,
+               parser: np.parser, renderer: np.renderer, buf: "", ended: false };
+    if (!a.firstReasoning) a.firstReasoning = rr;
+    if (!rec.firstReasoning) { rec.firstReasoning = rr; rec.firstReasoningBlock = a; }
+    a.openReasoning = rr;
+    a.details.open = true; // working → reveal the stepper
+    blockUpdateHead(a);
+    autoScroll();
+    return rr;
+  }
+  // Follow the reasoning stream to the bottom while its row is expanded.
+  function updateReasoningPreview(rc) {
+    if (rc.row.open) rc.body.scrollTop = rc.body.scrollHeight;
+  }
+  // Finish the block's streaming reasoning step: flush + enrich it, stop the
+  // shimmer, settle the label.
+  function blockEndReasoning(a) {
+    var rr = a.openReasoning;
+    if (!rr) return;
+    a.openReasoning = null;
+    if (!rr.ended) {
+      if (rr.buf) { smd.parser_write(rr.parser, rr.buf); rr.buf = ""; }
+      smd.parser_end(rr.parser); rr.ended = true;
+      enrich(rr.body);
+    }
+    rr.row.classList.remove("thinking");
+    if (rr.label.textContent === "Thinking") rr.label.textContent = "Thought";
+    if (!a.thoughtLabel) a.thoughtLabel = "Thought"; // upgraded to a duration at message-end
+    blockUpdateHead(a);
+  }
+  function labelThought(rr, reasoningMs) {
+    if (!rr) return;
+    rr.row.classList.remove("thinking");
+    rr.label.textContent = reasoningMs != null
+      ? "Thought for " + Math.max(0, Math.round(reasoningMs / 1000)) + "s"
+      : "Thought";
+  }
+  // An answer prose block. Creating it closes the current activity block
+  // (collapsing it) — we've exited the work section into the answer.
   function openText(rec) {
-    endReasoningStep(rec);
-    rec.tl = null;
     if (rec.textSink) return rec.textSink;
+    closeActivity(rec);
     var el = proseBlock(rec.body);
     var np = newParser(el);
     var sink = { el: el, parser: np.parser, renderer: np.renderer, buf: "" };
@@ -396,113 +536,101 @@ import { mountDialogs } from "./confirm.js";
     autoScroll();
     return sink;
   }
-  // The open timeline run. Opening it closes the current prose block (flushing
-  // its buffered text), so a later text delta lands in a new block below.
-  function openTimeline(rec) {
-    if (rec.textSink) {
-      if (rec.textSink.buf) { smd.parser_write(rec.textSink.parser, rec.textSink.buf); rec.textSink.buf = ""; }
-      rec.textSink = null;
-    }
-    if (rec.tl) return rec.tl;
-    var t = document.createElement("div");
-    t.className = "block timeline";
-    rec.body.appendChild(t);
-    rec.tl = t;
-    return t;
-  }
-  // A collapsed step row (a <details>) appended to the current timeline run;
-  // `cls` tags its type ("reasoning"/"tool"). Returns its details/label/body.
-  function makeStep(rec, cls) {
-    var d = document.createElement("details");
-    d.className = "step " + cls;
-    var sum = document.createElement("summary");
-    sum.innerHTML = '<span class="steplabel"></span>' + CHEV;
-    var body = document.createElement("div"); body.className = "stepbody";
-    d.appendChild(sum); d.appendChild(body);
-    openTimeline(rec).appendChild(d);
-    return { details: d, label: sum.querySelector(".steplabel"), body: body };
-  }
-  // The reasoning step currently streaming. A run may hold several (thinking
-  // resumes between tools); each shimmers "Thinking" while live, then settles to
-  // "Thought". The first block also gets the server's authoritative duration
-  // ("Thought for Ns") at message-end — client wall-clock can't see silent
-  // server-side thinking.
-  function openReasoning(rec) {
-    if (rec.openReasoning) return rec.openReasoning;
-    var step = makeStep(rec, "reasoning thinking");
-    step.label.textContent = "Thinking";
-    var np = newParser(step.body);
-    var rr = { details: step.details, label: step.label, body: step.body,
-               parser: np.parser, renderer: np.renderer, buf: "", ended: false };
-    rec.reasonings.push(rr);
-    if (!rec.firstReasoning) rec.firstReasoning = rr;
-    rec.openReasoning = rr;
-    autoScroll();
-    return rr;
-  }
-  // Follow the reasoning stream to the bottom while its row is expanded.
-  function updateReasoningPreview(rc) {
-    if (rc.details.open) rc.body.scrollTop = rc.body.scrollHeight;
-  }
-  // Finish the streaming reasoning block (a tool call, answer text, or turn end
-  // followed it): flush + enrich it, stop the shimmer, settle the label.
-  function endReasoningStep(rec) {
-    var rr = rec.openReasoning;
-    if (!rr) return;
-    rec.openReasoning = null;
-    if (!rr.ended) {
-      if (rr.buf) { smd.parser_write(rr.parser, rr.buf); rr.buf = ""; }
-      smd.parser_end(rr.parser); rr.ended = true;
-      enrich(rr.body);
-    }
-    rr.details.classList.remove("thinking");
-    if (rr.label.textContent === "Thinking") rr.label.textContent = "Thought";
-  }
-  function labelThought(rr, reasoningMs) {
-    if (!rr) return;
-    rr.details.classList.remove("thinking");
-    rr.label.textContent = reasoningMs != null
-      ? "Thought for " + Math.max(0, Math.round(reasoningMs / 1000)) + "s"
-      : "Thought";
-  }
   // Pretty value for a tool's args/result (JSON, or a string as-is).
   function toolValue(v) {
     if (v == null) return "";
     if (typeof v === "string") return v;
     try { return JSON.stringify(v, null, 2); } catch (_) { return String(v); }
   }
-  // A tool call: a timeline step labelled by tool name (shimmering while it
-  // runs), its args in the body. Keyed by toolCallId so the result attaches.
+  // A tool call: a stepper row in the open block, iconed by kind (globe for
+  // web_search, else a generic tool icon), labelled by the query (search) or the
+  // tool name. Keyed by toolCallId so the result attaches. Shimmers while running.
   function toolStep(rec, data) {
-    rec.tools = rec.tools || Object.create(null);
-    if (rec.tools[data.toolCallId]) return rec.tools[data.toolCallId];
-    endReasoningStep(rec); // the thinking that led to this call is done
-    var step = makeStep(rec, "tool thinking");
-    step.label.textContent = data.toolName;
-    var args = toolValue(data.input);
-    if (args && args !== "{}") {
-      var a = document.createElement("div"); a.className = "targs"; a.textContent = args;
-      step.body.appendChild(a);
+    rec.toolSteps = rec.toolSteps || Object.create(null);
+    if (rec.toolSteps[data.toolCallId]) return rec.toolSteps[data.toolCallId];
+    var a = openActivity(rec);
+    blockEndReasoning(a); // the thinking that led to this call is done
+    var isSearch = data.toolName === "web_search";
+    var step = makeStepIn(a, "tool thinking" + (isSearch ? " search" : ""), isSearch ? ICON_GLOBE : ICON_TOOL, true);
+    var query = data.input && data.input.query;
+    step.label.textContent = isSearch && query ? query : data.toolName;
+    if (!isSearch) {
+      var args = toolValue(data.input);
+      if (args && args !== "{}") {
+        var el = document.createElement("div"); el.className = "targs"; el.textContent = args;
+        step.body.appendChild(el);
+      }
     }
-    rec.tools[data.toolCallId] = { details: step.details, label: step.label, body: step.body };
+    var t = { row: step.row, label: step.label, body: step.body, toolName: data.toolName, block: a };
+    rec.toolSteps[data.toolCallId] = t;
+    if (isSearch) { a.searches.push(query || ""); a.activeTool = { toolName: "web_search", query: query }; }
+    else { a.otherTools.push(data.toolName); a.activeTool = { toolName: data.toolName }; }
+    a.details.open = true; // working → reveal the stepper
+    blockUpdateHead(a);
     autoScroll();
-    return rec.tools[data.toolCallId];
+    return t;
   }
   function toolResult(rec, data) {
-    var t = (rec.tools && rec.tools[data.toolCallId]) || toolStep(rec, data);
-    t.details.classList.remove("thinking");
-    if (data.isError) { t.details.classList.add("errored"); t.label.textContent = data.toolName + " — failed"; }
-    var out = document.createElement("div");
-    out.className = "tout" + (data.isError ? " err" : "");
-    out.textContent = toolValue(data.output);
-    t.body.appendChild(out);
+    var t = (rec.toolSteps && rec.toolSteps[data.toolCallId]) || toolStep(rec, data);
+    t.row.classList.remove("thinking");
+    if (data.isError) {
+      t.row.classList.add("errored");
+      var err = document.createElement("div"); err.className = "tout err"; err.textContent = toolValue(data.output);
+      t.body.appendChild(err);
+    } else if (t.toolName === "web_search" && data.output && Array.isArray(data.output.results)) {
+      renderSearchResults(t, data.output.results);
+    } else {
+      var out = document.createElement("div"); out.className = "tout"; out.textContent = toolValue(data.output);
+      t.body.appendChild(out);
+    }
+    t.block.activeTool = null; // this tool finished
+    blockUpdateHead(t.block);
     autoScroll();
   }
+  function domainOf(url) {
+    try { return new URL(url).hostname.replace(/^www\./, ""); } catch (_) { return ""; }
+  }
+  // Search results as a card: each row a favicon + title + domain, linking out.
+  // Puts the result count in the step summary. Favicons load from a public
+  // service and hide themselves on error, so a missing icon leaves the row clean.
+  function renderSearchResults(t, results) {
+    var sum = t.row.querySelector("summary");
+    if (sum && !sum.querySelector(".count")) {
+      var c = document.createElement("span"); c.className = "count";
+      c.textContent = results.length + (results.length === 1 ? " result" : " results");
+      sum.insertBefore(c, sum.querySelector(".chev"));
+    }
+    var card = document.createElement("div"); card.className = "results";
+    results.forEach(function (r) {
+      var a = document.createElement("a");
+      a.className = "result"; a.href = r.url; a.target = "_blank"; a.rel = "noopener noreferrer nofollow";
+      var domain = domainOf(r.url);
+      var img = document.createElement("img");
+      img.className = "favicon"; img.alt = ""; img.loading = "lazy";
+      img.src = "https://icons.duckduckgo.com/ip3/" + domain + ".ico";
+      img.onerror = function () { img.style.visibility = "hidden"; };
+      var title = document.createElement("span"); title.className = "rtitle"; title.textContent = r.title || domain || r.url;
+      var dom = document.createElement("span"); dom.className = "rdomain"; dom.textContent = domain;
+      a.appendChild(img); a.appendChild(title); a.appendChild(dom);
+      card.appendChild(a);
+    });
+    t.body.appendChild(card);
+  }
   function endAssistant(rec, finishReason, usage, reasoningMs) {
-    endReasoningStep(rec);
-    labelThought(rec.firstReasoning, reasoningMs); // duration on the first block only
-    // Finalize every prose segment (the open one plus any a timeline closed):
-    // flush remaining text, end the parser, then run the completed-block
+    closeActivity(rec); // finish + collapse any open activity block
+    // The server reports one reasoning duration for the turn (start → first
+    // answer token); it belongs to the first thinking block. Stamp its step and
+    // its block header with "Thought for Ns".
+    if (rec.firstReasoning) {
+      labelThought(rec.firstReasoning, reasoningMs);
+      if (rec.firstReasoningBlock) {
+        rec.firstReasoningBlock.thoughtLabel = reasoningMs != null
+          ? "Thought for " + Math.max(0, Math.round(reasoningMs / 1000)) + "s" : "Thought";
+        blockUpdateHead(rec.firstReasoningBlock);
+      }
+    }
+    // Finalize every answer prose block (the open one plus any an activity block
+    // closed): flush remaining text, end the parser, run the completed-block
     // enhancers (code highlight, math).
     var stripped = false;
     for (var i = 0; i < rec.proses.length; i++) {
@@ -586,7 +714,7 @@ import { mountDialogs } from "./confirm.js";
         break;
       case "text-delta": {
         var rec = assistantTurn(data.messageId);
-        var sink = openText(rec); // ends any open thinking; starts a new block after a tool
+        var sink = openText(rec); // ends any open thinking; collapses the stepper
         if (!rec.firstDeltaAt) rec.firstDeltaAt = Date.now();
         sink.buf += data.delta;
         scheduleFlush();

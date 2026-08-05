@@ -294,45 +294,84 @@ body.selecting #selectBtn { order: 4; }
 :root[data-theme="light"] .turn .body pre code.hl span { color: var(--shiki-light); }
 :root[data-theme="dark"] .turn .body pre code.hl span { color: var(--shiki-dark); }
 
-/* Agent-activity timeline — reasoning and tool call/result steps as an ordered
-   column of collapsed rows, interleaved with the answer text in arrival order.
-   Each row is plain muted text; a chevron appears on hover (or when open) and
-   rotates to point down. Expanded bodies are height-capped and scroll so long
-   content can't blow up the page. */
-.turn .body .timeline { display: flex; flex-direction: column; gap: 1px; margin: 2px 0 0; }
-/* Timeline + answer are one continuous turn — keep them tight, not block-spaced,
-   in both directions as reasoning/tools and text interleave down the turn. */
-.turn .body .timeline + .prose,
-.turn .body .prose + .timeline { margin-top: 5px; }
-.turn .body .timeline .step > summary { list-style: none; cursor: pointer; user-select: none;
-  display: flex; align-items: center; gap: 6px; padding: 3px 2px;
-  font-family: var(--mono); font-size: 11px; letter-spacing: .02em; color: var(--ink-muted); }
-.turn .body .timeline .step > summary::-webkit-details-marker { display: none; }
-.turn .body .timeline .step > summary:hover { color: var(--ink); }
-.turn .body .timeline .step .chev { width: 12px; height: 12px; flex: none; color: var(--ink-faint);
+/* Agent-activity block — ONE consolidated, collapsible stepper per turn holding
+   all reasoning + tool steps and ending in "Done". Collapsed by default to a
+   one-line header mirroring the LATEST step; auto-opened while the model works
+   and auto-collapsed once the answer begins (see app.js). A connector line runs
+   through the icon column, broken by each icon so steps read as nodes on a rail. */
+.turn .body .activity { margin-top: 2px; }
+/* Activity and answer interleave down the turn — keep adjacent blocks tight in
+   both directions, not full block-spaced. */
+.turn .body .activity + .prose,
+.turn .body .prose + .activity { margin-top: 10px; }
+.turn .body .activity-head { list-style: none; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 8px; padding: 3px 2px;
+  font-family: var(--mono); font-size: 11.5px; letter-spacing: .02em; color: var(--ink-muted); }
+.turn .body .activity-head::-webkit-details-marker { display: none; }
+.turn .body .activity-head:hover { color: var(--ink); }
+.turn .body .activity-head .chev { width: 12px; height: 12px; flex: none; color: var(--ink-faint);
+  opacity: .55; transition: transform .12s ease; margin-left: 2px; }
+.turn .body .activity[open] > .activity-head .chev { transform: rotate(90deg); }
+
+/* The stepper (shown when open). */
+.turn .body .stepper { position: relative; display: flex; flex-direction: column; margin: 3px 0 2px; }
+.turn .body .stepper .step { position: relative; }
+/* connector line down the icon column; each icon's own background breaks it */
+.turn .body .stepper .step::before { content: ""; position: absolute; left: 9px; top: 0; bottom: 0;
+  width: 1px; background: var(--rule); }
+.turn .body .stepper .step:first-child::before { top: 14px; }              /* start at first icon */
+.turn .body .stepper .step:last-child::before { bottom: calc(100% - 14px); } /* end at last icon */
+.turn .body .stepper .step > summary { display: flex; align-items: center; gap: 9px; padding: 4px 2px;
+  font-family: var(--mono); font-size: 11.5px; letter-spacing: .02em; color: var(--ink-muted); }
+.turn .body .stepper .step > summary { list-style: none; cursor: pointer; user-select: none; }
+.turn .body .stepper .step > summary::-webkit-details-marker { display: none; }
+.turn .body .stepper .step > summary:hover { color: var(--ink); }
+
+/* Icons sit on the rail with a background matching the page, breaking the line. */
+.turn .body .stepicon { width: 15px; height: 15px; flex: none; color: var(--ink-faint); }
+.turn .body .stepicon svg { width: 100%; height: 100%; display: block; }
+.turn .body .stepper .stepicon { z-index: 1; background: var(--bg); border-radius: 50%; }
+
+/* Label grows to fill, pushing an optional result count and the chevron right. */
+.turn .body .steplabel { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.turn .body .stepper .step .count { flex: none; padding-left: 10px; color: var(--ink-faint); }
+.turn .body .stepper .step .chev { width: 12px; height: 12px; flex: none; margin-left: 8px; color: var(--ink-faint);
   opacity: 0; transition: opacity .12s ease, transform .12s ease; }
-.turn .body .timeline .step:hover > summary .chev,
-.turn .body .timeline .step[open] > summary .chev { opacity: 1; }
-.turn .body .timeline .step[open] > summary .chev { transform: rotate(90deg); }
-/* Shimmering label while a step is active (background-clipped moving gradient). */
-.turn .body .timeline .step.thinking .steplabel {
+.turn .body .stepper .step:hover > summary .chev,
+.turn .body .stepper .step[open] > summary .chev { opacity: 1; }
+.turn .body .stepper .step[open] > summary .chev { transform: rotate(90deg); }
+.turn .body .stepper .step.tool.errored > summary .steplabel { color: var(--err); }
+
+/* Shimmering label while a step (or the collapsed header) is active. */
+.turn .body .activity.working .activity-label,
+.turn .body .stepper .step.thinking .steplabel {
   background: linear-gradient(90deg, var(--ink-faint) 25%, var(--ink) 50%, var(--ink-faint) 75%);
   background-size: 200% 100%; -webkit-background-clip: text; background-clip: text;
   -webkit-text-fill-color: transparent; animation: shimmer 1.7s linear infinite; }
 @keyframes shimmer { to { background-position: -200% 0; } }
-.turn .body .timeline .stepbody { max-height: 300px; overflow-y: auto;
-  margin: 1px 0 5px 18px; padding-left: 11px; border-left: 1px solid var(--rule);
-  color: var(--ink-muted); font-size: 0.9em; }
-.turn .body .timeline .stepbody > :first-child { margin-top: 0; }
-.turn .body .timeline .stepbody > :last-child { margin-bottom: 0; }
-/* Tool step: args + result rendered as compact mono blocks. */
-.turn .body .timeline .step.tool .targs,
-.turn .body .timeline .step.tool .tout { font-family: var(--mono); font-size: 11.5px;
+
+/* Expanded step body: reasoning text or tool output, indented past the rail. */
+.turn .body .stepper .stepbody { max-height: 320px; overflow-y: auto;
+  margin: 0 0 6px 26px; color: var(--ink-muted); font-size: 0.9em; }
+.turn .body .stepper .stepbody > :first-child { margin-top: 0; }
+.turn .body .stepper .stepbody > :last-child { margin-bottom: 0; }
+.turn .body .stepper .step.tool .targs,
+.turn .body .stepper .step.tool .tout { font-family: var(--mono); font-size: 11.5px;
   line-height: 1.5; white-space: pre-wrap; word-break: break-word; margin: 2px 0; }
-.turn .body .timeline .step.tool .targs { color: var(--ink-faint); }
-.turn .body .timeline .step.tool .tout { color: var(--ink-muted); }
-.turn .body .timeline .step.tool .tout.err { color: var(--err); }
-.turn .body .timeline .step.tool.errored > summary .steplabel { color: var(--err); }
+.turn .body .stepper .step.tool .targs { color: var(--ink-faint); }
+.turn .body .stepper .step.tool .tout.err { color: var(--err); }
+
+/* Search results card: favicon + title + domain, each row a link. */
+.turn .body .stepper .results { display: flex; flex-direction: column; margin: 2px 0 4px;
+  background: var(--bg-sunk); border: 1px solid var(--rule); border-radius: var(--radius-sm); padding: 4px; }
+.turn .body .stepper .result { display: flex; align-items: center; gap: 9px; padding: 6px 8px;
+  border-radius: var(--radius-xs); text-decoration: none; color: var(--ink-muted); }
+.turn .body .stepper .result:hover { background: var(--bg-raise); }
+.turn .body .stepper .result .favicon { width: 16px; height: 16px; flex: none; border-radius: 3px; }
+.turn .body .stepper .result .rtitle { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; color: var(--ink); font-family: var(--sans); }
+.turn .body .stepper .result .rdomain { flex: none; max-width: 42%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; color: var(--ink-faint); font-size: 0.9em; }
 
 /* KaTeX math. Inline flows with text; display centers on its own line. */
 .turn .body .math-inline { white-space: nowrap; }
@@ -376,7 +415,7 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
 
 .tools { display: flex; align-items: center; gap: 8px; margin-top: 0; }
 .tools .right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
-.icon { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px;
+.icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 34px; height: 34px;
   border-radius: var(--radius-md); border: 0; background: none; color: var(--ink-muted); cursor: pointer; text-decoration: none; }
 .icon:hover { background: color-mix(in srgb, var(--ink) 9%, transparent); color: var(--ink); }
 .icon svg { width: 18px; height: 18px; }
@@ -412,14 +451,16 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
 .picker .none { padding: 10px; font-size: 13px; color: var(--ink-muted); }
 .picker .none a { white-space: nowrap; }
 
-.send { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px;
+/* flex:none keeps the button a fixed 36×36 square — without it the flex row
+   squeezes it narrower (not square) on a cramped mobile width. */
+.send { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 36px; height: 36px;
   border-radius: var(--radius-md); border: 1px solid transparent; background: var(--bg-sunk); color: var(--ink-faint);
   cursor: default; margin-left: 4px; padding: 0; font-family: var(--mono); font-size: 16px; line-height: 1; }
 .send svg { width: 18px; height: 18px; }
 .send.ready { background: var(--accent); color: #fff; cursor: pointer; }
 .send.ready:hover { filter: brightness(1.08); }
 
-.stopbtn { display: none; align-items: center; justify-content: center; width: 36px; height: 36px;
+.stopbtn { display: none; align-items: center; justify-content: center; flex: none; width: 36px; height: 36px;
   border-radius: var(--radius-md); border: 1px solid var(--rule-strong); background: var(--bg); color: var(--ink);
   cursor: pointer; padding: 0; }
 .stopbtn:hover { background: color-mix(in srgb, var(--ink) 9%, transparent); }
