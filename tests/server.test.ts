@@ -223,7 +223,8 @@ test("batch /events + /stream?after= loads history then only the tail", async ()
   });
 
   // The whole history in one request (what the client batch-renders on open).
-  const events = (await (await fetch(`${base}/api/conversations/${conv}/events`)).json()) as Array<{ id: string; event: string }>;
+  const ndjson = await (await fetch(`${base}/api/conversations/${conv}/events`)).text();
+  const events = ndjson.split("\n").filter(Boolean).map((l) => JSON.parse(l)) as Array<{ id: string; event: string }>;
   expect(events.length).toBeGreaterThan(0);
   expect(events.some((e) => e.event === "message-end")).toBe(true);
   const lastId = events[events.length - 1]!.id;

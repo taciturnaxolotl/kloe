@@ -116,22 +116,21 @@ export function evictIdleActors(): void {
 }
 
 /**
- * A JSON response compressed per the client's Accept-Encoding — brotli (quality
- * 5, a fast ratio/speed balance) preferred over gzip, both better than nothing
- * over a tunnel (Bun.serve does no compression of its own). Used for `/events`,
- * whose history payload can be large; the browser decompresses transparently.
+ * A body compressed per the client's Accept-Encoding — brotli (quality 5, a fast
+ * ratio/speed balance) preferred over gzip, both better than nothing over a
+ * tunnel (Bun.serve does no compression of its own). The browser delivers the
+ * response as a decompressing stream, so the client can render it incrementally.
  */
-function compressedJson(req: Request, value: unknown): Response {
-  const json = JSON.stringify(value);
+function compressed(req: Request, body: string, contentType: string): Response {
   const accept = req.headers.get("accept-encoding") ?? "";
   if (/\bbr\b/.test(accept)) {
-    const out = brotliCompressSync(json, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 } });
-    return new Response(out, { headers: { "Content-Type": "application/json", "Content-Encoding": "br" } });
+    const out = brotliCompressSync(body, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 } });
+    return new Response(out, { headers: { "Content-Type": contentType, "Content-Encoding": "br" } });
   }
   if (/\bgzip\b/.test(accept)) {
-    return new Response(gzipSync(json), { headers: { "Content-Type": "application/json", "Content-Encoding": "gzip" } });
+    return new Response(gzipSync(body), { headers: { "Content-Type": contentType, "Content-Encoding": "gzip" } });
   }
-  return new Response(json, { headers: { "Content-Type": "application/json" } });
+  return new Response(body, { headers: { "Content-Type": contentType } });
 }
 
 /** Refs of every model this deployment can run (enabled providers + echo). */
@@ -496,8 +495,13 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       },
     },
     "/api/conversations/:id/events": {
-      GET: (req: Bun.BunRequest<"/api/conversations/:id/events">) =>
-        compressedJson(req, getActor(req.params.id, store).replay(0)),
+      // NDJSON (one event per line) so the client can parse + render it
+      // incrementally as the compressed stream arrives, rather than waiting for
+      // the whole array. Brotli'd; the browser decompresses the stream on the fly.
+      GET: (req: Bun.BunRequest<"/api/conversations/:id/events">) => {
+        const ndjson = getActor(req.params.id, store).replay(0).map((e) => JSON.stringify(e)).join("\n");
+        return compressed(req, ndjson, "application/x-ndjson");
+      },
     },
     "/api/conversations/:id": {
       DELETE: async (req: Bun.BunRequest<"/api/conversations/:id">) => {

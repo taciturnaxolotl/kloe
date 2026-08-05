@@ -906,11 +906,10 @@ import { mountDialogs } from "./confirm.js";
   var prefetch = null;
   function prefetchEvents(id) {
     if (!id) return;
+    // Resolve to the Response (not parsed) so the history can be read as a stream.
     prefetch = {
       id: id,
-      promise: fetch("/api/conversations/" + encodeURIComponent(id) + "/events")
-        .then(function (r) { return r.ok ? r.json() : null; })
-        .catch(function () { return null; }),
+      promise: fetch("/api/conversations/" + encodeURIComponent(id) + "/events").catch(function () { return null; }),
     };
   }
 
@@ -923,37 +922,56 @@ import { mountDialogs } from "./confirm.js";
     void loadHistoryThenStream(id);
   }
   async function loadHistoryThenStream(id) {
-    var events = null;
     // The boot prefetch is single-use: take it only if it's for this
     // conversation, and clear it either way so it can't be reused stale later.
     var pre = prefetch && prefetch.id === id ? prefetch.promise : null;
     prefetch = null;
-    try {
-      if (pre) {
-        events = await pre;
-      } else {
-        var res = await fetch("/api/conversations/" + encodeURIComponent(id) + "/events");
-        if (convId !== id) return; // switched conversations while loading
-        events = await res.json();
-      }
-      if (convId !== id) return;
-    } catch (_) { /* render empty + let the stream replay from the start */ }
-    // Swap in ONE step: the previous conversation stays on screen until the new
-    // one is ready, so the window never flashes empty during the fetch.
-    clearThread();
-    var lastId = null;
-    if (Array.isArray(events) && events.length) {
-      // Apply the whole history without scrolling per event (that would reflow
-      // hundreds of times), then flush + scroll to the end once.
-      bulkLoading = true;
-      for (var i = 0; i < events.length; i++) applyEvent(events[i].event, events[i].data);
-      bulkLoading = false;
-      if (flushHandle) { cancelAnimationFrame(flushHandle); flushHandle = null; }
-      flush(); // render buffered deltas now (completed turns already rendered on message-end)
-      scroll.scrollTop = scroll.scrollHeight;
-      lastId = events[events.length - 1].id;
-    }
+    var res = null;
+    try { res = pre ? await pre : await fetch("/api/conversations/" + encodeURIComponent(id) + "/events"); }
+    catch (_) { res = null; }
+    if (convId !== id) return; // switched conversations while loading
+    var lastId = await streamHistory(res, id);
+    if (convId !== id) return;
     connectStream(id, lastId);
+  }
+  // Read the NDJSON history as it streams (the browser decompresses the brotli
+  // response on the fly) and render events incrementally, so a big conversation
+  // fills in from ~first-paint instead of blanking until the whole thing loads.
+  // Returns the last event id (for the SSE tail cursor).
+  async function streamHistory(res, id) {
+    if (!res || !res.ok || !res.body || !res.body.getReader) { clearThread(); return null; }
+    var reader = res.body.getReader();
+    var decoder = new TextDecoder();
+    var buf = "", lastId = null, cleared = false;
+    // Swap the previous conversation out only on the first event (no empty flash),
+    // and suppress per-event autoScroll — we pin to the bottom once per chunk.
+    function applyLine(line) {
+      if (!line) return;
+      var ev; try { ev = JSON.parse(line); } catch (_) { return; }
+      if (!cleared) { clearThread(); cleared = true; bulkLoading = true; }
+      applyEvent(ev.event, ev.data);
+      lastId = ev.id;
+    }
+    bulkLoading = true;
+    try {
+      for (;;) {
+        var chunk = await reader.read();
+        if (convId !== id) { try { reader.cancel(); } catch (_) {} bulkLoading = false; return null; }
+        if (chunk.done) break;
+        buf += decoder.decode(chunk.value, { stream: true });
+        var nl;
+        while ((nl = buf.indexOf("\n")) >= 0) { applyLine(buf.slice(0, nl)); buf = buf.slice(nl + 1); }
+        flush(); // render what's parsed so far
+        scroll.scrollTop = scroll.scrollHeight; // follow the bottom as it fills in
+      }
+      buf += decoder.decode();
+      applyLine(buf); // trailing line (no newline)
+    } catch (_) { /* stream dropped — keep what rendered; the SSE tail fills the gap */ }
+    bulkLoading = false;
+    if (!cleared) clearThread(); // empty conversation
+    flush();
+    scroll.scrollTop = scroll.scrollHeight;
+    return lastId;
   }
   function connectStream(id, afterId) {
     var url = "/api/conversations/" + encodeURIComponent(id) + "/stream";
