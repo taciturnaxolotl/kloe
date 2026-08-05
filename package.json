@@ -16,6 +16,7 @@
     "@mozilla/readability": "^0.6.0",
     "@standard-schema/spec": "^1.1.0",
     "ai": "^7.0.48",
+    "fast-xml-parser": "^5.10.1",
     "katex": "^0.18.1",
     "linkedom": "^0.18.13",
     "shiki": "^4.4.1",

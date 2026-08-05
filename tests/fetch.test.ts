@@ -71,6 +71,34 @@ test("LocalFetchProvider rejects a redirect into a private address (SSRF)", asyn
   await expect(p.fetch("https://example.com/a")).rejects.toThrow(/private|reserved/);
 });
 
+test("an RSS feed renders as a clean markdown item list, not HTML mush", async () => {
+  const xml =
+    '<?xml version="1.0"?><rss version="2.0"><channel><title>My Feed</title>' +
+    "<item><title>Hello World</title><link>https://ex.com/1</link><pubDate>Wed, 05 Aug 2026</pubDate>" +
+    "<description><![CDATA[<p>Some <b>summary</b> text.</p>]]></description></item>" +
+    "<item><title>Second</title><link>https://ex.com/2</link></item></channel></rss>";
+  const res = new Response(xml, { headers: { "content-type": "application/rss+xml" } });
+  const p = new LocalFetchProvider(opts({ fetchImpl: (async () => res) as unknown as typeof fetch }));
+  const r = await p.fetch("https://ex.com/feed.xml");
+  expect(r.title).toBe("My Feed");
+  expect(r.content).toContain("# My Feed");
+  expect(r.content).toContain("[Hello World](https://ex.com/1)");
+  expect(r.content).toContain("Some summary text"); // HTML tags stripped from the snippet
+  expect(r.content).not.toContain("CDATA");
+  expect(r.content).toContain("[Second](https://ex.com/2)");
+});
+
+test("an Atom feed uses the alternate link and entry titles", async () => {
+  const xml =
+    '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>Atom Feed</title>' +
+    '<entry><title>Post A</title><link rel="alternate" href="https://ex.com/a"/><updated>2026-08-05</updated><summary>Sum A</summary></entry></feed>';
+  const res = new Response(xml, { headers: { "content-type": "application/atom+xml" } });
+  const p = new LocalFetchProvider(opts({ fetchImpl: (async () => res) as unknown as typeof fetch }));
+  const r = await p.fetch("https://ex.com/atom");
+  expect(r.title).toBe("Atom Feed");
+  expect(r.content).toContain("[Post A](https://ex.com/a)");
+});
+
 test("createFetchProvider honors the enabled flag", () => {
   expect(createFetchProvider({ enabled: false } as never)).toBeNull();
   expect(createFetchProvider({ enabled: true, maxBytes: 1, maxChars: 1, timeoutMs: 1, allowPrivate: false, userAgent: "x" }))

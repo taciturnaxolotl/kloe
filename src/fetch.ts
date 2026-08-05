@@ -3,6 +3,7 @@ import { isIP } from "node:net";
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
 import TurndownService from "turndown";
+import { XMLParser } from "fast-xml-parser";
 import { getConfig, type Config } from "./settings";
 import { FETCH_MAX_REDIRECTS } from "./config";
 
@@ -138,6 +139,104 @@ async function readCapped(res: Response, maxBytes: number): Promise<{ text: stri
   return { text: new TextDecoder("utf-8").decode(buf.subarray(0, maxBytes)), capped };
 }
 
+// ---- feeds (RSS / Atom / RDF) ------------------------------------------
+// Feeds are XML, not documents — running them through Readability produces a
+// run-together mess (CDATA leaks, no structure). Detect them and render a clean
+// item list (linked title · date · snippet) the model can actually use.
+
+const FEED_MAX_ITEMS = 40;
+
+/** True if the content looks like an RSS/Atom/RDF feed (by type or root tag). */
+function looksLikeFeed(contentType: string, text: string): boolean {
+  if (/(rss|atom)\+xml/.test(contentType)) return true;
+  return /<(rss\b|feed\b|rdf:rdf)/i.test(text.slice(0, 1000));
+}
+
+function asArray<T>(x: T | T[] | undefined | null): T[] {
+  return Array.isArray(x) ? x : x == null ? [] : [x];
+}
+/** Text of an XML node (fast-xml-parser stores mixed content under "#text"). */
+function xmlText(v: unknown): string {
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  if (typeof v === "object") {
+    const t = (v as Record<string, unknown>)["#text"];
+    return typeof t === "string" ? t : "";
+  }
+  return String(v);
+}
+function stripTags(s: string): string {
+  return s
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+    .replace(/\s+/g, " ").trim();
+}
+
+interface FeedItem { title: string; link: string; date: string; summary: string }
+function rssItem(it: Record<string, unknown>): FeedItem {
+  return {
+    title: xmlText(it.title),
+    link: xmlText(it.link),
+    date: xmlText(it.pubDate) || xmlText(it["dc:date"]),
+    summary: stripTags(xmlText(it.description) || xmlText(it["content:encoded"])),
+  };
+}
+function atomEntry(e: Record<string, unknown>): FeedItem {
+  let link = "";
+  const l = e.link as unknown;
+  if (Array.isArray(l)) {
+    const alt = (l as Array<Record<string, unknown>>).find((x) => x["@_rel"] === "alternate") ?? l[0];
+    link = String(alt?.["@_href"] ?? "");
+  } else if (l && typeof l === "object") {
+    link = String((l as Record<string, unknown>)["@_href"] ?? "");
+  } else {
+    link = xmlText(l);
+  }
+  return {
+    title: xmlText(e.title),
+    link,
+    date: xmlText(e.updated) || xmlText(e.published),
+    summary: stripTags(xmlText(e.summary) || xmlText(e.content)),
+  };
+}
+
+/** Parses an RSS/Atom/RDF feed into a markdown item list, or null if not a feed. */
+function feedToMarkdown(xml: string): { title: string; markdown: string } | null {
+  let doc: Record<string, unknown>;
+  try {
+    doc = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" }).parse(xml) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  let title = "";
+  let items: FeedItem[] = [];
+  const rss = doc.rss as { channel?: Record<string, unknown> } | undefined;
+  const feed = doc.feed as Record<string, unknown> | undefined;
+  const rdf = (doc["rdf:RDF"] ?? doc.RDF) as { channel?: Record<string, unknown>; item?: unknown } | undefined;
+  if (rss?.channel) {
+    title = xmlText(rss.channel.title);
+    items = asArray(rss.channel.item as Record<string, unknown>[]).map(rssItem);
+  } else if (feed) {
+    title = xmlText(feed.title);
+    items = asArray(feed.entry as Record<string, unknown>[]).map(atomEntry);
+  } else if (rdf) {
+    title = xmlText(rdf.channel?.title);
+    items = asArray(rdf.item as Record<string, unknown>[]).map(rssItem);
+  } else {
+    return null;
+  }
+
+  const lines = items.slice(0, FEED_MAX_ITEMS).map((it) => {
+    const head = it.link ? `[${it.title || it.link}](${it.link})` : it.title || "(untitled)";
+    const meta = it.date ? ` — ${it.date}` : "";
+    const snip = it.summary ? `\n  ${it.summary.slice(0, 240)}` : "";
+    return `- ${head}${meta}${snip}`;
+  });
+  const more = items.length > FEED_MAX_ITEMS ? `\n\n…and ${items.length - FEED_MAX_ITEMS} more items.` : "";
+  const heading = title || "Feed";
+  return { title: heading, markdown: `# ${heading}\n\n${lines.join("\n")}${more}` };
+}
+
 /** HTML → main-content markdown, with a whole-body fallback if extraction fails. */
 function htmlToMarkdown(html: string, baseUrl: string): { title: string; markdown: string } {
   const td = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced", bulletListMarker: "-" });
@@ -201,11 +300,17 @@ export class LocalFetchProvider implements FetchProvider {
 
     let title = current;
     let content: string;
-    if (contentType.includes("html") || /^\s*</.test(text)) {
+    if (looksLikeFeed(contentType, text)) {
+      const feed = feedToMarkdown(text);
+      if (feed) { title = feed.title; content = feed.markdown; }
+      else content = text.trim(); // malformed feed → hand back the raw XML
+    } else if (contentType.includes("xml")) {
+      content = text.trim(); // generic XML: raw, don't force it through the HTML pipeline
+    } else if (contentType.includes("html") || /^\s*<(!doctype|html|head|body|div|p|article|main|section)\b/i.test(text)) {
       const out = htmlToMarkdown(text, current);
       title = out.title;
       content = out.markdown;
-    } else if (contentType.includes("text/") || contentType.includes("json") || contentType.includes("xml") || contentType === "") {
+    } else if (contentType.includes("text/") || contentType.includes("json") || contentType === "") {
       content = text.trim();
     } else {
       content = `[${contentType || "binary"} content — not rendered as text]`;
