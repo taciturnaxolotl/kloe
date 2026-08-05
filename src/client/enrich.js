@@ -124,13 +124,48 @@ async function enrichMath(root) {
   var k = await katex();
   for (var i = 0; i < eqs.length; i++) {
     var el = eqs[i];
+    el.setAttribute("data-tex", "1"); // don't revisit on a later enrich pass
     var tex = el.textContent;
     if (!tex) continue;
     var display = el.tagName.toLowerCase() === "equation-block";
-    try { el.innerHTML = k.renderToString(tex, { displayMode: display, throwOnError: false }); }
-    catch (_) { /* invalid LaTeX — leave the raw source visible */ }
-    el.setAttribute("data-tex", "1"); // don't re-render on a later enrich pass
+    // An unbalanced `$` in the model's output makes smd's inline-equation
+    // tokenizer swallow everything after it — headings, tables, prose — into one
+    // element. Rendering that with KaTeX splashes a giant red error across the
+    // page; instead detect it and re-render the content as markdown.
+    if (looksSwallowed(tex, !display)) { await unswallow(el, tex); continue; }
+    // throwOnError so genuinely-invalid LaTeX throws and we show its source,
+    // rather than KaTeX painting its red \color{red} error markup inline.
+    try { el.innerHTML = k.renderToString(tex, { displayMode: display, throwOnError: true }); }
+    catch (_) { el.textContent = tex; }
   }
+}
+
+// A real equation is short and, if inline, single-line. Newlines in inline math,
+// an embedded markdown heading/table row, or absurd length all mean smd
+// mis-tokenized a stray `$` and swallowed real content.
+function looksSwallowed(tex, inline) {
+  if (inline && /\n/.test(tex)) return true;
+  if (/(^|\n)\s{0,3}#{1,6}\s/.test(tex)) return true; // markdown heading inside
+  if (/\n\s*\|.*\|/.test(tex)) return true;           // markdown table row inside
+  return tex.length > 800;
+}
+
+// Recover swallowed content: drop the stray `$` (unbalanced anyway) and re-render
+// the text as markdown in place. smd emits no raw HTML; we harden links to match
+// app.js. Lazy-imported so the parser only ships if this rare path is hit.
+async function unswallow(el, text) {
+  var smd = await import("streaming-markdown");
+  var span = document.createElement("span");
+  var p = smd.parser(smd.default_renderer(span));
+  smd.parser_write(p, text.replace(/\$/g, ""));
+  smd.parser_end(p);
+  var links = span.querySelectorAll("a[href]");
+  for (var i = 0; i < links.length; i++) {
+    if (/^\s*(javascript|vbscript|data):/i.test(links[i].getAttribute("href") || "")) links[i].setAttribute("href", "#");
+    links[i].setAttribute("target", "_blank");
+    links[i].setAttribute("rel", "noopener noreferrer nofollow");
+  }
+  el.replaceWith(span);
 }
 
 /** Enhance a finalized block: highlight code, render math. Fire-and-forget. */
