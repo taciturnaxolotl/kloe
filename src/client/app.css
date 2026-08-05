@@ -584,6 +584,7 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
 .lardbtn svg { width: 14px; height: 14px; }
 .lardbtn:hover:not(:disabled) { background: var(--bg-sunk); }
 .lardbtn:disabled { opacity: 0.5; cursor: default; }
+.lardbtn[hidden], .lardvmenu[hidden] { display: none; } /* a display rule otherwise beats [hidden] */
 .lardbtn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .lardbtn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, #000); }
 
