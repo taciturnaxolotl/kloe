@@ -38,6 +38,20 @@ a { color: var(--accent); }
 
 .app { flex: 1; display: grid; grid-template-columns: 244px 1fr; min-height: 0; }
 @media (max-width: 720px) { .app { grid-template-columns: 1fr; } }
+
+/* Cross-document view transitions. The chat, Conversations and Settings pages
+ * are separate HTML documents, so navigating between them is a full load that
+ * would white-flash and rebuild the shell. Naming the rail + main lets the
+ * browser crossfade the main pane while holding the rail steady, so a cross-page
+ * jump feels like an in-app swap. Progressive enhancement — unsupported browsers
+ * just navigate normally. Paired with speculationrules prerender (prefetch.js). */
+@view-transition { navigation: auto; }
+.rail { view-transition-name: rail; }
+.main { view-transition-name: main; }
+@media (prefers-reduced-motion: reduce) { @view-transition { navigation: none; } }
+
+/* Nav rows that became <a> (for prerender + middle-click) shouldn't look linky. */
+a.navrow, a.icon { text-decoration: none; color: inherit; }
 /* Desktop: the panel toggle collapses the sidebar to reclaim width. Use a
    single column — with the rail display:none, a `0 1fr` grid would auto-place
    `main` into the empty 0 track and squash it to nothing. */

@@ -192,10 +192,11 @@ import { CONV_ICON, MORE_ICON as MORE } from "./icons.js";
   });
 
   (async function () {
+    var sidebarLoaded = loadSidebar(); // fire in parallel with the auth check
     var me = await requireAuth();
     if (!me) return; // redirecting to login
     setPfp(me);
-    await loadSidebar();
+    await sidebarLoaded;
     loadMain("");
     search.focus();
   })();

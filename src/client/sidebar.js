@@ -8,6 +8,7 @@
  * host passes `dialogs`, right-clicking a recent opens the Rename/Delete menu.
  */
 import { openChatMenu } from "./chatmenu.js";
+import { installSpeculation } from "./prefetch.js";
 import {
   CONV_ICON, SEARCH_ICON, PANEL_ICON, NEWCHAT_ICON, CHATS_ICON, SETTINGS_ICON,
 } from "./icons.js";
@@ -16,9 +17,9 @@ var RAIL_HTML =
   '<div class="railhead">' +
     '<span class="brand">kloe</span>' +
     '<div class="railactions">' +
-      '<button class="icon" id="searchBtn" type="button" aria-label="Search conversations" title="Search conversations">' +
+      '<a class="icon" id="searchBtn" href="/conversations" aria-label="Search conversations" title="Search conversations">' +
         SEARCH_ICON +
-      '</button>' +
+      '</a>' +
       '<button class="icon railx" id="railClose" type="button" aria-label="Close sidebar" title="Close sidebar">' +
         PANEL_ICON +
       '</button>' +
@@ -29,10 +30,10 @@ var RAIL_HTML =
       NEWCHAT_ICON +
       '<span>New chat</span>' +
     '</button>' +
-    '<button class="navrow" id="chatsBtn" type="button">' +
+    '<a class="navrow" id="chatsBtn" href="/conversations">' +
       CHATS_ICON +
       '<span>Conversations</span>' +
-    '</button>' +
+    '</a>' +
   '</div>' +
   '<div class="raillabel">Recents</div>' +
   '<div class="raillist" id="railList"></div>' +
@@ -53,6 +54,17 @@ var RECENTS = 8;
  *   onOpenList()         — what search/Conversations do; defaults to navigating to /conversations
  *   active               — "conversations" marks that nav row current
  */
+// Recents survive a cross-page navigation in sessionStorage, so the rail can
+// paint them immediately on the next page instead of waiting on /api/conversations
+// (the fetch still runs and re-renders — stale-while-revalidate).
+var CACHE_KEY = "kloe:recents";
+function readRecents() {
+  try { return JSON.parse(sessionStorage.getItem(CACHE_KEY) || "null"); } catch (_) { return null; }
+}
+function writeRecents(list) {
+  try { sessionStorage.setItem(CACHE_KEY, JSON.stringify((list || []).slice(0, RECENTS))); } catch (_) {}
+}
+
 export function mountSidebar(config) {
   var $ = function (id) { return document.getElementById(id); };
   var appEl = $("app"), rail = $("rail"), scrim = $("scrim");
@@ -62,9 +74,13 @@ export function mountSidebar(config) {
   var railMql = window.matchMedia("(max-width: 720px)");
   function toggleRail() { appEl.classList.toggle(railMql.matches ? "rail-open" : "rail-collapsed"); }
   function closeRail() { appEl.classList.remove("rail-open"); }
-  function openList() { if (config.onOpenList) config.onOpenList(); else window.location.href = "/conversations"; }
+  // The nav links now carry href="/conversations", so a plain click navigates
+  // (and hover prerenders it). On the Conversations page itself, onOpenList just
+  // focuses the search box, so cancel the redundant navigation there.
+  function openList(e) { if (config.onOpenList) { if (e) e.preventDefault(); config.onOpenList(); } }
 
   function render(conversations) {
+    writeRecents(conversations);
     railList.innerHTML = "";
     var active = config.activeId ? config.activeId() : null;
     if (!conversations.length) {
@@ -107,6 +123,12 @@ export function mountSidebar(config) {
   $("chatsBtn").addEventListener("click", openList);
   $("searchBtn").addEventListener("click", openList);
   if (config.active === "conversations") $("chatsBtn").classList.add("active");
+
+  installSpeculation(); // prerender cross-page nav on hover (Chromium)
+
+  // Paint cached recents right away; the host page's fetch will refresh them.
+  var cached = readRecents();
+  if (cached && cached.length) render(cached);
 
   return { render: render, closeRail: closeRail };
 }
