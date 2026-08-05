@@ -242,7 +242,11 @@ import { mountDialogs } from "./confirm.js";
   }
 
   // ---- helpers -----------------------------------------------------------
-  function autoScroll() { if (atBottom) scroll.scrollTop = scroll.scrollHeight; }
+  // Reading scrollHeight forces a synchronous reflow, so a per-event call during
+  // a bulk history load thrashes layout. `bulkLoading` suppresses it while a
+  // conversation is applied in one pass; the caller scrolls once at the end.
+  var bulkLoading = false;
+  function autoScroll() { if (!bulkLoading && atBottom) scroll.scrollTop = scroll.scrollHeight; }
   // Compact context-window label: 1000000 -> "1M", 1048576 -> "1M", 1500000 -> "1.5M", else "Nk".
   function fmtCtx(n) {
     if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
@@ -906,7 +910,11 @@ import { mountDialogs } from "./confirm.js";
     clearThread();
     var lastId = null;
     if (Array.isArray(events) && events.length) {
+      // Apply the whole history without scrolling per event (that would reflow
+      // hundreds of times), then flush + scroll to the end once.
+      bulkLoading = true;
       for (var i = 0; i < events.length; i++) applyEvent(events[i].event, events[i].data);
+      bulkLoading = false;
       if (flushHandle) { cancelAnimationFrame(flushHandle); flushHandle = null; }
       flush(); // render buffered deltas now (completed turns already rendered on message-end)
       scroll.scrollTop = scroll.scrollHeight;
