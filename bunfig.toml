@@ -1,0 +1,4 @@
+[test]
+# Pin config to schema defaults so the suite never depends on the local
+# kloe.json (e.g. auth being enabled there must not gate the API in tests).
+preload = ["./tests/setup.ts"]
