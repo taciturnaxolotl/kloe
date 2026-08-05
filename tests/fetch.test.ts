@@ -146,6 +146,23 @@ test("a raw .md served as text/plain is prose-rendered (format:markdown, title f
   expect(r.title).toBe("Readme");
 });
 
+test("a text file with a generic content-type passes through as raw text", async () => {
+  const code = "fn main() {\n    println!(\"hi\");\n}\n";
+  const res = new Response(code, { headers: { "content-type": "application/octet-stream" } });
+  const p = new LocalFetchProvider(opts({ fetchImpl: (async () => res) as unknown as typeof fetch }));
+  const r = await p.fetch("https://example.com/main.rs");
+  expect(r.format).toBe("text");
+  expect(r.content).toBe(code.trim());
+});
+
+test("actual binary content is not dumped as text", async () => {
+  const bin = new Uint8Array([0x00, 0x01, 0x02, 0xff, 0x00, 0x99, 0xfe]); // NUL bytes → binary
+  const res = new Response(bin, { headers: { "content-type": "application/octet-stream" } });
+  const p = new LocalFetchProvider(opts({ fetchImpl: (async () => res) as unknown as typeof fetch }));
+  const r = await p.fetch("https://example.com/blob.bin");
+  expect(r.content).toContain("not rendered as text");
+});
+
 test("createFetchProvider honors the enabled flag", () => {
   expect(createFetchProvider({ enabled: false } as never)).toBeNull();
   expect(createFetchProvider({ enabled: true, maxBytes: 1, maxChars: 1, timeoutMs: 1, allowPrivate: false, userAgent: "x" }))

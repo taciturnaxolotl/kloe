@@ -142,6 +142,26 @@ export async function assertAllowedUrl(raw: string, allowPrivate: boolean, looku
   return url;
 }
 
+/**
+ * Heuristic: does this decoded body look like text (vs binary)? A null byte or a
+ * high proportion of control/replacement chars means binary. Sampled, so it's
+ * cheap even on a large file. Lets code/config files served with an odd or
+ * generic content-type (application/octet-stream, application/javascript, …) pass
+ * through as raw text instead of being dropped as "binary".
+ */
+function isProbablyText(s: string): boolean {
+  if (s.length === 0) return false;
+  const n = Math.min(s.length, 4000);
+  let bad = 0;
+  for (let i = 0; i < n; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 0) return false; // NUL → binary
+    if (c === 0xfffd) bad++; // UTF-8 replacement char (invalid bytes)
+    else if (c < 9 || (c > 13 && c < 32)) bad++; // control chars (allow \t \n \v \f \r)
+  }
+  return bad / n < 0.1;
+}
+
 /** Reads a response body as text, capped at `maxBytes`; marks if it was cut. */
 async function readCapped(res: Response, maxBytes: number): Promise<{ text: string; capped: boolean }> {
   const reader = res.body?.getReader();
@@ -349,10 +369,12 @@ export class LocalFetchProvider implements FetchProvider {
       title = out.title;
       content = out.markdown;
       format = "markdown";
-    } else if (contentType.includes("text/") || contentType.includes("json") || contentType === "") {
-      content = text.trim(); // plain text / JSON: verbatim
-      // …unless it's a markdown file served as text/plain (e.g. a raw README on
-      // GitHub) — then prose-render it.
+    } else if (contentType.includes("text/") || contentType.includes("json") || contentType === "" || isProbablyText(text)) {
+      // Text by content-type OR by sniffing (code/config files with a generic or
+      // odd type): pass it through verbatim. Size is already bounded by the byte
+      // and char caps. A markdown file served as text (e.g. a raw README) is
+      // prose-rendered with its H1 as the title.
+      content = text.trim();
       if (/\.(md|markdown)$/i.test(new URL(current).pathname)) {
         format = "markdown";
         title = content.match(/^#\s+(.+)$/m)?.[1]?.trim() || current;
