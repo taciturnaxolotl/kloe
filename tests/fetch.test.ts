@@ -71,6 +71,15 @@ test("LocalFetchProvider rejects a redirect into a private address (SSRF)", asyn
   await expect(p.fetch("https://example.com/a")).rejects.toThrow(/private|reserved/);
 });
 
+test("markdown served directly is used verbatim (content negotiation), title from H1", async () => {
+  const md = "# Real Title\n\nSome **markdown** body with a [link](https://x.com).";
+  const res = new Response(md, { headers: { "content-type": "text/markdown; charset=utf-8" } });
+  const p = new LocalFetchProvider(opts({ fetchImpl: (async () => res) as unknown as typeof fetch }));
+  const r = await p.fetch("https://docs.example.com/page");
+  expect(r.title).toBe("Real Title");
+  expect(r.content).toBe(md); // verbatim — no HTML round-trip
+});
+
 test("an RSS feed renders as a clean markdown item list, not HTML mush", async () => {
   const xml =
     '<?xml version="1.0"?><rss version="2.0"><channel><title>My Feed</title>' +

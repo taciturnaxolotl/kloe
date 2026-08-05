@@ -281,7 +281,13 @@ export class LocalFetchProvider implements FetchProvider {
         method: "GET",
         redirect: "manual",
         signal: AbortSignal.timeout(this.opts.timeoutMs),
-        headers: { "User-Agent": this.opts.userAgent, Accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8" },
+        // Prefer markdown via content negotiation — a server that can serve it
+        // (many docs sites now do) saves us the lossy HTML→markdown conversion;
+        // one that can't just ignores Accept and returns HTML as before.
+        headers: {
+          "User-Agent": this.opts.userAgent,
+          Accept: "text/markdown,text/x-markdown;q=0.9,text/html;q=0.8,application/xhtml+xml;q=0.8,text/plain;q=0.6,*/*;q=0.5",
+        },
       });
       if (res.status >= 300 && res.status < 400) {
         const loc = res.headers.get("location");
@@ -300,7 +306,12 @@ export class LocalFetchProvider implements FetchProvider {
 
     let title = current;
     let content: string;
-    if (looksLikeFeed(contentType, text)) {
+    if (contentType.includes("markdown")) {
+      // The server negotiated markdown directly — use it verbatim (no lossy
+      // HTML round-trip), and lift the first H1 as the title.
+      content = text.trim();
+      title = content.match(/^#\s+(.+)$/m)?.[1]?.trim() || current;
+    } else if (looksLikeFeed(contentType, text)) {
       const feed = feedToMarkdown(text);
       if (feed) { title = feed.title; content = feed.markdown; }
       else content = text.trim(); // malformed feed → hand back the raw XML
