@@ -412,6 +412,7 @@ export class Store {
 
     this.listConversationsStmt = this.db.prepare(
       `SELECT c.id AS id, c.created_at AS created_at, c.last_seq AS last_seq, c.custom_title AS custom_title,
+              c.owner_sub AS owner_sub,
               (SELECT e.data FROM events e
                WHERE e.conversation_id = c.id AND e.event = 'user-message'
                ORDER BY e.seq ASC LIMIT 1) AS first_user,
@@ -426,6 +427,7 @@ export class Store {
     // excerpt of WHY it matched (title matches surface the first message).
     this.searchConversationsStmt = this.db.prepare(
       `SELECT c.id AS id, c.created_at AS created_at, c.last_seq AS last_seq, c.custom_title AS custom_title,
+              c.owner_sub AS owner_sub,
               (SELECT e.data FROM events e
                WHERE e.conversation_id = c.id AND e.event = 'user-message'
                ORDER BY e.seq ASC LIMIT 1) AS first_user,
@@ -515,8 +517,9 @@ export class Store {
    * derived from its first user message. Used by the chat rail. The title
    * subquery pulls the earliest `user-message` event's content per conversation.
    */
-  listConversations(): ConversationSummary[] {
-    return (this.listConversationsStmt.all() as ConversationRow[]).map(rowToSummary);
+  listConversations(owner?: string): ConversationSummary[] {
+    const rows = this.listConversationsStmt.all() as Array<ConversationRow & { owner_sub: string | null }>;
+    return rows.filter((r) => !owner || r.owner_sub === owner).map(rowToSummary);
   }
 
   /**
@@ -525,15 +528,14 @@ export class Store {
    * around the match. Wildcards in the query are escaped so it matches
    * literally. Capped at 100 hits.
    */
-  searchConversations(query: string): ConversationSearchResult[] {
+  searchConversations(query: string, owner?: string): ConversationSearchResult[] {
     const like = `%${escapeLike(query)}%`;
     const rows = this.searchConversationsStmt.all(like, like, like, like, like) as Array<
-      ConversationRow & { match_text: string | null }
+      ConversationRow & { match_text: string | null; owner_sub: string | null }
     >;
-    return rows.map((r) => ({
-      ...rowToSummary(r),
-      snippet: r.match_text ? snippetAround(r.match_text, query) : null,
-    }));
+    return rows
+      .filter((r) => !owner || r.owner_sub === owner)
+      .map((r) => ({ ...rowToSummary(r), snippet: r.match_text ? snippetAround(r.match_text, query) : null }));
   }
 
   /** Sets a conversation's custom title (empty/whitespace clears it back to the derived one). */

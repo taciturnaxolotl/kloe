@@ -9,7 +9,7 @@ import { withBody } from "./validate";
 import { PromptBody, SteerBody, ModelPatchBody, RenameBody } from "./schemas";
 import { ACTOR_IDLE_TTL_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
 import { getConfig } from "./settings";
-import { gateApi, getSession, sessionUser } from "./auth";
+import { gateApi, getSession, sessionUser, authEnabled } from "./auth";
 import { lardEnabled, lardConnected, lardDisconnect, LOCAL_SUB, memoryList, memoryRead, memoryWrite } from "./lard";
 import type { BlobStore } from "./blobs";
 
@@ -412,6 +412,23 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
   // for the next poll tick (that poll delay is up to ~1s of pure queue-wait on
   // every message). No-op in tests, which drive jobs manually.
   const kick = deps.kick ?? (() => {});
+
+  // Authorization for a specific conversation. gateApi only proves you're signed
+  // in; this proves the conversation is YOURS. When auth is on you may only touch
+  // conversations you own — an unowned (legacy/new) row is claimed by the first
+  // authenticated user to reach it, and someone else's conversation 404s (not
+  // 403, so we don't confirm it exists). Returns a Response to short-circuit, or
+  // null to proceed.
+  const guardConv = (req: Request, id: string): Response | null => {
+    if (!authEnabled()) return null;
+    const sub = getSession(req, store)?.sub;
+    if (!sub) return Response.json({ error: "unauthorized" }, { status: 401 });
+    const owner = store.getConversationOwner(id);
+    if (owner === undefined) { store.setConversationOwner(id, sub); return null; }
+    if (owner !== sub) return Response.json({ error: "not found" }, { status: 404 });
+    return null;
+  };
+
   const routes = {
     "/health": { GET: () => Response.json({ ok: true }) },
 
@@ -487,7 +504,10 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       // `?q=` searches titles + message contents; no query lists all, newest first.
       GET: (req: Bun.BunRequest<"/api/conversations">) => {
         const q = new URL(req.url).searchParams.get("q")?.trim();
-        const conversations = q ? store.searchConversations(q) : store.listConversations();
+        // Only list the caller's own conversations (undefined owner → no filter
+        // when auth is off).
+        const owner = authEnabled() ? getSession(req, store)?.sub : undefined;
+        const conversations = q ? store.searchConversations(q, owner) : store.listConversations(owner);
         return Response.json({ conversations });
       },
     },
@@ -505,10 +525,12 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
 
     "/api/conversations/:id/stream": {
       GET: (req: Bun.BunRequest<"/api/conversations/:id/stream">) =>
-        openStream(req.params.id, req, store),
+        guardConv(req, req.params.id) ?? openStream(req.params.id, req, store),
     },
     "/api/conversations/:id/prompt": {
       POST: withBody(PromptBody, (data, req: Bun.BunRequest<"/api/conversations/:id/prompt">) => {
+        const denied = guardConv(req, req.params.id);
+        if (denied) return denied;
         const res = startRun(req.params.id, data, store, getSession(req, store)?.sub);
         kick();
         return res;
@@ -516,23 +538,29 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     },
     "/api/conversations/:id/cancel": {
       POST: (req: Bun.BunRequest<"/api/conversations/:id/cancel">) => {
+        const denied = guardConv(req, req.params.id);
+        if (denied) return denied;
         getActor(req.params.id, store).requestCancel();
         return Response.json({ ok: true });
       },
     },
     "/api/conversations/:id/steer": {
       POST: withBody(SteerBody, (data, req: Bun.BunRequest<"/api/conversations/:id/steer">) => {
+        const denied = guardConv(req, req.params.id);
+        if (denied) return denied;
         const res = startSteer(req.params.id, data, store);
         kick();
         return res;
       }),
       GET: (req: Bun.BunRequest<"/api/conversations/:id/steer">) =>
-        Response.json({ queued: store.pendingQueue(req.params.id) }),
+        guardConv(req, req.params.id) ?? Response.json({ queued: store.pendingQueue(req.params.id) }),
     },
     // Remove a still-pending steer from the queue (before it's promoted).
     "/api/conversations/:id/steer/:runId": {
       DELETE: (req: Bun.BunRequest<"/api/conversations/:id/steer/:runId">) => {
         const { id, runId } = req.params;
+        const denied = guardConv(req, id);
+        if (denied) return denied;
         // Only tombstone something actually queued, so a bad runId can't spam
         // the log; already-promoted or already-cancelled steers 404.
         if (!store.pendingQueue(id).some((m) => m.runId === runId)) {
@@ -549,6 +577,8 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       // last few turns (`?tailTurns=N`) to fill the viewport instantly, then
       // backfills everything older (`?before=<seq>`) above. No params → full log.
       GET: (req: Bun.BunRequest<"/api/conversations/:id/events">) => {
+        const denied = guardConv(req, req.params.id);
+        if (denied) return denied;
         const url = new URL(req.url);
         const all = getActor(req.params.id, store).replay(0);
         const seqOf = (e: { id: string }) => { try { return parseEventId(e.id).seq; } catch { return 0; } };
@@ -572,6 +602,8 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     },
     "/api/conversations/:id": {
       DELETE: async (req: Bun.BunRequest<"/api/conversations/:id">) => {
+        const denied = guardConv(req, req.params.id);
+        if (denied) return denied;
         const orphaned = store.deleteConversation(req.params.id);
         actors.delete(req.params.id); // drop the in-memory actor so it can't resurrect the log
         // Free blobs this conversation was the last to reference: bytes first,
@@ -583,6 +615,8 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         return Response.json({ ok: true });
       },
       PATCH: withBody(RenameBody, (data, req: Bun.BunRequest<"/api/conversations/:id">) => {
+        const denied = guardConv(req, req.params.id);
+        if (denied) return denied;
         store.renameConversation(req.params.id, data.title);
         return Response.json({ ok: true });
       }),
