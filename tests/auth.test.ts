@@ -74,7 +74,7 @@ test("clientMetadata is a valid public CIMD derived from baseUrl", async () => {
   enableAuth({ baseUrl: "https://kloe.test", appName: "Kloe" });
   const meta = (await clientMetadata().json()) as Record<string, unknown>;
   expect(meta.client_id).toBe("https://kloe.test/client-metadata.json");
-  expect(meta.redirect_uris).toEqual(["https://kloe.test/auth/callback"]);
+  expect(meta.redirect_uris).toEqual(["https://kloe.test/auth/callback", "https://kloe.test/lard/callback"]);
   expect(meta.token_endpoint_auth_method).toBe("none"); // public client, no secret
 });
 
