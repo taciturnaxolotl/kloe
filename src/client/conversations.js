@@ -30,6 +30,16 @@ import { CONV_ICON, MORE_ICON as MORE } from "./icons.js";
   var selectMode = false;
   var searchTimer = null, searchSeq = 0;
 
+  // The full list survives a navigation in sessionStorage so the main rows (and
+  // recents) paint instantly on the next visit; the fetch below revalidates.
+  var LIST_CACHE = "kloe:conversations";
+  function readListCache() {
+    try { return JSON.parse(sessionStorage.getItem(LIST_CACHE) || "null"); } catch (_) { return null; }
+  }
+  function writeListCache(list) {
+    try { sessionStorage.setItem(LIST_CACHE, JSON.stringify(list || [])); } catch (_) {}
+  }
+
   // "Today" / "Yesterday" / "Jun 6" / "Jun 6, 2024" — a compact last-active date.
   function fmtDate(ms) {
     var d = new Date(ms), now = new Date();
@@ -158,6 +168,7 @@ import { CONV_ICON, MORE_ICON as MORE } from "./icons.js";
     try {
       var r = await fetch("/api/conversations");
       conversations = ((await r.json()).conversations) || [];
+      writeListCache(conversations);
     } catch (_) { conversations = []; }
     sidebar.render(conversations);
   }
@@ -193,6 +204,10 @@ import { CONV_ICON, MORE_ICON as MORE } from "./icons.js";
 
   (async function () {
     var sidebarLoaded = loadSidebar(); // fire in parallel with the auth check
+    // Paint cached rows immediately so the list isn't blank while the fetch and
+    // auth check round-trip; the refresh below overwrites once loadSidebar lands.
+    var cached = readListCache();
+    if (cached && cached.length) { conversations = cached; loadMain(""); }
     var me = await requireAuth();
     if (!me) return; // redirecting to login
     setPfp(me);
