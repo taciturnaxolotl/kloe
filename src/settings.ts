@@ -93,6 +93,27 @@ const FetchSchema = v.object({
   userAgent: v.optional(v.string(), "Mozilla/5.0 (compatible; kloe/1.0; +https://kloe.dunkirk.sh)"),
 });
 
+/**
+ * The sandbox executor that backs side-effecting tools (`run_shell`). Disabled
+ * by default. `docker` runs each command in a throwaway container on this host
+ * (dev). `spindle` (not yet implemented) will stream to a broker on the spindle
+ * box over the tailnet, which runs it in a microVM — the vsock/VM stay remote.
+ */
+const SandboxSchema = v.object({
+  enabled: v.optional(v.boolean(), false),
+  backend: v.optional(v.picklist(["docker", "spindle"]), "docker"),
+  /** docker: the image each command runs in. */
+  image: v.optional(v.string(), "alpine:3.20"),
+  /** Per-command wall-clock cap. */
+  timeoutMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 30_000),
+  /** docker: give the container network access (off = `--network none`). */
+  network: v.optional(v.boolean(), false),
+  /** spindle: the broker's base URL on the tailnet, e.g. http://terebithia:6161. */
+  brokerUrl: v.optional(v.string()),
+  /** spindle: bearer token for the broker's authed exec endpoint. */
+  brokerToken: v.optional(v.string()),
+});
+
 /** Web-search backing for the `web_search` tool. Disabled by default. */
 const SearchSchema = v.object({
   provider: v.optional(v.picklist(["none", "ceramic"]), "none"),
@@ -188,6 +209,7 @@ export const ConfigSchema = v.object({
   catwalk: section(CatwalkSchema),
   search: section(SearchSchema),
   fetch: section(FetchSchema),
+  sandbox: section(SandboxSchema),
   auth: section(AuthSchema),
   lard: section(LardSchema),
   prompt: section(PromptSchema),

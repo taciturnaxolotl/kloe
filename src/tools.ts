@@ -1,6 +1,7 @@
 import { tool, jsonSchema, type Tool, type ToolSet } from "ai";
 import { createSearchProvider, type SearchProvider } from "./search";
 import { createFetchProvider, type FetchProvider } from "./fetch";
+import { createExecutor, formatExecResult, type Executor } from "./executor";
 import {
   lardEnabled, lardConnected, contextToText,
   getContext, memoryList, memoryRead, memoryWrite, memoryAppend,
@@ -62,15 +63,39 @@ function fetchUrl(provider: FetchProvider) {
   });
 }
 
+// A shell command in the sandbox executor (docker locally, a spindle microVM on
+// the homelab later). Offered only when a sandbox is configured. Marked
+// `sandbox` so the (future) durable loop routes it to the executor rather than
+// running it in-process; today its `execute` calls the executor directly.
+function runShell(executor: Executor) {
+  return tool({
+    description:
+      "Run a shell command in an isolated, disposable sandbox (no network by default, " +
+      "ephemeral /workspace). Returns the exit code, stdout, and stderr. Use it to " +
+      "compute, manipulate files, and run code. It is NOT the user's machine — nothing " +
+      "persists between calls, and it can't reach their real filesystem or services.",
+    inputSchema: jsonSchema<{ command: string }>({
+      type: "object",
+      properties: { command: { type: "string", description: "The shell command line to run (via sh -c)." } },
+      required: ["command"],
+      additionalProperties: false,
+    }),
+    execute: async ({ command }, { abortSignal }) => formatExecResult(await executor.run({ command }, abortSignal)),
+  });
+}
+
 /**
  * The tool table: each entry's `create` returns its AI SDK tool, or null when
- * its backing capability isn't configured (so it's simply not offered). Add a
- * tool by adding one entry here (and, for a nicer UI, one entry in the client's
- * TOOL_UI registry — unknown tools still render with a sensible default).
+ * its backing capability isn't configured (so it's simply not offered), and an
+ * `executor` tag — `in-proc` runs in this process (pure/read-only), `sandbox`
+ * hands off to the executor. Add a tool by adding one entry here (and, for a
+ * nicer UI, one entry in the client's TOOL_UI registry — unknown tools still
+ * render with a sensible default).
  */
-const REGISTRY: Array<{ name: string; create: () => Tool | null }> = [
-  { name: "fetch_url", create: () => { const p = createFetchProvider(); return p ? fetchUrl(p) : null; } },
-  { name: "web_search", create: () => { const p = createSearchProvider(); return p ? webSearch(p) : null; } },
+const REGISTRY: Array<{ name: string; executor: "in-proc" | "sandbox"; create: () => Tool | null }> = [
+  { name: "fetch_url", executor: "in-proc", create: () => { const p = createFetchProvider(); return p ? fetchUrl(p) : null; } },
+  { name: "web_search", executor: "in-proc", create: () => { const p = createSearchProvider(); return p ? webSearch(p) : null; } },
+  { name: "run_shell", executor: "sandbox", create: () => { const e = createExecutor(); return e ? runShell(e) : null; } },
 ];
 
 // lard memory tools, bound to ONE kloe user's token (store + sub). Only offered
