@@ -103,14 +103,16 @@ if (import.meta.main) {
   }
   const assetRoutes = {
     "/assets/:file": (req: Bun.BunRequest<"/assets/:file">) => {
-      const a = enrichAssets.get(req.params.file);
+      const file = req.params.file;
+      const a = enrichAssets.get(file);
       if (!a) return new Response("not found", { status: 404 });
-      return new Response(a, {
-        headers: {
-          "Content-Type": a.type || "text/javascript",
-          "Cache-Control": "public, max-age=31536000, immutable",
-        },
-      });
+      // Chunks are content-hashed → immutable. The entry (enrich.js) has a fixed
+      // name but changes on rebuild, so it must revalidate or an old bundle
+      // sticks in the browser forever.
+      const cache = /^chunk-/.test(file)
+        ? "public, max-age=31536000, immutable"
+        : "no-cache";
+      return new Response(a, { headers: { "Content-Type": a.type || "text/javascript", "Cache-Control": cache } });
     },
   };
 
