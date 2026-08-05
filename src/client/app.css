@@ -577,37 +577,85 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
 .settab.active { color: var(--ink); border-bottom-color: var(--accent); }
 
 /* Settings → Memory (lard). */
-.lardstatus { display: flex; align-items: center; gap: 10px; }
-.larddot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-.larddot.on { background: var(--ok); }
-.larddot.off { background: var(--ink-faint); }
-.lardlabel { font-size: 14px; color: var(--ink-muted); }
-.lardbtn { margin-left: auto; padding: 6px 14px; border-radius: var(--radius-md);
+.lardhint { color: var(--ink-faint); font-size: 13px; margin: 0; }
+.lardbtn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 13px; border-radius: var(--radius-md);
   border: 1px solid var(--rule-strong); background: var(--bg-raise); color: var(--ink);
-  font-size: 13px; font-weight: 500; text-decoration: none; cursor: pointer; }
+  font-size: 13px; font-weight: 500; text-decoration: none; cursor: pointer; white-space: nowrap; }
+.lardbtn svg { width: 14px; height: 14px; }
 .lardbtn:hover:not(:disabled) { background: var(--bg-sunk); }
 .lardbtn:disabled { opacity: 0.5; cursor: default; }
+.lardbtn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.lardbtn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, #000); }
 
-/* Memory inspector: subject list + viewer/editor. */
-.lardinspect { display: grid; grid-template-columns: 220px 1fr; gap: 16px; margin-top: 20px;
-  border-top: 1px solid var(--rule); padding-top: 20px; min-height: 340px; }
-@media (max-width: 640px) { .lardinspect { grid-template-columns: 1fr; } }
-.lardlist { display: flex; flex-direction: column; gap: 2px; max-height: 60vh; overflow-y: auto; }
-.lardkind { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
-  color: var(--ink-faint); margin: 12px 6px 4px; }
-.lardkind:first-child { margin-top: 0; }
-.lardsubject { display: flex; flex-direction: column; gap: 1px; text-align: left; appearance: none;
-  background: none; border: 0; border-radius: var(--radius-sm); padding: 6px 9px; cursor: pointer; color: var(--ink); }
+/* Connection card: an icon medallion, a two-line status, and the action. */
+.lardconn { display: flex; align-items: center; gap: 14px; padding: 16px;
+  border: 1px solid var(--rule); border-radius: var(--radius-lg); background: var(--bg-raise); }
+.lardconn-icon { flex: none; width: 42px; height: 42px; border-radius: var(--radius-md);
+  display: grid; place-items: center; }
+.lardconn-icon svg { width: 22px; height: 22px; }
+.lardconn-icon.on { background: color-mix(in srgb, var(--accent) 15%, var(--bg-raise)); color: var(--accent); }
+.lardconn-icon.off { background: var(--bg-sunk); color: var(--ink-faint); }
+.lardconn-text { flex: 1; min-width: 0; }
+.lardconn-title { font-size: 14.5px; font-weight: 600; }
+.lardconn-sub { font-size: 12.5px; color: var(--ink-muted); margin-top: 2px; }
+.lardconn .lardbtn { flex: none; }
+
+/* Inspector: a subject browser rail + a viewer/editor. */
+.lardinspect { display: grid; grid-template-columns: 244px 1fr; gap: 18px; margin-top: 18px;
+  align-items: start; }
+@media (max-width: 680px) { .lardinspect { grid-template-columns: 1fr; } }
+
+.lardbrowser { display: flex; flex-direction: column; gap: 10px; }
+.lardsearch { width: 100%; padding: 7px 11px; border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-md); background: var(--bg-sunk); color: var(--ink); font: inherit; font-size: 13px; }
+.lardsearch:focus { outline: none; border-color: var(--accent); }
+.lardlist { display: flex; flex-direction: column; gap: 1px; max-height: 62vh; overflow-y: auto; padding-right: 2px; }
+.lardgrouphead { display: flex; align-items: center; gap: 7px; margin: 14px 4px 5px; }
+.lardgrouphead:first-child { margin-top: 2px; }
+.lardgroupicon { display: inline-flex; color: var(--ink-faint); }
+.lardgroupicon svg { width: 14px; height: 14px; }
+.lardgrouplabel { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-faint); }
+.lardcount { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--ink-faint);
+  background: var(--bg-sunk); border-radius: var(--radius-pill); padding: 1px 8px; }
+.lardsubject { position: relative; display: flex; flex-direction: column; gap: 1px; text-align: left; appearance: none;
+  background: none; border: 0; border-radius: var(--radius-sm); padding: 7px 10px; cursor: pointer; color: var(--ink); }
 .lardsubject:hover { background: var(--bg-sunk); }
 .lardsubject.active { background: color-mix(in srgb, var(--accent) 12%, var(--bg-raise)); }
+.lardsubject.active::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2.5px;
+  border-radius: var(--radius-pill); background: var(--accent); }
 .lardsubject .ln { font-size: 13.5px; font-weight: 500; }
 .lardsubject .ld { font-size: 12px; color: var(--ink-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lardpanel { display: flex; flex-direction: column; min-width: 0; }
-.lardhint { color: var(--ink-faint); font-size: 13px; margin: 0; }
-.lardvhead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-.lardvpath { font-family: var(--mono); font-size: 12.5px; color: var(--ink-muted); }
-.lardedit { flex: 1; min-height: 300px; resize: vertical; width: 100%; font-family: var(--mono);
-  font-size: 13px; line-height: 1.5; color: var(--ink); background: var(--bg-sunk);
+
+/* Viewer: card with a title row (name + kind badge + action), path, body. */
+.lardviewer { border: 1px solid var(--rule); border-radius: var(--radius-lg); background: var(--bg-raise);
+  padding: 18px 20px; min-height: 320px; min-width: 0; }
+.lardviewer > .lardhint { display: grid; place-items: center; min-height: 280px; text-align: center; }
+.lardvhead { display: flex; align-items: flex-start; gap: 12px; }
+.lardvtitle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.lardvname { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+.lardvbadge { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, var(--bg-raise));
+  border-radius: var(--radius-pill); padding: 2px 9px; }
+.lardvactions { flex: none; }
+.lardvpath { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); margin-top: 3px; }
+.lardprose { margin-top: 16px; border-top: 1px solid var(--rule); padding-top: 16px; font-size: 14px; line-height: 1.6; }
+.lardprose.editing { border-top: 0; padding-top: 12px; }
+.lardprose > :first-child { margin-top: 0; }
+.lardprose > :last-child { margin-bottom: 0; }
+.lardprose p { margin: 0 0 11px; }
+.lardprose h1, .lardprose h2, .lardprose h3 { margin: 16px 0 8px; line-height: 1.3; }
+.lardprose h1 { font-size: 1.25em; } .lardprose h2 { font-size: 1.14em; } .lardprose h3 { font-size: 1.03em; }
+.lardprose ul, .lardprose ol { margin: 0 0 11px; padding-left: 1.35em; }
+.lardprose li { margin: 3px 0; }
+.lardprose a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.lardprose blockquote { margin: 0 0 11px; padding-left: 12px; border-left: 3px solid var(--rule-strong); color: var(--ink-muted); }
+.lardprose code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-sunk);
+  border: 1px solid var(--rule); border-radius: var(--radius-xs); padding: 1px 5px; }
+.lardprose pre { font-family: var(--mono); font-size: 12.5px; line-height: 1.55; background: var(--bg-sunk);
+  border: 1px solid var(--rule); border-radius: var(--radius-md); padding: 12px; overflow-x: auto; margin: 0 0 11px; }
+.lardprose pre code { background: none; border: 0; padding: 0; }
+.lardedit { min-height: 320px; resize: vertical; width: 100%; font-family: var(--mono);
+  font-size: 13px; line-height: 1.55; color: var(--ink); background: var(--bg-sunk);
   border: 1px solid var(--rule); border-radius: var(--radius-md); padding: 12px; }
 .lardedit:focus { outline: none; border-color: var(--accent); }
 

@@ -69,11 +69,13 @@
           </section>
 
           <section class="settabpanel" data-panel="memory" hidden>
-            <p class="lede">Connect your <strong>lard</strong> memory so chats can read and update your durable context. Each user links their own account.</p>
-            <div id="lardStatus" class="lardstatus"></div>
+            <div id="lardStatus" class="lardconn"></div>
             <div id="lardInspector" class="lardinspect" hidden>
-              <div class="lardlist" id="lardSubjects"></div>
-              <div class="lardpanel" id="lardViewer"><p class="lardhint">Select a subject to view or edit it.</p></div>
+              <aside class="lardbrowser">
+                <input id="lardSearch" class="lardsearch" type="search" placeholder="Search subjects" autocomplete="off">
+                <div class="lardlist" id="lardSubjects"></div>
+              </aside>
+              <div class="lardviewer" id="lardViewer"></div>
             </div>
           </section>
         </div>

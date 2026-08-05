@@ -8,8 +8,9 @@
  */
 import { mountSidebar } from "./sidebar.js";
 import { mountDialogs } from "./confirm.js";
-import { GRIP_ICON as GRIP } from "./icons.js";
+import { GRIP_ICON as GRIP, BRAIN_ICON, USER_ICON, USERS_ICON, HASH_ICON, FOLDER_ICON, PENCIL_ICON } from "./icons.js";
 import { requireAuth, setPfp } from "./authguard.js";
+import * as smd from "streaming-markdown";
 
 (function () {
   "use strict";
@@ -308,28 +309,49 @@ import { requireAuth, setPfp } from "./authguard.js";
     document.querySelectorAll(".settab").forEach(function (t) {
       t.addEventListener("click", function () { selectTab(t.dataset.tab); });
     });
+    var search = document.getElementById("lardSearch");
+    if (search) search.addEventListener("input", function () { renderSubjectList(search.value); });
   }
 
   // ---- lard (memory) ----
-  var KIND_LABEL = { profile: "Profile", area: "Areas", topic: "Topics", person: "People" };
+  // Per-kind presentation: a plural group label and an icon. Order sets the
+  // order groups appear in the browser.
+  var KINDS = [
+    { kind: "profile", label: "Profile", icon: USER_ICON },
+    { kind: "area", label: "Areas", icon: FOLDER_ICON },
+    { kind: "topic", label: "Topics", icon: HASH_ICON },
+    { kind: "person", label: "People", icon: USERS_ICON },
+  ];
+  var KIND_LABEL = {}; var KIND_ICON = {};
+  KINDS.forEach(function (k) { KIND_LABEL[k.kind] = k.label; KIND_ICON[k.kind] = k.icon; });
+  var KIND_SINGULAR = { profile: "Profile", area: "Area", topic: "Topic", person: "Person" };
+
+  var lardSubjects = []; // full listing, for search filtering
+
   function renderLard(el, connected) {
     el.innerHTML = "";
-    var dot = document.createElement("span");
-    dot.className = "larddot " + (connected ? "on" : "off");
-    var label = document.createElement("span");
-    label.className = "lardlabel"; label.textContent = connected ? "Connected" : "Not connected";
+    var ic = document.createElement("div");
+    ic.className = "lardconn-icon " + (connected ? "on" : "off"); ic.innerHTML = BRAIN_ICON;
+    var text = document.createElement("div"); text.className = "lardconn-text";
+    var title = document.createElement("div"); title.className = "lardconn-title";
+    title.textContent = connected ? "Memory connected" : "Memory not connected";
+    var sub = document.createElement("div"); sub.className = "lardconn-sub";
+    sub.textContent = connected
+      ? "Your chats can read and record durable context in lard."
+      : "Connect lard so chats can read and update your durable context.";
+    text.appendChild(title); text.appendChild(sub);
     var btn = document.createElement(connected ? "button" : "a");
-    btn.className = "lardbtn";
+    btn.className = "lardbtn " + (connected ? "" : "primary");
     if (connected) {
       btn.type = "button"; btn.textContent = "Disconnect";
       btn.onclick = async function () {
-        btn.disabled = true;
+        btn.disabled = true; btn.textContent = "Disconnecting…";
         await fetch("/api/lard", { method: "DELETE" }).catch(function () {});
         document.getElementById("lardInspector").hidden = true;
         renderLard(el, false);
       };
     } else { btn.href = "/lard/connect"; btn.textContent = "Connect"; }
-    el.appendChild(dot); el.appendChild(label); el.appendChild(btn);
+    el.appendChild(ic); el.appendChild(text); el.appendChild(btn);
   }
   async function loadLard() {
     var tabBtn = document.querySelector('.settab[data-tab="memory"]');
@@ -340,58 +362,120 @@ import { requireAuth, setPfp } from "./authguard.js";
     if (!enabled) { if (currentTab() === "memory") selectTab("models"); return; }
     renderLard(document.getElementById("lardStatus"), connected);
     inspector.hidden = !connected;
-    if (connected) loadSubjects();
+    if (connected) {
+      document.getElementById("lardViewer").innerHTML = '<p class="lardhint">Select a subject to read or edit it.</p>';
+      loadSubjects();
+    }
     // After a connect round-trip, clear the flag and land on the Memory tab.
     if (location.search.indexOf("lard=") >= 0) { history.replaceState({}, "", location.pathname); selectTab("memory"); }
   }
   async function loadSubjects() {
     var list = document.getElementById("lardSubjects");
     list.innerHTML = '<p class="lardhint">Loading…</p>';
-    var items;
-    try { items = (await (await fetch("/api/lard/memory")).json()).listing || []; }
+    try { lardSubjects = (await (await fetch("/api/lard/memory")).json()).listing || []; }
     catch (_) { list.innerHTML = '<p class="lardhint">Failed to load memory.</p>'; return; }
-    if (!items.length) { list.innerHTML = '<p class="lardhint">No subjects yet.</p>'; return; }
+    renderSubjectList("");
+  }
+
+  var activeSubjectPath = null;
+  function renderSubjectList(query) {
+    var list = document.getElementById("lardSubjects");
+    var q = (query || "").trim().toLowerCase();
+    var items = !q ? lardSubjects : lardSubjects.filter(function (s) {
+      return ((s.name || "") + " " + (s.description || "") + " " + s.path).toLowerCase().indexOf(q) !== -1;
+    });
+    if (!lardSubjects.length) { list.innerHTML = '<p class="lardhint">No subjects yet. Your chats will record them here.</p>'; return; }
+    if (!items.length) { list.innerHTML = '<p class="lardhint">No subjects match “' + query + '”.</p>'; return; }
+    // Group by kind, in KINDS order, then any unknown kinds after.
     var groups = {};
     items.forEach(function (s) { (groups[s.kind] = groups[s.kind] || []).push(s); });
+    var order = KINDS.map(function (k) { return k.kind; })
+      .concat(Object.keys(groups).filter(function (k) { return !KIND_LABEL[k]; }));
     list.innerHTML = "";
-    Object.keys(groups).forEach(function (kind) {
-      var h = document.createElement("div"); h.className = "lardkind"; h.textContent = KIND_LABEL[kind] || kind;
+    order.forEach(function (kind) {
+      var subs = groups[kind]; if (!subs || !subs.length) return;
+      var h = document.createElement("div"); h.className = "lardgrouphead";
+      var gi = document.createElement("span"); gi.className = "lardgroupicon"; gi.innerHTML = KIND_ICON[kind] || HASH_ICON;
+      var gl = document.createElement("span"); gl.className = "lardgrouplabel"; gl.textContent = KIND_LABEL[kind] || kind;
+      var gc = document.createElement("span"); gc.className = "lardcount"; gc.textContent = subs.length;
+      h.appendChild(gi); h.appendChild(gl); h.appendChild(gc);
       list.appendChild(h);
-      groups[kind].forEach(function (s) {
+      subs.forEach(function (s) {
         var b = document.createElement("button");
-        b.className = "lardsubject"; b.type = "button";
+        b.className = "lardsubject" + (s.path === activeSubjectPath ? " active" : ""); b.type = "button";
         var n = document.createElement("span"); n.className = "ln"; n.textContent = s.name || s.path;
         b.appendChild(n);
         if (s.description) { var d = document.createElement("span"); d.className = "ld"; d.textContent = s.description; b.appendChild(d); }
         b.onclick = function () {
+          activeSubjectPath = s.path;
           list.querySelectorAll(".lardsubject").forEach(function (x) { x.classList.remove("active"); });
-          b.classList.add("active"); openSubject(s.path);
+          b.classList.add("active"); openSubject(s);
         };
         list.appendChild(b);
       });
     });
   }
-  async function openSubject(path) {
+
+  // Render a full markdown string into `el` via streaming-markdown (fed in one
+  // shot). smd emits no raw HTML, so this is safe for stored memory content.
+  function renderMarkdown(el, text) {
+    el.innerHTML = "";
+    var parser = smd.parser(smd.default_renderer(el));
+    smd.parser_write(parser, text);
+    smd.parser_end(parser);
+  }
+
+  async function openSubject(s) {
     var v = document.getElementById("lardViewer");
     v.innerHTML = '<p class="lardhint">Loading…</p>';
-    var body;
+    var path = s.path, body;
     try { body = (await (await fetch("/api/lard/subject?path=" + encodeURIComponent(path))).json()).body || ""; }
     catch (_) { v.innerHTML = '<p class="lardhint">Failed to load subject.</p>'; return; }
+    if (activeSubjectPath !== path) return; // a newer selection won the race
+
     v.innerHTML = "";
+    // Header: display name, kind badge, mono path, and the read/edit action.
     var head = document.createElement("div"); head.className = "lardvhead";
-    var title = document.createElement("span"); title.className = "lardvpath"; title.textContent = path;
-    var save = document.createElement("button"); save.className = "lardbtn"; save.type = "button"; save.textContent = "Save"; save.disabled = true;
-    head.appendChild(title); head.appendChild(save);
-    var ta = document.createElement("textarea"); ta.className = "lardedit"; ta.value = body; ta.spellcheck = false;
-    ta.addEventListener("input", function () { save.disabled = ta.value === body; });
-    save.onclick = async function () {
-      save.disabled = true; save.textContent = "Saving…";
-      try {
-        await fetch("/api/lard/subject?path=" + encodeURIComponent(path), { method: "PUT", headers: { "content-type": "text/markdown" }, body: ta.value });
-        body = ta.value; save.textContent = "Saved"; setTimeout(function () { save.textContent = "Save"; }, 900);
-      } catch (_) { save.textContent = "Save"; save.disabled = false; }
-    };
-    v.appendChild(head); v.appendChild(ta);
+    var titleWrap = document.createElement("div"); titleWrap.className = "lardvtitle";
+    var name = document.createElement("span"); name.className = "lardvname"; name.textContent = s.name || path;
+    titleWrap.appendChild(name);
+    if (KIND_SINGULAR[s.kind]) {
+      var badge = document.createElement("span"); badge.className = "lardvbadge"; badge.textContent = KIND_SINGULAR[s.kind];
+      titleWrap.appendChild(badge);
+    }
+    var action = document.createElement("button"); action.className = "lardbtn"; action.type = "button";
+    var head2 = document.createElement("div"); head2.className = "lardvactions"; head2.appendChild(action);
+    head.appendChild(titleWrap); head.appendChild(head2);
+    var pathEl = document.createElement("div"); pathEl.className = "lardvpath"; pathEl.textContent = path;
+
+    var prose = document.createElement("div"); prose.className = "lardprose";
+    v.appendChild(head); v.appendChild(pathEl); v.appendChild(prose);
+
+    function showRead() {
+      action.innerHTML = PENCIL_ICON + "<span>Edit</span>"; action.classList.remove("primary");
+      prose.className = "lardprose";
+      if (body.trim()) renderMarkdown(prose, body);
+      else prose.innerHTML = '<p class="lardhint">This subject is empty.</p>';
+      action.onclick = showEdit;
+    }
+    function showEdit() {
+      prose.className = "lardprose editing";
+      prose.innerHTML = "";
+      var ta = document.createElement("textarea"); ta.className = "lardedit"; ta.value = body; ta.spellcheck = false;
+      prose.appendChild(ta); ta.focus();
+      action.innerHTML = "<span>Save</span>"; action.classList.add("primary"); action.disabled = true;
+      ta.addEventListener("input", function () { action.disabled = ta.value === body; });
+      action.onclick = async function () {
+        action.disabled = true; action.textContent = "Saving…";
+        try {
+          await fetch("/api/lard/subject?path=" + encodeURIComponent(path), { method: "PUT", headers: { "content-type": "text/markdown" }, body: ta.value });
+          body = ta.value;
+          // Reflect an edited description/name back into the list cache.
+          showRead();
+        } catch (_) { action.disabled = false; action.textContent = "Save"; }
+      };
+    }
+    showRead();
   }
 
   (async function () {
