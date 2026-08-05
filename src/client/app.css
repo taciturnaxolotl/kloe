@@ -563,8 +563,15 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
 .setpage code { font-family: var(--mono); font-size: 0.9em; background: var(--bg-sunk);
   border: 1px solid var(--rule); border-radius: var(--radius-xs); padding: 0.05em 0.35em; }
 
-/* Settings → Memory (lard) link status. */
-.setblock { margin-top: 34px; padding-top: 24px; border-top: 1px solid var(--rule); }
+/* Settings tabs. */
+.settabs { display: flex; gap: 4px; border-bottom: 1px solid var(--rule); margin: 0 0 20px; }
+.settab { appearance: none; background: none; border: 0; border-bottom: 2px solid transparent;
+  color: var(--ink-muted); font: inherit; font-size: 14px; font-weight: 500; padding: 8px 12px;
+  margin-bottom: -1px; cursor: pointer; }
+.settab:hover { color: var(--ink); }
+.settab.active { color: var(--ink); border-bottom-color: var(--accent); }
+
+/* Settings → Memory (lard). */
 .lardstatus { display: flex; align-items: center; gap: 10px; }
 .larddot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .larddot.on { background: var(--ok); }
@@ -573,7 +580,31 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
 .lardbtn { margin-left: auto; padding: 6px 14px; border-radius: var(--radius-md);
   border: 1px solid var(--rule-strong); background: var(--bg-raise); color: var(--ink);
   font-size: 13px; font-weight: 500; text-decoration: none; cursor: pointer; }
-.lardbtn:hover { background: var(--bg-sunk); }
+.lardbtn:hover:not(:disabled) { background: var(--bg-sunk); }
+.lardbtn:disabled { opacity: 0.5; cursor: default; }
+
+/* Memory inspector: subject list + viewer/editor. */
+.lardinspect { display: grid; grid-template-columns: 220px 1fr; gap: 16px; margin-top: 20px;
+  border-top: 1px solid var(--rule); padding-top: 20px; min-height: 340px; }
+@media (max-width: 640px) { .lardinspect { grid-template-columns: 1fr; } }
+.lardlist { display: flex; flex-direction: column; gap: 2px; max-height: 60vh; overflow-y: auto; }
+.lardkind { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--ink-faint); margin: 12px 6px 4px; }
+.lardkind:first-child { margin-top: 0; }
+.lardsubject { display: flex; flex-direction: column; gap: 1px; text-align: left; appearance: none;
+  background: none; border: 0; border-radius: var(--radius-sm); padding: 6px 9px; cursor: pointer; color: var(--ink); }
+.lardsubject:hover { background: var(--bg-sunk); }
+.lardsubject.active { background: color-mix(in srgb, var(--accent) 12%, var(--bg-raise)); }
+.lardsubject .ln { font-size: 13.5px; font-weight: 500; }
+.lardsubject .ld { font-size: 12px; color: var(--ink-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lardpanel { display: flex; flex-direction: column; min-width: 0; }
+.lardhint { color: var(--ink-faint); font-size: 13px; margin: 0; }
+.lardvhead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.lardvpath { font-family: var(--mono); font-size: 12.5px; color: var(--ink-muted); }
+.lardedit { flex: 1; min-height: 300px; resize: vertical; width: 100%; font-family: var(--mono);
+  font-size: 13px; line-height: 1.5; color: var(--ink); background: var(--bg-sunk);
+  border: 1px solid var(--rule); border-radius: var(--radius-md); padding: 12px; }
+.lardedit:focus { outline: none; border-color: var(--accent); }
 
 .seclabel { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
   color: var(--ink-faint); font-weight: 500; margin: 22px 0 8px; }

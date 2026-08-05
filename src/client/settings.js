@@ -1,8 +1,10 @@
 /*
- * Model curation. Lists every model this deployment can run (GET /models) and
- * lets the operator toggle chat visibility, give a display name, and set the
- * picker order by dragging (each edit is a partial PATCH /models). Uses the
- * shared sidebar; the drag order is written back as each model's sortOrder.
+ * The settings page, split into tabs. "Models" curates the chat picker (GET
+ * /models; toggle visibility, rename, drag to order via partial PATCH /models).
+ * "Memory" (shown only when lard is enabled) links this user's lard account
+ * (Connect → /lard/connect) and inspects their memory — a subject list (GET
+ * /api/lard/memory) and a per-subject markdown view/editor (GET/PUT
+ * /api/lard/subject). Uses the shared sidebar.
  */
 import { mountSidebar } from "./sidebar.js";
 import { mountDialogs } from "./confirm.js";
@@ -292,14 +294,30 @@ import { requireAuth, setPfp } from "./authguard.js";
     });
   }
 
-  // ---- lard (memory) link ----
+  // ---- settings tabs ----
+  function currentTab() {
+    var active = document.querySelector(".settabpanel:not([hidden])");
+    return active ? active.dataset.panel : "models";
+  }
+  function selectTab(name) {
+    document.querySelectorAll(".settab").forEach(function (t) { t.classList.toggle("active", t.dataset.tab === name); });
+    document.querySelectorAll(".settabpanel").forEach(function (p) { p.hidden = p.dataset.panel !== name; });
+    if (location.hash !== "#" + name) history.replaceState({}, "", location.pathname + "#" + name);
+  }
+  function setupTabs() {
+    document.querySelectorAll(".settab").forEach(function (t) {
+      t.addEventListener("click", function () { selectTab(t.dataset.tab); });
+    });
+  }
+
+  // ---- lard (memory) ----
+  var KIND_LABEL = { profile: "Profile", area: "Areas", topic: "Topics", person: "People" };
   function renderLard(el, connected) {
     el.innerHTML = "";
     var dot = document.createElement("span");
     dot.className = "larddot " + (connected ? "on" : "off");
     var label = document.createElement("span");
-    label.className = "lardlabel";
-    label.textContent = connected ? "Connected" : "Not connected";
+    label.className = "lardlabel"; label.textContent = connected ? "Connected" : "Not connected";
     var btn = document.createElement(connected ? "button" : "a");
     btn.className = "lardbtn";
     if (connected) {
@@ -307,24 +325,73 @@ import { requireAuth, setPfp } from "./authguard.js";
       btn.onclick = async function () {
         btn.disabled = true;
         await fetch("/api/lard", { method: "DELETE" }).catch(function () {});
+        document.getElementById("lardInspector").hidden = true;
         renderLard(el, false);
       };
-    } else {
-      btn.href = "/lard/connect"; btn.textContent = "Connect";
-    }
+    } else { btn.href = "/lard/connect"; btn.textContent = "Connect"; }
     el.appendChild(dot); el.appendChild(label); el.appendChild(btn);
   }
   async function loadLard() {
-    var section = document.getElementById("lardSection");
-    var status = document.getElementById("lardStatus");
-    try {
-      var j = await (await fetch("/api/lard")).json();
-      if (!j.enabled) { section.hidden = true; return; }
-      section.hidden = false;
-      renderLard(status, j.connected);
-    } catch (_) { section.hidden = true; }
-    // Clean the ?lard=connected|error flag the callback leaves behind.
-    if (location.search.indexOf("lard=") >= 0) history.replaceState({}, "", location.pathname);
+    var tabBtn = document.querySelector('.settab[data-tab="memory"]');
+    var inspector = document.getElementById("lardInspector");
+    var enabled = false, connected = false;
+    try { var j = await (await fetch("/api/lard")).json(); enabled = !!j.enabled; connected = !!j.connected; } catch (_) {}
+    if (tabBtn) tabBtn.hidden = !enabled;
+    if (!enabled) { if (currentTab() === "memory") selectTab("models"); return; }
+    renderLard(document.getElementById("lardStatus"), connected);
+    inspector.hidden = !connected;
+    if (connected) loadSubjects();
+    // After a connect round-trip, clear the flag and land on the Memory tab.
+    if (location.search.indexOf("lard=") >= 0) { history.replaceState({}, "", location.pathname); selectTab("memory"); }
+  }
+  async function loadSubjects() {
+    var list = document.getElementById("lardSubjects");
+    list.innerHTML = '<p class="lardhint">Loading…</p>';
+    var items;
+    try { items = (await (await fetch("/api/lard/memory")).json()).listing || []; }
+    catch (_) { list.innerHTML = '<p class="lardhint">Failed to load memory.</p>'; return; }
+    if (!items.length) { list.innerHTML = '<p class="lardhint">No subjects yet.</p>'; return; }
+    var groups = {};
+    items.forEach(function (s) { (groups[s.kind] = groups[s.kind] || []).push(s); });
+    list.innerHTML = "";
+    Object.keys(groups).forEach(function (kind) {
+      var h = document.createElement("div"); h.className = "lardkind"; h.textContent = KIND_LABEL[kind] || kind;
+      list.appendChild(h);
+      groups[kind].forEach(function (s) {
+        var b = document.createElement("button");
+        b.className = "lardsubject"; b.type = "button";
+        var n = document.createElement("span"); n.className = "ln"; n.textContent = s.name || s.path;
+        b.appendChild(n);
+        if (s.description) { var d = document.createElement("span"); d.className = "ld"; d.textContent = s.description; b.appendChild(d); }
+        b.onclick = function () {
+          list.querySelectorAll(".lardsubject").forEach(function (x) { x.classList.remove("active"); });
+          b.classList.add("active"); openSubject(s.path);
+        };
+        list.appendChild(b);
+      });
+    });
+  }
+  async function openSubject(path) {
+    var v = document.getElementById("lardViewer");
+    v.innerHTML = '<p class="lardhint">Loading…</p>';
+    var body;
+    try { body = (await (await fetch("/api/lard/subject?path=" + encodeURIComponent(path))).json()).body || ""; }
+    catch (_) { v.innerHTML = '<p class="lardhint">Failed to load subject.</p>'; return; }
+    v.innerHTML = "";
+    var head = document.createElement("div"); head.className = "lardvhead";
+    var title = document.createElement("span"); title.className = "lardvpath"; title.textContent = path;
+    var save = document.createElement("button"); save.className = "lardbtn"; save.type = "button"; save.textContent = "Save"; save.disabled = true;
+    head.appendChild(title); head.appendChild(save);
+    var ta = document.createElement("textarea"); ta.className = "lardedit"; ta.value = body; ta.spellcheck = false;
+    ta.addEventListener("input", function () { save.disabled = ta.value === body; });
+    save.onclick = async function () {
+      save.disabled = true; save.textContent = "Saving…";
+      try {
+        await fetch("/api/lard/subject?path=" + encodeURIComponent(path), { method: "PUT", headers: { "content-type": "text/markdown" }, body: ta.value });
+        body = ta.value; save.textContent = "Saved"; setTimeout(function () { save.textContent = "Save"; }, 900);
+      } catch (_) { save.textContent = "Save"; save.disabled = false; }
+    };
+    v.appendChild(head); v.appendChild(ta);
   }
 
   (async function () {
@@ -333,6 +400,8 @@ import { requireAuth, setPfp } from "./authguard.js";
     // immediately (mountSidebar) and refreshes when loadSidebar resolves.
     var mePromise = requireAuth();
     loadSidebar();
+    setupTabs();
+    if (location.hash === "#memory") selectTab("memory");
     loadLard();
     var modelsPromise = fetch("/api/models").then(function (r) { return r.json(); });
     var me = await mePromise;

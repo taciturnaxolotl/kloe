@@ -10,7 +10,7 @@ import { PromptBody, SteerBody, ModelPatchBody, RenameBody } from "./schemas";
 import { ACTOR_IDLE_TTL_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
 import { getConfig } from "./settings";
 import { gateApi, getSession, sessionUser } from "./auth";
-import { lardEnabled, lardConnected, lardDisconnect, LOCAL_SUB } from "./lard";
+import { lardEnabled, lardConnected, lardDisconnect, LOCAL_SUB, memoryList, memoryRead, memoryWrite } from "./lard";
 import type { BlobStore } from "./blobs";
 
 /**
@@ -435,6 +435,37 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       DELETE: (req: Bun.BunRequest<"/api/lard">) => {
         lardDisconnect(store, getSession(req, store)?.sub ?? LOCAL_SUB);
         return Response.json({ ok: true });
+      },
+    },
+
+    // Inspect this user's lard memory — the settings page proxies through kloe
+    // because the token is server-side and per-user. List of subjects, and a
+    // single subject's markdown (read + overwrite). Subject path is a query param
+    // so multi-segment paths (areas/<name>) need no wildcard route.
+    "/api/lard/memory": {
+      GET: async (req: Bun.BunRequest<"/api/lard/memory">) => {
+        const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
+        if (!lardEnabled() || !lardConnected(store, sub)) return Response.json({ error: "not connected" }, { status: 409 });
+        try { return Response.json({ listing: await memoryList(store, sub) }); }
+        catch (e) { return Response.json({ error: (e as Error).message }, { status: 502 }); }
+      },
+    },
+    "/api/lard/subject": {
+      GET: async (req: Bun.BunRequest<"/api/lard/subject">) => {
+        const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
+        const path = new URL(req.url).searchParams.get("path");
+        if (!path) return Response.json({ error: "missing path" }, { status: 400 });
+        if (!lardEnabled() || !lardConnected(store, sub)) return Response.json({ error: "not connected" }, { status: 409 });
+        try { return Response.json({ path, body: await memoryRead(store, sub, path) }); }
+        catch (e) { return Response.json({ error: (e as Error).message }, { status: 502 }); }
+      },
+      PUT: async (req: Bun.BunRequest<"/api/lard/subject">) => {
+        const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
+        const path = new URL(req.url).searchParams.get("path");
+        if (!path) return Response.json({ error: "missing path" }, { status: 400 });
+        if (!lardEnabled() || !lardConnected(store, sub)) return Response.json({ error: "not connected" }, { status: 409 });
+        try { await memoryWrite(store, sub, path, await req.text()); return Response.json({ ok: true }); }
+        catch (e) { return Response.json({ error: (e as Error).message }, { status: 502 }); }
       },
     },
 
