@@ -13,7 +13,7 @@ import { requireAuth, setPfp } from "./authguard.js";
   var content = document.getElementById("content");
   var dialogs = mountDialogs();
   var sidebar = mountSidebar({
-    onSelect: function (id) { window.location.href = "/?c=" + encodeURIComponent(id); },
+    onSelect: function (id) { window.location.href = "/c/" + encodeURIComponent(id); },
     onNew: function () { window.location.href = "/?new=1"; },
     dialogs: dialogs,
     reload: loadSidebar,

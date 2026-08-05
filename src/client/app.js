@@ -985,7 +985,11 @@ import { mountDialogs } from "./confirm.js";
         if (err.error) console.warn("prompt rejected:", err.error);
         return;
       }
-      if (wasNew && content) { title.textContent = content.slice(0, 80); setDocTitle(content.slice(0, 80)); setTimeout(loadConversations, 400); }
+      if (wasNew && content) {
+        title.textContent = content.slice(0, 80); setDocTitle(content.slice(0, 80));
+        setUrl("/c/" + encodeURIComponent(convId), true); // a new chat is now saved — reflect it in the URL
+        setTimeout(loadConversations, 400);
+      }
     } catch (e) {
       streaming = false; updateSend();
       failUser(runId);
@@ -1088,12 +1092,38 @@ import { mountDialogs } from "./confirm.js";
   // Browser tab: "<conversation> - Kloe" once a conversation has a title, else
   // just "Kloe".
   function setDocTitle(t) { document.title = t ? t + " - Kloe" : "Kloe"; }
-  function selectConversation(id, t) { title.textContent = t || "Conversation"; setDocTitle(t); openStream(id); sidebar.render(conversations); }
-  function newConversation() {
+  // URL ⇄ conversation. `/c/<id>` deep-links a conversation (reload/bookmark/back
+  // all work); "/" is a fresh chat. `nav` on select/new controls history:
+  // "push" (default, a user action) adds an entry, "replace" swaps the current
+  // one (initial load, or a new chat becoming saved), "none" leaves the URL as
+  // is (we arrived here FROM a popstate, so the browser already changed it).
+  function convIdFromPath() {
+    var m = location.pathname.match(/^\/c\/([^/]+)\/?$/);
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+  function setUrl(path, replace) {
+    if (location.pathname + location.search === path) return;
+    if (replace) history.replaceState({}, "", path); else history.pushState({}, "", path);
+  }
+  function selectConversation(id, t, nav) {
+    title.textContent = t || "Conversation"; setDocTitle(t); openStream(id); sidebar.render(conversations);
+    if (nav !== "none") setUrl("/c/" + encodeURIComponent(id), nav === "replace");
+  }
+  function newConversation(nav) {
     var id = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
     title.textContent = "New conversation"; setDocTitle(null);
     openStream(id); sidebar.render(conversations); sidebar.closeRail(); input.focus();
+    if (nav !== "none") setUrl("/", nav === "replace");
   }
+  window.addEventListener("popstate", function () {
+    var id = convIdFromPath();
+    if (id) {
+      var c = conversations.find(function (x) { return x.id === id; });
+      selectConversation(id, c ? c.title : null, "none");
+    } else {
+      newConversation("none");
+    }
+  });
 
   // ---- model picker ------------------------------------------------------
   async function loadModels() {
@@ -1187,28 +1217,34 @@ import { mountDialogs } from "./confirm.js";
     // all together, so nothing waits serially: /api/me, the model + conversation
     // lists, and the (usually reopened) conversation's /events overlap in one
     // round-trip window instead of chaining.
-    try { prefetchEvents(localStorage.getItem("kloe:lastConv")); } catch (_) { /* private mode */ }
+    // Which conversation to open comes from the URL: the /c/<id> path, or the
+    // legacy ?c= / ?new query (from the conversations page). Prefetch that one
+    // (else the last-opened) so its history overlaps the boot round-trip.
+    var params = new URLSearchParams(location.search);
+    var wantId = convIdFromPath() || params.get("c");
+    var lastConv = null;
+    try { lastConv = localStorage.getItem("kloe:lastConv"); } catch (_) { /* private mode */ }
+    prefetchEvents(wantId || lastConv);
+
     var mePromise = requireAuth();
     var dataPromise = Promise.all([loadModels(), loadConversations()]);
     var me = await mePromise;
     if (!me) return; // redirecting to login
     setPfp(me);
     await dataPromise;
-    // Deep links from the conversations page: ?new starts fresh, ?c=<id> opens
-    // a specific conversation. Strip the query afterward so a reload is clean.
-    var params = new URLSearchParams(location.search);
+
+    // Open with "replace" so the initial route doesn't add a spurious history
+    // entry. Falls back to the last-opened conversation, then the most recent.
     if (params.has("new")) {
-      newConversation();
-      history.replaceState(null, "", "/");
-    } else if (params.get("c")) {
-      var id = params.get("c");
-      var c = conversations.find(function (x) { return x.id === id; });
-      selectConversation(id, c ? c.title : null);
-      history.replaceState(null, "", "/");
-    } else if (conversations.length) {
-      selectConversation(conversations[0].id, conversations[0].title);
+      newConversation("replace");
+    } else if (wantId) {
+      var c = conversations.find(function (x) { return x.id === wantId; });
+      selectConversation(wantId, c ? c.title : null, "replace");
     } else {
-      newConversation();
+      var lc = lastConv && conversations.find(function (x) { return x.id === lastConv; });
+      var open = lc || conversations[0];
+      if (open) selectConversation(open.id, open.title, "replace");
+      else newConversation("replace");
     }
     updateSend();
   })();

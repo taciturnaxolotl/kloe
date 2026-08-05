@@ -126,6 +126,7 @@ if (import.meta.main) {
     development: process.env.NODE_ENV !== "production",
     routes: {
       "/": indexHTML,
+      "/c/:id": indexHTML, // deep link to a conversation — the SPA reads the id from the path
       "/settings": settingsHTML,
       "/conversations": conversationsHTML,
       // Auth (indiko OAuth). Inert unless auth.enabled — the SPA only navigates

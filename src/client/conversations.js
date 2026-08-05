@@ -2,7 +2,7 @@
  * The dedicated Conversations page: an always-open search over titles AND
  * message contents (GET /api/conversations?q=), a per-row ⋮ menu, and a bulk
  * select/delete mode (DELETE /api/conversations/:id). The sidebar is shared
- * with the chat SPA; opening a row or "New chat" hands off via /?c= and /?new.
+ * with the chat SPA; opening a row navigates to /c/<id>, "New chat" to /?new.
  */
 import { mountSidebar } from "./sidebar.js";
 import { mountDialogs } from "./confirm.js";
@@ -18,7 +18,7 @@ import { requireAuth, setPfp } from "./authguard.js";
   var CONV_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/></svg>';
 
   var sidebar = mountSidebar({
-    onSelect: function (id) { window.location.href = "/?c=" + encodeURIComponent(id); },
+    onSelect: function (id) { window.location.href = "/c/" + encodeURIComponent(id); },
     onNew: function () { window.location.href = "/?new=1"; },
     onOpenList: function () { search.focus(); },
     active: "conversations",
@@ -141,7 +141,7 @@ import { requireAuth, setPfp } from "./authguard.js";
       }
       row.addEventListener("click", function () {
         if (selectMode) { cb.checked = !cb.checked; updateDeleteBtn(); }
-        else window.location.href = "/?c=" + encodeURIComponent(c.id);
+        else window.location.href = "/c/" + encodeURIComponent(c.id);
       });
       row.addEventListener("contextmenu", function (ev) { ev.preventDefault(); openMenu(ev.clientX, ev.clientY); });
       cb.addEventListener("click", function (ev) { ev.stopPropagation(); updateDeleteBtn(); });
