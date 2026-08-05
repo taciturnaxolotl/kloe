@@ -19,7 +19,12 @@ export async function requireAuth() {
 // Show the signed-in avatar in the rail footer (next to Settings). No-op when
 // there's no user/picture.
 export function setPfp(user) {
-  if (!user || !user.picture) return;
+  if (!user) return;
+  if (user.name) {
+    var greet = document.getElementById("railgreet");
+    if (greet) { greet.textContent = "Hi " + user.name.split(/\s+/)[0] + "!"; greet.hidden = false; }
+  }
+  if (!user.picture) return;
   var img = document.getElementById("railpfp");
   if (!img) return;
   img.src = user.picture;
