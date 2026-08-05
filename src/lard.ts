@@ -189,6 +189,8 @@ const cleanPath = (p: string): string => p.replace(/^\/+/, "").replace(/\.\.(\/|
 export function getContext(store: Store, sub: string, project?: string): Promise<ContextBundle> {
   return api(store, sub, "/context" + (project ? "?project=" + encodeURIComponent(project) : ""));
 }
+export interface LardProject { id: string; displayName?: string; names?: string[]; }
+export function memoryProjects(store: Store, sub: string): Promise<LardProject[]> { return api(store, sub, "/projects"); }
 export function memoryList(store: Store, sub: string): Promise<unknown> { return api(store, sub, "/memory"); }
 export function memoryRead(store: Store, sub: string, path: string): Promise<string> { return api(store, sub, "/memory/" + cleanPath(path)); }
 export function memoryWrite(store: Store, sub: string, path: string, body: string): Promise<unknown> {

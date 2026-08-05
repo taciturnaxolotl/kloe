@@ -88,12 +88,60 @@ import { CONV_ICON, MORE_ICON, PENCIL_ICON, PLUS_ICON, TRASH_ICON, FILE_ICON } f
     } catch (_) { el.querySelector(".lardhint").textContent = "Couldn’t load memory."; }
   }
 
-  $("memEdit").addEventListener("click", async function () {
-    var v = await dialogs.prompt({ title: "Pin lard project", value: project.lardProject || "", placeholder: "lard project id (e.g. kloe)", ok: "Pin" });
-    if (v === null) return;
-    await patch({ lardProject: v.trim() });
-    project.lardProject = v.trim();
+  // ---- pin-project picker (searchable list of lard projects) ----
+  var pinProjects = null; // cached list from /api/lard/projects
+
+  async function pinTo(id) {
+    await patch({ lardProject: id });
+    project.lardProject = id;
+    closePin();
     renderMemory();
+  }
+
+  function renderPinList() {
+    var list = $("pinList");
+    var q = $("pinSearch").value.trim().toLowerCase();
+    if (pinProjects === null) { list.innerHTML = '<p class="lardhint">Loading…</p>'; return; }
+    if (pinProjects === false) { list.innerHTML = '<p class="lardhint">Connect lard in Settings to pick a project.</p>'; return; }
+    var items = pinProjects.filter(function (p) {
+      if (!q) return true;
+      return (p.id + " " + (p.displayName || "")).toLowerCase().indexOf(q) !== -1;
+    });
+    if (!items.length) { list.innerHTML = '<p class="lardhint">No matching projects.</p>'; return; }
+    list.innerHTML = "";
+    items.forEach(function (p) {
+      var row = document.createElement("button");
+      row.className = "pinrow" + (p.id === project.lardProject ? " active" : "");
+      row.type = "button";
+      var name = document.createElement("span"); name.className = "pinrowname"; name.textContent = p.displayName || p.id;
+      row.appendChild(name);
+      if (p.displayName && p.displayName !== p.id) {
+        var id = document.createElement("span"); id.className = "pinrowid"; id.textContent = p.id;
+        row.appendChild(id);
+      }
+      row.addEventListener("click", function () { pinTo(p.id); });
+      list.appendChild(row);
+    });
+  }
+
+  function closePin() { $("pinModal").hidden = true; }
+  $("pinBack").addEventListener("click", closePin);
+  $("pinCancel").addEventListener("click", closePin);
+  $("pinUnpin").addEventListener("click", function () { pinTo(""); });
+  $("pinSearch").addEventListener("input", renderPinList);
+
+  $("memEdit").addEventListener("click", async function () {
+    $("pinSearch").value = "";
+    $("pinModal").hidden = false;
+    $("pinSearch").focus();
+    renderPinList();
+    if (pinProjects === null) {
+      try {
+        var r = await fetch("/api/lard/projects");
+        pinProjects = r.ok ? ((await r.json()).projects || []) : false;
+      } catch (_) { pinProjects = false; }
+      renderPinList();
+    }
   });
 
   // ---- context files ----
@@ -158,10 +206,15 @@ import { CONV_ICON, MORE_ICON, PENCIL_ICON, PLUS_ICON, TRASH_ICON, FILE_ICON } f
     document.title = name + " · Kloe";
     closeDetails();
   });
-  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && !$("detailsModal").hidden) closeDetails(); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    if (!$("detailsModal").hidden) closeDetails();
+    if (!$("pinModal").hidden) closePin();
+  });
 
   // ---- ⋮ project menu ----
-  $("projMenu").addEventListener("click", function () {
+  $("projMenu").addEventListener("click", function (e) {
+    e.stopPropagation(); // else this same click bubbles to the ctxmenu's outside-click close
     var r = this.getBoundingClientRect();
     showContextMenu(r.right, r.bottom + 4, [
       { label: "Edit details", icon: PENCIL_ICON, onClick: openDetails },
@@ -174,7 +227,7 @@ import { CONV_ICON, MORE_ICON, PENCIL_ICON, PLUS_ICON, TRASH_ICON, FILE_ICON } f
     ]);
   });
 
-  $("newChat").addEventListener("click", function () { window.location.href = "/?project=" + encodeURIComponent(projectId); });
+  $("newChat").addEventListener("click", function () { window.location.href = "/?new=1&project=" + encodeURIComponent(projectId); });
 
   async function loadSidebar() {
     try { sidebar.render(((await (await fetch("/api/conversations")).json()).conversations) || []); }

@@ -666,6 +666,15 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
 .modaltext { resize: vertical; min-height: 68px; }
 .modalinput:focus, .modaltext:focus { outline: none; border-color: var(--accent); }
 .modalbtns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.pinlist { margin-top: 10px; max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.pinrow { display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: left;
+  padding: 8px 11px; border: 0; border-radius: var(--radius-md); background: none; color: var(--ink);
+  font: inherit; font-size: 14px; cursor: pointer; }
+.pinrow:hover { background: var(--bg-sunk); }
+.pinrow.active { background: var(--bg-sunk); }
+.pinrow.active .pinrowname::after { content: " ✓"; color: var(--accent); }
+.pinrowname { font-weight: 500; }
+.pinrowid { color: var(--ink-muted); font-size: 12px; }
 
 .seclabel { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
   color: var(--ink-faint); font-weight: 500; margin: 22px 0 8px; }

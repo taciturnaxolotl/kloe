@@ -10,7 +10,7 @@ import { PromptBody, SteerBody, ModelPatchBody, RenameBody, ProjectCreateBody, P
 import { ACTOR_IDLE_TTL_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
 import { getConfig } from "./settings";
 import { gateApi, getSession, sessionUser, authEnabled } from "./auth";
-import { lardEnabled, lardConnected, lardDisconnect, LOCAL_SUB, memoryList, memoryRead, memoryWrite, getContext } from "./lard";
+import { lardEnabled, lardConnected, lardDisconnect, LOCAL_SUB, memoryList, memoryProjects, memoryRead, memoryWrite, getContext } from "./lard";
 import type { BlobStore } from "./blobs";
 
 /**
@@ -473,6 +473,15 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
         if (!lardEnabled() || !lardConnected(store, sub)) return Response.json({ error: "not connected" }, { status: 409 });
         try { return Response.json({ listing: await memoryList(store, sub) }); }
+        catch (e) { return Response.json({ error: (e as Error).message }, { status: 502 }); }
+      },
+    },
+    // The lard project registry, for the project page's "pin memory" picker.
+    "/api/lard/projects": {
+      GET: async (req: Bun.BunRequest<"/api/lard/projects">) => {
+        const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
+        if (!lardEnabled() || !lardConnected(store, sub)) return Response.json({ error: "not connected" }, { status: 409 });
+        try { return Response.json({ projects: await memoryProjects(store, sub) }); }
         catch (e) { return Response.json({ error: (e as Error).message }, { status: 502 }); }
       },
     },
