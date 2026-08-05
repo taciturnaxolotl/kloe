@@ -123,6 +123,15 @@ export interface ProjectSummary extends Project {
   chatCount: number;
 }
 
+/** A project context file's metadata (no body). */
+export interface ContextFileMeta {
+  id: string;
+  filename: string;
+  lines: number;
+  chars: number;
+  createdAt: number;
+}
+
 /** A search hit: a conversation plus an excerpt of the matching message. */
 export interface ConversationSearchResult extends ConversationSummary {
   /** Text around the match (title match → excerpt of the first message). */
@@ -278,6 +287,17 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at   INTEGER NOT NULL,
   updated_at   INTEGER NOT NULL
 );
+
+-- Context files attached to a project: hand-authored text (markdown) injected
+-- into every chat in the project. Small text bodies stored inline (no blob GC).
+CREATE TABLE IF NOT EXISTS project_context (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL,
+  filename    TEXT NOT NULL,
+  body        TEXT NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_project_context ON project_context (project_id);
 
 -- Per-user OAuth device-grant tokens for the lard memory server. One row per
 -- kloe user (sub); "local" is the implicit user when kloe auth is disabled.
@@ -791,6 +811,30 @@ export class Store {
   getConversationProject(conversationId: string): string | undefined {
     const r = this.db.query("SELECT project_id FROM conversations WHERE id = ?").get(conversationId) as { project_id: string | null } | null;
     return r?.project_id ?? undefined;
+  }
+
+  // ---- project context files ---------------------------------------------
+  addProjectContext(id: string, projectId: string, filename: string, body: string): void {
+    this.db.query("INSERT INTO project_context (id, project_id, filename, body, created_at) VALUES (?, ?, ?, ?, ?)")
+      .run(id, projectId, filename, body, Date.now());
+    this.touchProject(projectId);
+  }
+
+  /** A project's context files (metadata only — line/char counts, no body). */
+  listProjectContext(projectId: string): ContextFileMeta[] {
+    const rows = this.db.query("SELECT id, filename, body, created_at FROM project_context WHERE project_id = ? ORDER BY created_at DESC")
+      .all(projectId) as Array<{ id: string; filename: string; body: string; created_at: number }>;
+    return rows.map((r) => ({ id: r.id, filename: r.filename, lines: r.body.split("\n").length, chars: r.body.length, createdAt: r.created_at }));
+  }
+
+  /** Full context files (with body) — for viewing and for prompt injection. */
+  projectContextFiles(projectId: string): Array<{ id: string; filename: string; body: string }> {
+    return this.db.query("SELECT id, filename, body FROM project_context WHERE project_id = ? ORDER BY created_at ASC")
+      .all(projectId) as Array<{ id: string; filename: string; body: string }>;
+  }
+
+  deleteProjectContext(projectId: string, id: string): void {
+    this.db.query("DELETE FROM project_context WHERE id = ? AND project_id = ?").run(id, projectId);
   }
 
   /**

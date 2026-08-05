@@ -1,11 +1,14 @@
 /*
- * Project detail (/p/<id>): editable name + description, the project's chats with
- * a "new chat in this project" action, and a Memory panel to pin a lard project
- * and browse its subjects. Shares the app sidebar.
+ * Project detail (/p/<id>): name + description (edited via the ⋮ → details
+ * modal, not inline), the project's chats with a "new chat" action, and a side
+ * panel — Memory (the pinned lard project + a content preview) and Context
+ * (uploaded files injected into the project's chats). Shares the app sidebar.
  */
 import { mountSidebar } from "./sidebar.js";
 import { mountDialogs } from "./confirm.js";
+import { showContextMenu } from "./ctxmenu.js";
 import { requireAuth, setPfp } from "./authguard.js";
+import { CONV_ICON, MORE_ICON, PENCIL_ICON, PLUS_ICON, TRASH_ICON, FILE_ICON } from "./icons.js";
 
 (function () {
   "use strict";
@@ -13,6 +16,7 @@ import { requireAuth, setPfp } from "./authguard.js";
   var dialogs = mountDialogs();
   var projectId = (location.pathname.match(/^\/p\/([^/]+)/) || [])[1];
   projectId = projectId ? decodeURIComponent(projectId) : null;
+  var project = null;
 
   var sidebar = mountSidebar({
     onSelect: function (id) { window.location.href = "/c/" + encodeURIComponent(id); },
@@ -20,6 +24,11 @@ import { requireAuth, setPfp } from "./authguard.js";
     dialogs: dialogs,
     reload: loadSidebar,
   });
+
+  // Icons from the shared set (no inline SVG).
+  $("projMenu").innerHTML = MORE_ICON;
+  $("memEdit").innerHTML = PENCIL_ICON;
+  $("ctxAdd").innerHTML = PLUS_ICON;
 
   function fmtDate(ms) {
     var d = new Date(ms), now = new Date();
@@ -32,8 +41,7 @@ import { requireAuth, setPfp } from "./authguard.js";
     return d.toLocaleDateString(undefined, o);
   }
 
-  var CHAT_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/></svg>';
-
+  // ---- chats ----
   function renderChats(list) {
     var rows = $("rows");
     rows.innerHTML = "";
@@ -41,7 +49,7 @@ import { requireAuth, setPfp } from "./authguard.js";
     list.forEach(function (c) {
       var row = document.createElement("a");
       row.className = "chatrow"; row.href = "/c/" + encodeURIComponent(c.id);
-      var icon = document.createElement("span"); icon.className = "chaticon"; icon.innerHTML = CHAT_ICON;
+      var icon = document.createElement("span"); icon.className = "chaticon"; icon.innerHTML = CONV_ICON;
       var main = document.createElement("div"); main.className = "chatmain";
       var t = document.createElement("div"); t.className = "chattitle"; t.textContent = c.title || "Untitled";
       main.appendChild(t);
@@ -53,67 +61,141 @@ import { requireAuth, setPfp } from "./authguard.js";
     });
   }
 
-  // Save a field on change; the server PATCHes name/description/lardProject.
   async function patch(fields) {
-    try { await fetch("/api/projects/" + encodeURIComponent(projectId), { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(fields) }); }
-    catch (_) { /* leave as-is */ }
+    try {
+      await fetch("/api/projects/" + encodeURIComponent(projectId), {
+        method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(fields),
+      });
+    } catch (_) { /* leave as-is */ }
   }
 
-  async function loadSubjects() {
-    var el = $("subjects");
+  // ---- memory panel ----
+  async function renderMemory() {
+    var el = $("memBody");
+    var pin = project.lardProject;
+    if (!pin) {
+      el.innerHTML = '<p class="lardhint">No memory pinned. Pin a lard project so this project’s chats read and record durable context.</p>';
+      return;
+    }
+    el.innerHTML = '<div class="pinname"></div><p class="lardhint">Loading…</p>';
+    el.querySelector(".pinname").textContent = pin;
     try {
-      var r = await fetch("/api/lard/memory");
-      if (!r.ok) { el.innerHTML = ""; return; } // not connected → nothing to show
-      var items = (await r.json()).listing || [];
-      el.innerHTML = "";
-      items.forEach(function (s) {
-        var b = document.createElement("div");
-        b.className = "lardsubject";
-        var n = document.createElement("span"); n.className = "ln"; n.textContent = s.name || s.path;
-        b.appendChild(n);
-        if (s.description) { var d = document.createElement("span"); d.className = "ld"; d.textContent = s.description; b.appendChild(d); }
-        el.appendChild(b);
+      var r = await fetch("/api/lard/context?project=" + encodeURIComponent(pin));
+      if (!r.ok) { el.querySelector(".lardhint").textContent = r.status === 409 ? "Connect lard in Settings to view its memory." : "Couldn’t load memory."; return; }
+      var ctx = await r.json();
+      var preview = (ctx.area || ctx.profile || "").trim();
+      el.querySelector(".lardhint").textContent = preview ? preview.slice(0, 240) + (preview.length > 240 ? "…" : "") : "No memory recorded yet.";
+    } catch (_) { el.querySelector(".lardhint").textContent = "Couldn’t load memory."; }
+  }
+
+  $("memEdit").addEventListener("click", async function () {
+    var v = await dialogs.prompt({ title: "Pin lard project", value: project.lardProject || "", placeholder: "lard project id (e.g. kloe)", ok: "Pin" });
+    if (v === null) return;
+    await patch({ lardProject: v.trim() });
+    project.lardProject = v.trim();
+    renderMemory();
+  });
+
+  // ---- context files ----
+  var TYPE = { md: "MD", markdown: "MD", txt: "TXT", text: "TXT", json: "JSON", csv: "CSV", yaml: "YAML", yml: "YAML" };
+  async function renderContext() {
+    var el = $("ctxBody");
+    var files;
+    try { files = (await (await fetch("/api/projects/" + encodeURIComponent(projectId) + "/context")).json()).files || []; }
+    catch (_) { el.innerHTML = '<p class="lardhint">Couldn’t load context files.</p>'; return; }
+    el.innerHTML = "";
+    if (!files.length) { el.innerHTML = '<p class="lardhint">Add text files to give every chat in this project shared context.</p>'; return; }
+    files.forEach(function (f) {
+      var card = document.createElement("div");
+      card.className = "ctxcard";
+      var name = document.createElement("div"); name.className = "ctxname"; name.textContent = f.filename;
+      var meta = document.createElement("div"); meta.className = "ctxmeta"; meta.textContent = f.lines + " line" + (f.lines === 1 ? "" : "s");
+      var ext = (f.filename.split(".").pop() || "").toLowerCase();
+      var badge = document.createElement("span"); badge.className = "ctxbadge"; badge.textContent = TYPE[ext] || ext.toUpperCase().slice(0, 4) || "FILE";
+      var del = document.createElement("button"); del.className = "ctxdel"; del.type = "button"; del.setAttribute("aria-label", "Remove"); del.innerHTML = TRASH_ICON;
+      del.addEventListener("click", async function (e) {
+        e.stopPropagation();
+        await fetch("/api/projects/" + encodeURIComponent(projectId) + "/context/" + encodeURIComponent(f.id), { method: "DELETE" }).catch(function () {});
+        renderContext();
       });
-    } catch (_) { el.innerHTML = ""; }
+      card.appendChild(name); card.appendChild(meta); card.appendChild(badge); card.appendChild(del);
+      el.appendChild(card);
+    });
+  }
+
+  $("ctxAdd").addEventListener("click", function () { $("fileInput").click(); });
+  $("fileInput").addEventListener("change", async function () {
+    var file = this.files && this.files[0];
+    this.value = "";
+    if (!file) return;
+    var text = await file.text();
+    try {
+      await fetch("/api/projects/" + encodeURIComponent(projectId) + "/context?name=" + encodeURIComponent(file.name), {
+        method: "POST", headers: { "content-type": "text/plain" }, body: text,
+      });
+      renderContext();
+    } catch (_) { /* ignore */ }
+  });
+
+  // ---- details modal (name + description) ----
+  function openDetails() {
+    $("mName").value = project.name;
+    $("mDesc").value = project.description || "";
+    $("detailsModal").hidden = false;
+    $("mName").focus();
+  }
+  function closeDetails() { $("detailsModal").hidden = true; }
+  $("detailsBack").addEventListener("click", closeDetails);
+  $("mCancel").addEventListener("click", closeDetails);
+  $("mSave").addEventListener("click", async function () {
+    var name = $("mName").value.trim();
+    if (!name) { $("mName").focus(); return; }
+    var desc = $("mDesc").value;
+    await patch({ name: name, description: desc });
+    project.name = name; project.description = desc;
+    $("pname").textContent = name; $("crumbname").textContent = name;
+    $("pdesc").textContent = desc; $("pdesc").hidden = !desc;
+    document.title = name + " · Kloe";
+    closeDetails();
+  });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && !$("detailsModal").hidden) closeDetails(); });
+
+  // ---- ⋮ project menu ----
+  $("projMenu").addEventListener("click", function () {
+    var r = this.getBoundingClientRect();
+    showContextMenu(r.right, r.bottom + 4, [
+      { label: "Edit details", icon: PENCIL_ICON, onClick: openDetails },
+      { label: "Delete project", icon: TRASH_ICON, danger: true, onClick: async function () {
+        var ok = await dialogs.confirm({ title: "Delete project?", body: "Its chats stay but become unfiled. This can’t be undone.", ok: "Delete", danger: true });
+        if (!ok) return;
+        await fetch("/api/projects/" + encodeURIComponent(projectId), { method: "DELETE" }).catch(function () {});
+        window.location.href = "/projects";
+      } },
+    ]);
+  });
+
+  $("newChat").addEventListener("click", function () { window.location.href = "/?project=" + encodeURIComponent(projectId); });
+
+  async function loadSidebar() {
+    try { sidebar.render(((await (await fetch("/api/conversations")).json()).conversations) || []); }
+    catch (_) { sidebar.render([]); }
   }
 
   async function load() {
     var res;
     try { res = await fetch("/api/projects/" + encodeURIComponent(projectId)); }
-    catch (_) { document.querySelector(".main .title").textContent = "Failed to load"; return; }
+    catch (_) { return; }
     if (!res.ok) { window.location.href = "/projects"; return; }
     var data = await res.json();
-    var p = data.project;
-    document.title = p.name + " · Kloe";
-    $("crumbname").textContent = p.name;
-    $("pname").value = p.name;
-    $("pdesc").value = p.description || "";
-    $("pinInput").value = p.lardProject || "";
-    $("deleteProject").hidden = false;
+    project = data.project;
+    document.title = project.name + " · Kloe";
+    $("crumbname").textContent = project.name;
+    $("pname").textContent = project.name;
+    $("pdesc").textContent = project.description || ""; $("pdesc").hidden = !project.description;
     $("detail").hidden = false;
     renderChats(data.conversations || []);
-    loadSubjects();
-  }
-
-  $("pname").addEventListener("change", function () {
-    var v = this.value.trim();
-    if (v) { patch({ name: v }); $("crumbname").textContent = v; }
-  });
-  $("pdesc").addEventListener("change", function () { patch({ description: this.value }); });
-  $("pinSave").addEventListener("click", function () { patch({ lardProject: $("pinInput").value.trim() }); });
-  $("newChat").addEventListener("click", function () {
-    window.location.href = "/?project=" + encodeURIComponent(projectId);
-  });
-  $("deleteProject").addEventListener("click", async function () {
-    var ok = await dialogs.confirm({ title: "Delete project?", body: "Its chats stay but become unfiled. This can't be undone.", ok: "Delete", danger: true });
-    if (!ok) return;
-    try { await fetch("/api/projects/" + encodeURIComponent(projectId), { method: "DELETE" }); } catch (_) {}
-    window.location.href = "/projects";
-  });
-
-  async function loadSidebar() {
-    try { sidebar.render(((await (await fetch("/api/conversations")).json()).conversations) || []); }
-    catch (_) { sidebar.render([]); }
+    renderMemory();
+    renderContext();
   }
 
   (async function () {

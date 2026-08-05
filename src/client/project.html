@@ -43,29 +43,44 @@
         </button>
         <nav class="crumbs"><a href="/projects">Projects</a><span class="crumbsep">/</span><span id="crumbname" class="title">…</span></nav>
         <div class="chatsactions">
-          <button class="btn danger" id="deleteProject" type="button" hidden>Delete project</button>
+          <button class="icon" id="projMenu" type="button" aria-label="Project options" title="Project options"></button>
         </div>
       </header>
       <div class="chatscroll">
         <div class="projdetail" id="detail" hidden>
           <div class="projcol">
-            <input class="projh1" id="pname" aria-label="Project name" />
-            <input class="projh1desc" id="pdesc" placeholder="Add a description…" aria-label="Project description" />
+            <h1 class="projtitle" id="pname">…</h1>
+            <p class="projsub" id="pdesc"></p>
             <button class="btn primary projnew" id="newChat" type="button">New chat in this project</button>
             <div class="raillabel">Chats</div>
             <div class="chatrows" id="rows"><div class="chatsempty">No chats yet.</div></div>
           </div>
           <aside class="projaside">
             <section class="projpanel">
-              <div class="panelhead"><span>Memory</span></div>
-              <div class="panelbody">
-                <p class="lardhint">Pin a lard memory project so this project's chats read and record to it.</p>
-                <div class="pinrow"><input class="pininput" id="pinInput" placeholder="lard project id (e.g. kloe)" /><button class="lardbtn" id="pinSave" type="button">Pin</button></div>
-                <div class="lardlist" id="subjects"></div>
-              </div>
+              <div class="panelhead"><span>Memory</span><button class="panelbtn" id="memEdit" type="button" aria-label="Change pinned project"></button></div>
+              <div class="panelbody" id="memBody"></div>
+            </section>
+            <section class="projpanel">
+              <div class="panelhead"><span>Context</span><button class="panelbtn" id="ctxAdd" type="button" aria-label="Add a context file"></button></div>
+              <div class="panelbody" id="ctxBody"></div>
             </section>
           </aside>
         </div>
+      </div>
+    </div>
+  </div>
+  <input type="file" id="fileInput" accept=".md,.markdown,.txt,.text,.json,.csv,.yaml,.yml,text/*" hidden>
+  <div class="modal" id="detailsModal" hidden>
+    <div class="modalback" id="detailsBack"></div>
+    <div class="modalcard">
+      <div class="modalh">Project details</div>
+      <label class="modallabel" for="mName">Name</label>
+      <input class="modalinput" id="mName" maxlength="120">
+      <label class="modallabel" for="mDesc">Description</label>
+      <textarea class="modaltext" id="mDesc" rows="3" maxlength="2000" placeholder="What is this project about?"></textarea>
+      <div class="modalbtns">
+        <button class="btn" id="mCancel" type="button">Cancel</button>
+        <button class="btn primary" id="mSave" type="button">Save</button>
       </div>
     </div>
   </div>

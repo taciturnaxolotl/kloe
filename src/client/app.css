@@ -626,21 +626,45 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
   display: grid; grid-template-columns: 1fr 340px; gap: 28px; align-items: start; }
 @media (max-width: 860px) { .projdetail { grid-template-columns: 1fr; } }
 .projcol { min-width: 0; }
-.projh1 { font-size: 24px; font-weight: 700; letter-spacing: -.01em; width: 100%; border: 0;
-  background: none; color: var(--ink); padding: 2px 0; font-family: inherit; }
-.projh1:focus { outline: none; }
-.projh1desc { width: 100%; border: 0; background: none; color: var(--ink-muted); font-size: 14px;
-  padding: 4px 0 0; margin-bottom: 22px; font-family: inherit; }
-.projh1desc:focus { outline: none; color: var(--ink); }
-.projnew { margin-bottom: 24px; }
+.projtitle { font-size: 26px; font-weight: 700; letter-spacing: -.02em; margin: 4px 0 0; }
+.projsub { color: var(--ink-muted); font-size: 14.5px; margin: 8px 0 0; max-width: 60ch; }
+.projnew { margin-top: 24px; margin-bottom: 24px; }
 .projaside { display: flex; flex-direction: column; gap: 16px; }
 .projpanel { border: 1px solid var(--rule); border-radius: var(--radius-lg); overflow: hidden; }
-.panelhead { padding: 12px 16px; font-weight: 600; font-size: 14px; border-bottom: 1px solid var(--rule); }
+.panelhead { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px;
+  font-weight: 600; font-size: 14px; border-bottom: 1px solid var(--rule); }
+.panelbtn { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
+  border: 0; background: none; color: var(--ink-muted); border-radius: var(--radius-sm); cursor: pointer; }
+.panelbtn:hover { background: var(--bg-sunk); color: var(--ink); }
+.panelbtn svg { width: 16px; height: 16px; }
 .panelbody { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
-.pinrow { display: flex; gap: 8px; }
-.pininput { flex: 1; min-width: 0; padding: 6px 10px; border: 1px solid var(--rule-strong);
-  border-radius: var(--radius-md); background: var(--bg-sunk); color: var(--ink); font-size: 13px; font-family: var(--mono); }
-.pininput:focus { outline: none; border-color: var(--accent); }
+.pinname { font-family: var(--mono); font-size: 13px; color: var(--ink); }
+
+/* Context file cards. */
+.ctxcard { position: relative; padding: 14px 14px 12px; border: 1px solid var(--rule);
+  border-radius: var(--radius-md); background: var(--bg-sunk); }
+.ctxname { font-weight: 600; font-size: 14px; }
+.ctxmeta { color: var(--ink-muted); font-size: 12.5px; margin-top: 3px; }
+.ctxbadge { display: inline-block; margin-top: 10px; padding: 2px 7px; font-size: 11px; font-weight: 600;
+  letter-spacing: .03em; color: var(--ink-muted); background: var(--bg-raise); border: 1px solid var(--rule); border-radius: var(--radius-xs); }
+.ctxdel { position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; border: 0; background: none;
+  color: var(--ink-faint); border-radius: var(--radius-sm); cursor: pointer; opacity: 0; transition: opacity .12s; }
+.ctxcard:hover .ctxdel { opacity: 1; }
+.ctxdel:hover { background: var(--bg-raise); color: var(--danger); }
+.ctxdel svg { width: 15px; height: 15px; }
+
+/* Edit-details modal. */
+.modal { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 1.5rem; }
+.modalback { position: absolute; inset: 0; background: rgba(0,0,0,.4); }
+.modalcard { position: relative; width: 100%; max-width: 27rem; background: var(--bg-raise);
+  border: 1px solid var(--rule); border-radius: var(--radius-lg); padding: 22px; }
+.modalh { font-size: 16px; font-weight: 600; margin-bottom: 16px; }
+.modallabel { display: block; font-size: 12px; color: var(--ink-muted); margin: 12px 0 5px; }
+.modalinput, .modaltext { width: 100%; padding: 8px 11px; border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-md); background: var(--bg-sunk); color: var(--ink); font: inherit; font-size: 14px; }
+.modaltext { resize: vertical; min-height: 68px; }
+.modalinput:focus, .modaltext:focus { outline: none; border-color: var(--accent); }
+.modalbtns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 
 .seclabel { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
   color: var(--ink-faint); font-weight: 500; margin: 22px 0 8px; }

@@ -10,7 +10,7 @@ import { PromptBody, SteerBody, ModelPatchBody, RenameBody, ProjectCreateBody, P
 import { ACTOR_IDLE_TTL_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
 import { getConfig } from "./settings";
 import { gateApi, getSession, sessionUser, authEnabled } from "./auth";
-import { lardEnabled, lardConnected, lardDisconnect, LOCAL_SUB, memoryList, memoryRead, memoryWrite } from "./lard";
+import { lardEnabled, lardConnected, lardDisconnect, LOCAL_SUB, memoryList, memoryRead, memoryWrite, getContext } from "./lard";
 import type { BlobStore } from "./blobs";
 
 /**
@@ -476,6 +476,17 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         catch (e) { return Response.json({ error: (e as Error).message }, { status: 502 }); }
       },
     },
+    // The context bundle for a project (profile + that project's area + listing),
+    // for the project page's Memory preview.
+    "/api/lard/context": {
+      GET: async (req: Bun.BunRequest<"/api/lard/context">) => {
+        const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
+        if (!lardEnabled() || !lardConnected(store, sub)) return Response.json({ error: "not connected" }, { status: 409 });
+        const project = new URL(req.url).searchParams.get("project") || undefined;
+        try { return Response.json(await getContext(store, sub, project)); }
+        catch (e) { return Response.json({ error: (e as Error).message }, { status: 502 }); }
+      },
+    },
     "/api/lard/subject": {
       GET: async (req: Bun.BunRequest<"/api/lard/subject">) => {
         const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
@@ -676,6 +687,41 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         const denied = guardProject(req, req.params.id);
         if (denied) return denied;
         store.deleteProject(req.params.id);
+        return Response.json({ ok: true });
+      },
+    },
+
+    // Project context files — hand-authored text injected into the project's chats.
+    "/api/projects/:id/context": {
+      GET: (req: Bun.BunRequest<"/api/projects/:id/context">) => {
+        const denied = guardProject(req, req.params.id);
+        if (denied) return denied;
+        return Response.json({ files: store.listProjectContext(req.params.id) });
+      },
+      POST: async (req: Bun.BunRequest<"/api/projects/:id/context">) => {
+        const denied = guardProject(req, req.params.id);
+        if (denied) return denied;
+        if (!store.getProject(req.params.id)) return Response.json({ error: "not found" }, { status: 404 });
+        const name = (new URL(req.url).searchParams.get("name") || "file.txt").slice(0, 200);
+        const body = await req.text();
+        if (body.length > 512 * 1024) return Response.json({ error: "file too large (max 512KB text)" }, { status: 413 });
+        const cid = randomUUID();
+        store.addProjectContext(cid, req.params.id, name, body);
+        return Response.json({ id: cid }, { status: 201 });
+      },
+    },
+    "/api/projects/:id/context/:cid": {
+      GET: (req: Bun.BunRequest<"/api/projects/:id/context/:cid">) => {
+        const denied = guardProject(req, req.params.id);
+        if (denied) return denied;
+        const f = store.projectContextFiles(req.params.id).find((x) => x.id === req.params.cid);
+        if (!f) return Response.json({ error: "not found" }, { status: 404 });
+        return Response.json(f);
+      },
+      DELETE: (req: Bun.BunRequest<"/api/projects/:id/context/:cid">) => {
+        const denied = guardProject(req, req.params.id);
+        if (denied) return denied;
+        store.deleteProjectContext(req.params.id, req.params.cid);
         return Response.json({ ok: true });
       },
     },
