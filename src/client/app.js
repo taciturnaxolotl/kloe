@@ -22,6 +22,11 @@ import * as smd from "streaming-markdown";
 import { mountSidebar } from "./sidebar.js";
 import { requireAuth, setPfp } from "./authguard.js";
 import { mountDialogs } from "./confirm.js";
+import {
+  CHEV_ICON as CHEV, CLOCK_ICON as ICON_CLOCK, GLOBE_ICON as ICON_GLOBE,
+  TOOL_ICON as ICON_TOOL, PAGE_ICON as ICON_PAGE, EXT_ICON as ICON_EXT,
+  SEND_ICON as SEND, FILE_ICON as FILE_SVG,
+} from "./icons.js";
 
 (function () {
   "use strict";
@@ -70,17 +75,6 @@ import { mountDialogs } from "./confirm.js";
     list.push(el);
   }
 
-  // Right-pointing chevron for timeline step rows; rotates 90° (→ down) when open.
-  var CHEV = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
-  // Step icons for the activity stepper (16px, stroke=currentColor).
-  var SVG = 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
-  var ICON_CLOCK = '<svg ' + SVG + '><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
-  var ICON_GLOBE = '<svg ' + SVG + '><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.5 2.5 15.5 0 18M12 3c-2.5 2.5-2.5 15.5 0 18"/></svg>';
-  var ICON_TOOL = '<svg ' + SVG + '><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2-2 2.6-2.6z"/></svg>';
-  var ICON_PAGE = '<svg ' + SVG + '><path d="M6 2h7l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/><path d="M13 2v5h5"/><path d="M8 13h8M8 17h6"/></svg>';
-  var ICON_EXT = '<svg ' + SVG + '><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>';
-
-  var SEND ='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>';
 
   var $ = function (id) { return document.getElementById(id); };
   var thread = $("thread"), scroll = $("scroll"), jump = $("jump");
@@ -113,7 +107,6 @@ import { mountDialogs } from "./confirm.js";
   function blobUrl(a) {
     return "/api/blobs/" + encodeURIComponent(a.sha256) + "?name=" + encodeURIComponent(a.name);
   }
-  var FILE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/></svg>';
 
   function uploadingCount() {
     var n = 0;

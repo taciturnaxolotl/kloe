@@ -30,7 +30,7 @@ export function showContextMenu(x, y, items) {
     if (it.icon) {
       var ic = document.createElement("span");
       ic.className = "ctxicon";
-      ic.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + it.icon + "</svg>";
+      ic.innerHTML = it.icon; // full <svg> string (see icons.js)
       b.appendChild(ic);
     }
     var label = document.createElement("span");

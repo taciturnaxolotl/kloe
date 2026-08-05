@@ -6,6 +6,7 @@
  */
 import { mountSidebar } from "./sidebar.js";
 import { mountDialogs } from "./confirm.js";
+import { GRIP_ICON as GRIP } from "./icons.js";
 import { requireAuth, setPfp } from "./authguard.js";
 
 (function () {
@@ -25,7 +26,6 @@ import { requireAuth, setPfp } from "./authguard.js";
     } catch (_) { sidebar.render([]); }
   }
 
-  var GRIP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/></svg>';
   var byRef = Object.create(null);
   var allModels = [];
   function providerOf(ref) { return ref.split("/")[0]; }

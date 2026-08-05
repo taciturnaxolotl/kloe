@@ -8,26 +8,29 @@
  * host passes `dialogs`, right-clicking a recent opens the Rename/Delete menu.
  */
 import { openChatMenu } from "./chatmenu.js";
+import {
+  CONV_ICON, SEARCH_ICON, PANEL_ICON, NEWCHAT_ICON, CHATS_ICON, SETTINGS_ICON,
+} from "./icons.js";
 
 var RAIL_HTML =
   '<div class="railhead">' +
     '<span class="brand">kloe</span>' +
     '<div class="railactions">' +
       '<button class="icon" id="searchBtn" type="button" aria-label="Search conversations" title="Search conversations">' +
-        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>' +
+        SEARCH_ICON +
       '</button>' +
       '<button class="icon railx" id="railClose" type="button" aria-label="Close sidebar" title="Close sidebar">' +
-        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>' +
+        PANEL_ICON +
       '</button>' +
     '</div>' +
   '</div>' +
   '<div class="railnav">' +
     '<button class="navrow" id="new" type="button">' +
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>' +
+      NEWCHAT_ICON +
       '<span>New chat</span>' +
     '</button>' +
     '<button class="navrow" id="chatsBtn" type="button">' +
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/><path d="M20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1"/></svg>' +
+      CHATS_ICON +
       '<span>Conversations</span>' +
     '</button>' +
   '</div>' +
@@ -36,11 +39,10 @@ var RAIL_HTML =
   '<a class="railfoot" href="/settings" title="Settings">' +
     '<img class="railpfp" id="railpfp" alt="" hidden>' +
     '<span class="railgreet" id="railgreet" hidden></span>' +
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>' +
+    SETTINGS_ICON +
   '</a>';
 
 var RECENTS = 8;
-var CONV_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/></svg>';
 
 /**
  * config:

@@ -19,6 +19,7 @@
     "fast-xml-parser": "^5.10.1",
     "katex": "^0.18.1",
     "linkedom": "^0.18.13",
+    "lucide": "^1.28.0",
     "shiki": "^4.4.1",
     "streaming-markdown": "^0.2.15",
     "turndown": "^7.2.4",

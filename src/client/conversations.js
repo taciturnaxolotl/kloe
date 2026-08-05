@@ -8,6 +8,7 @@ import { mountSidebar } from "./sidebar.js";
 import { mountDialogs } from "./confirm.js";
 import { openChatMenu } from "./chatmenu.js";
 import { requireAuth, setPfp } from "./authguard.js";
+import { CONV_ICON, MORE_ICON as MORE } from "./icons.js";
 
 (function () {
   "use strict";
@@ -15,7 +16,6 @@ import { requireAuth, setPfp } from "./authguard.js";
   var rows = $("rows"), search = $("search"), clearSearch = $("clearSearch");
   var selectBtn = $("selectBtn"), deleteBtn = $("deleteBtn"), selCount = $("selCount"), selectAllBtn = $("selectAllBtn");
   var dialogs = mountDialogs();
-  var CONV_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/></svg>';
 
   var sidebar = mountSidebar({
     onSelect: function (id) { window.location.href = "/c/" + encodeURIComponent(id); },
@@ -67,7 +67,6 @@ import { requireAuth, setPfp } from "./authguard.js";
     updateDeleteBtn();
   }
 
-  var MORE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>';
 
   async function reloadAll() { await loadSidebar(); loadMain(search.value.trim()); }
 
