@@ -196,25 +196,73 @@ import {
   // Wrap smd's default renderer to harden URLs. smd never emits raw HTML tags
   // (model text lands in text nodes), so href/src are the only injection
   // vector — we neutralize dangerous schemes and reveal external link targets.
-  // smd's built-in $…$/$$…$$ equation tokenizer is unreliable: a stray or
-  // mispaired `$`/`$$` makes it swallow whole sections — consuming the `$`
-  // delimiters as it goes — which destroys both the markdown structure and the
-  // math (unrecoverable after the fact). So we hide every `$` from smd behind a
-  // private-use sentinel before parsing; smd then only builds structure, the
-  // renderer restores `$` for display (add_text below), and enrich.js renders the
-  // math from the real `$`. smdParserWrite keeps a raw handle so smdWrite doesn't
-  // recurse.
-  var MATH_SENTINEL = String.fromCharCode(0xe000);
+  // Math ($…$/$$…$$) collides badly with markdown: smd's own equation tokenizer
+  // swallows whole sections on a mispaired `$`, and its `_ * \` handling would
+  // otherwise mangle LaTeX (subscripts→emphasis, `\,`→`,`). So for complete text
+  // (protectMath) we wrap each math span — OUTSIDE code — in backticks, which smd
+  // preserves verbatim, tagged with MATH_MARK for enrich.js to KaTeX-render.
+  // Stray/unmatched `$` (and every `$` on the streaming path, where we don't have
+  // the full text to scan) are masked to DOLLAR_MASK so smd's tokenizer never
+  // fires; add_text restores those to a literal `$`. smdParserWrite is a raw
+  // handle so smdWrite doesn't recurse.
+  var MATH_MARK = String.fromCharCode(0xe000);   // prefix inside a wrapped-math <code>
+  var DOLLAR_MASK = String.fromCharCode(0xe001); // masked `$`, restored by add_text
   var smdParserWrite = smd.parser_write;
   function smdWrite(parser, text) {
-    smdParserWrite(parser, text.indexOf("$") < 0 ? text : text.split("$").join(MATH_SENTINEL));
+    smdParserWrite(parser, text.indexOf("$") < 0 ? text : text.split("$").join(DOLLAR_MASK));
+  }
+  // Match $$…$$ (display) or $…$ (inline) at src[i]; mirrors smd's rule that `$`
+  // before a digit/space is not math (so "$5" stays currency). Returns null if no
+  // balanced span starts here.
+  function matchDollar(src, i) {
+    if (src[i + 1] === "$") {
+      var close = src.indexOf("$$", i + 2);
+      if (close > i + 1) { var d = src.slice(i + 2, close); if (d.trim() && d.indexOf("\n\n") < 0) return { tex: d, display: true, end: close + 2 }; }
+      return null;
+    }
+    var nx = src[i + 1];
+    if (!nx || nx === " " || nx === "\n" || nx === "\t" || (nx >= "0" && nx <= "9")) return null;
+    for (var j = i + 1; j < src.length; j++) {
+      if (src[j] === "\n") return null;
+      if (src[j] === "$") { var t = src.slice(i + 1, j); return t ? { tex: t, display: false, end: j + 1 } : null; }
+    }
+    return null;
+  }
+  // Wrap math spans in backticks (code is preserved verbatim by smd) so their
+  // LaTeX survives; skip fenced/inline code so real `$` there is untouched.
+  function protectMath(src) {
+    if (src.indexOf("$") < 0) return src;
+    var out = "", i = 0, n = src.length, fence = null;
+    while (i < n) {
+      if ((i === 0 || src[i - 1] === "\n")) {
+        var fm = /^[ \t]*(`{3,}|~{3,})/.exec(src.slice(i));
+        if (fm) {
+          if (!fence) fence = fm[1][0]; else if (fm[1][0] === fence) fence = null;
+          var e = src.indexOf("\n", i); e = e < 0 ? n : e + 1; out += src.slice(i, e); i = e; continue;
+        }
+      }
+      if (fence) { var e2 = src.indexOf("\n", i); e2 = e2 < 0 ? n : e2 + 1; out += src.slice(i, e2); i = e2; continue; }
+      var c = src[i];
+      if (c === "`") {
+        var run = /^`+/.exec(src.slice(i))[0];
+        var cl = src.indexOf(run, i + run.length);
+        var e3 = cl < 0 ? n : cl + run.length; out += src.slice(i, e3); i = e3; continue;
+      }
+      if (c === "$") {
+        var m = matchDollar(src, i);
+        if (m && m.tex.indexOf("`") < 0) { out += "`" + MATH_MARK + (m.display ? "D" : "") + m.tex + "`"; i = m.end; continue; }
+        out += DOLLAR_MASK; i++; continue; // stray/unwrappable `$` → literal
+      }
+      out += c; i++;
+    }
+    return out;
   }
   function makeRenderer(root) {
     var r = smd.default_renderer(root);
     r._stripped = false;
     var baseAddText = r.add_text;
     r.add_text = function (data, text) {
-      baseAddText(data, text.indexOf(MATH_SENTINEL) < 0 ? text : text.split(MATH_SENTINEL).join("$"));
+      baseAddText(data, text.indexOf(DOLLAR_MASK) < 0 ? text : text.split(DOLLAR_MASK).join("$"));
     };
     var base = r.set_attr;
     r.set_attr = function (data, type, value) {
@@ -260,7 +308,7 @@ import {
   function renderStaticMd(container, text) {
     var el = proseBlock(container);
     var np = newParser(el);
-    smdWrite(np.parser, text);
+    smdParserWrite(np.parser, protectMath(text)); // full text → wrap math, mask stray `$`
     smd.parser_end(np.parser);
     queueEnrich(el);
     return finalize(np.renderer);
@@ -598,7 +646,7 @@ import {
     closeActivity(rec);
     var el = proseBlock(rec.body);
     var np = newParser(el);
-    var sink = { el: el, parser: np.parser, renderer: np.renderer, buf: "" };
+    var sink = { el: el, parser: np.parser, renderer: np.renderer, buf: "", full: "" };
     rec.proses.push(sink);
     rec.textSink = sink;
     autoScroll();
@@ -799,6 +847,16 @@ import {
       if (p.buf) { smdWrite(p.parser, p.buf); p.buf = ""; }
       smd.parser_end(p.parser);
       if (finalize(p.renderer)) stripped = true;
+      // The live stream masks `$` (no full text to scan), so math content was
+      // parsed with markdown mangling. Now that the block is complete, re-render
+      // it once from the full text with math properly protected.
+      if (p.full && p.full.indexOf("$") >= 0) {
+        p.el.textContent = "";
+        var rp = newParser(p.el);
+        smdParserWrite(rp.parser, protectMath(p.full));
+        smd.parser_end(rp.parser);
+        if (finalize(rp.renderer)) stripped = true;
+      }
       queueEnrich(p.el);
     }
     rec.turn.classList.remove("generating");
@@ -878,6 +936,7 @@ import {
         var sink = openText(rec); // ends any open thinking; collapses the stepper
         if (!rec.firstDeltaAt) rec.firstDeltaAt = Date.now();
         sink.buf += data.delta;
+        sink.full += data.delta; // kept for the math-correct re-render at finalize
         scheduleFlush();
         break;
       }

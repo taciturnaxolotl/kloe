@@ -115,45 +115,29 @@ async function katex() {
   }
   return _katex;
 }
-// app.js masks `$` before feeding smd (smd's own equation tokenizer is unreliable
-// and swallows content), so the finished DOM holds literal $…$/$$…$$ in its text
-// nodes. We render those with KaTeX here. Only balanced spans match, so a stray
-// or mispaired `$` is simply left as text instead of eating the rest of the block.
+// app.js (protectMath) wraps each math span in backticks — smd preserves code
+// content verbatim, so the LaTeX survives markdown parsing intact — tagged with a
+// leading MATH_MARK (U+E000) and a "D" for display. Those land as <code> elements;
+// we KaTeX-render them and swap the <code> out. Real code has no MATH_MARK prefix
+// and is left alone. throwOnError so invalid LaTeX shows its source, never red.
+var MATH_MARK = String.fromCharCode(0xe000);
 async function enrichMath(root) {
-  if (root.textContent.indexOf("$") < 0) return; // no math → don't load katex
-  renderInlineMath(root, await katex());
-}
-
-// Render $$…$$ (display, may span a soft line break) and $…$ (inline, single
-// line) in a subtree's text nodes, skipping code. Balanced spans only — a stray
-// `$` never matches and is left as literal text (no swallow, unlike smd).
-var MATH_RE = /\$\$([\s\S]+?)\$\$|\$([^$\n]+?)\$/g;
-function renderInlineMath(root, k) {
-  var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode: function (n) {
-      if (!n.nodeValue || n.nodeValue.indexOf("$") < 0) return NodeFilter.FILTER_REJECT;
-      for (var p = n.parentElement; p && p !== root; p = p.parentElement) {
-        if (p.tagName === "CODE" || p.tagName === "PRE") return NodeFilter.FILTER_REJECT;
-      }
-      return NodeFilter.FILTER_ACCEPT;
-    },
-  });
-  var nodes = []; while (w.nextNode()) nodes.push(w.currentNode);
-  for (var i = 0; i < nodes.length; i++) {
-    var text = nodes[i].nodeValue; MATH_RE.lastIndex = 0;
-    var frag = document.createDocumentFragment(), last = 0, changed = false, m;
-    while ((m = MATH_RE.exec(text))) {
-      if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
-      var display = m[1] != null, tex = display ? m[1] : m[2];
-      var eq = document.createElement(display ? "equation-block" : "equation-inline");
-      eq.setAttribute("data-tex", "1"); // already rendered — skip on a later pass
-      try { eq.innerHTML = k.renderToString(tex, { displayMode: display, throwOnError: true }); }
-      catch (_) { eq.textContent = m[0]; }
-      frag.appendChild(eq); changed = true; last = MATH_RE.lastIndex;
-    }
-    if (!changed) continue;
-    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
-    nodes[i].parentNode.replaceChild(frag, nodes[i]);
+  var codes = root.querySelectorAll("code");
+  var maths = [];
+  for (var i = 0; i < codes.length; i++) {
+    if (codes[i].firstChild && codes[i].textContent.charCodeAt(0) === 0xe000) maths.push(codes[i]);
+  }
+  if (!maths.length) return; // no math → don't load katex
+  var k = await katex();
+  for (var j = 0; j < maths.length; j++) {
+    var c = maths[j];
+    var payload = c.textContent.slice(1); // drop MATH_MARK
+    var display = payload.charAt(0) === "D";
+    var tex = display ? payload.slice(1) : payload;
+    var eq = document.createElement(display ? "equation-block" : "equation-inline");
+    try { eq.innerHTML = k.renderToString(tex, { displayMode: display, throwOnError: true }); }
+    catch (_) { eq.textContent = tex; }
+    c.replaceWith(eq);
   }
 }
 
