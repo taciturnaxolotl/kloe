@@ -120,6 +120,8 @@ const LardSchema = v.object({
   scopes: v.optional(v.string(), "profile offline_access"),
   /** Collector name stamped on ingested sessions. */
   collector: v.optional(v.string(), "kloe"),
+  /** Push a conversation to lard once it has sat idle this long (ms); 0 disables ingest. */
+  ingestIdleMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0)), 180_000),
   timeoutMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 15_000),
 });
 

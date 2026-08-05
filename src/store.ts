@@ -739,6 +739,15 @@ export class Store {
     return rows.map((r) => ({ ...r, data: JSON.parse(r.data) }));
   }
 
+  /** Every event of a conversation with its wall-clock time — for folding a
+   * conversation into a lard ingest session (needs per-turn timestamps). */
+  allEventsTimed(conversationId: string): Array<{ event: string; data: unknown; createdAt: number }> {
+    const rows = this.db
+      .query("SELECT event, data, created_at FROM events WHERE conversation_id = ? ORDER BY seq ASC")
+      .all(conversationId) as Array<{ event: string; data: string; created_at: number }>;
+    return rows.map((r) => ({ event: r.event, data: JSON.parse(r.data), createdAt: r.created_at }));
+  }
+
   enqueue(jobId: string, conversationId: string, params: JobParams): void {
     this.enqueueStmt.run(jobId, conversationId, JSON.stringify(params), Date.now());
   }

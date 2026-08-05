@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { ModelMessage } from "ai";
 import { Store, parseJobParams, type JobParams, type JobRow } from "./store";
-import { LOCAL_SUB } from "./lard";
+import { LOCAL_SUB, lardEnabled } from "./lard";
+import { ingestConversation } from "./ingest";
+import { getConfig } from "./settings";
 import { ConversationActor, type RunStep } from "./actor";
 import { run, modelSupportsImages } from "./inference";
 import type { BlobStore } from "./blobs";
@@ -48,6 +50,8 @@ export class JobDriver {
   private readonly blobs?: BlobStore;
   /** Conversations with a run in flight in this process. */
   private readonly activeRuns = new Set<string>();
+  /** Per-conversation idle timers that trigger a debounced lard ingest. */
+  private readonly ingestTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(
     store: Store,
@@ -156,6 +160,26 @@ export class JobDriver {
         this.store.heartbeat(jobId, Date.now() + LEASE_GRACE_MS);
       },
     );
+    // The run finished; (re)arm the idle timer so we ingest once the thread goes
+    // quiet. A follow-up message cancels + rearms it, so a busy chat isn't pushed
+    // mid-conversation.
+    this.scheduleIngest(actor.conversationId);
+  }
+
+  /** Debounced, idle-triggered lard ingest: reset a per-conversation timer on
+   * each completed run and only push once the thread has sat quiet. */
+  private scheduleIngest(conversationId: string): void {
+    if (!lardEnabled()) return;
+    const idleMs = getConfig().lard.ingestIdleMs;
+    if (idleMs <= 0) return;
+    const existing = this.ingestTimers.get(conversationId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.ingestTimers.delete(conversationId);
+      void ingestConversation(this.store, conversationId);
+    }, idleMs);
+    if (typeof timer.unref === "function") timer.unref(); // never hold the process open
+    this.ingestTimers.set(conversationId, timer);
   }
 
   /** The provider stream, tapped to record first-token time and chunk count. */
