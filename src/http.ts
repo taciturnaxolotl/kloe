@@ -246,7 +246,7 @@ function requireKnownBlobs(attachments: PromptBody["attachments"], store: Store)
   return null;
 }
 
-function startRun(conversationId: string, data: PromptBody, store: Store): Response {
+function startRun(conversationId: string, data: PromptBody, store: Store, owner?: string): Response {
   const rejected = requireKnownModel(data.model);
   if (rejected) return rejected;
   const badBlob = requireKnownBlobs(data.attachments, store);
@@ -256,6 +256,9 @@ function startRun(conversationId: string, data: PromptBody, store: Store): Respo
   const runId = data.runId ?? randomUUID();
   const messageId = randomUUID();
   actor.appendUser(data.content, runId, data.attachments);
+  // Record the owner on the freshly-created conversation (first writer wins), so
+  // per-user lard identity can resolve back to whose token to use.
+  store.setConversationOwner(conversationId, owner);
 
   const jobId = `${conversationId}:${randomUUID()}`;
   store.enqueue(jobId, conversationId, { conversationId, runId, messageId, prompt: data.content, model: data.model });
@@ -461,7 +464,7 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     },
     "/api/conversations/:id/prompt": {
       POST: withBody(PromptBody, (data, req: Bun.BunRequest<"/api/conversations/:id/prompt">) => {
-        const res = startRun(req.params.id, data, store);
+        const res = startRun(req.params.id, data, store, getSession(req, store)?.sub);
         kick();
         return res;
       }),

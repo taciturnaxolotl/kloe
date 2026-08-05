@@ -343,6 +343,13 @@ export class Store {
     } catch {
       // column already exists
     }
+    // Migration: owner_sub records which kloe user started a conversation (for
+    // per-user lard identity). NULL for pre-existing rows / auth-off (→ local).
+    try {
+      this.db.exec("ALTER TABLE conversations ADD COLUMN owner_sub TEXT");
+    } catch {
+      // column already exists
+    }
 
     this.readStmt = this.db.prepare(
       `SELECT seq, event, data FROM events
@@ -667,6 +674,19 @@ export class Store {
 
   deleteLardToken(sub: string): void {
     this.db.query("DELETE FROM lard_tokens WHERE sub = ?").run(sub);
+  }
+
+  // ---- conversation ownership --------------------------------------------
+  /** Stamp who started a conversation, first writer wins (no-op without a sub). */
+  setConversationOwner(id: string, sub: string | undefined): void {
+    if (!sub) return;
+    this.db.query("UPDATE conversations SET owner_sub = ? WHERE id = ? AND owner_sub IS NULL").run(sub, id);
+  }
+
+  /** The kloe user `sub` that owns a conversation, or undefined (auth-off / legacy). */
+  getConversationOwner(id: string): string | undefined {
+    const row = this.db.query("SELECT owner_sub FROM conversations WHERE id = ?").get(id) as { owner_sub: string | null } | null;
+    return row?.owner_sub ?? undefined;
   }
 
   /**
