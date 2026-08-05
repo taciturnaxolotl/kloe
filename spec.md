@@ -823,11 +823,13 @@ project { id, name, lardProject: "<lard project id>" | null, createdAt, updatedA
 - A conversation optionally **belongs to** one project (`conversation.projectId`,
   nullable — an "unfiled" chat has none). The sidebar can group recents under
   their project; a project page lists its chats.
-- **Shared context files.** A project owns a small set of editable markdown
-  documents — context files — injected verbatim into the system prompt of
-  *every* chat in the project (the way a repo's AGENTS.md grounds a coding
-  agent). They are the project's hand-authored, always-on memory: instructions,
-  glossaries, standing decisions. Keyed by project, edited from the project page.
+- **Shared context files.** A project's always-on context lives in **lard**, not
+  kloe: the pinned lard project's subject files (its `area`, and any chosen
+  `topics/`/`people/` paths) are the editable context, injected verbatim into the
+  system prompt of *every* chat in the project (the way a repo's AGENTS.md grounds
+  a coding agent). One source of truth — the project page edits them through the
+  same `memory_write`/`PUT /memory/{path}` surface the tools use. A project with
+  no lard pin still groups chats; it just has no shared context.
 - **Why a layer, not a tag.** Grouping is the cheap part; the value is that a
   project is the unit that *shares state* — context files plus a pinned memory
   project — so a new chat in it starts already knowing what the others
@@ -841,17 +843,27 @@ to); kloe's project holds that id so every chat, tool call, and ingested session
 routes to the same lard area. Set it explicitly, or resolve it once from hints
 via lard's `POST /projects/resolve`.
 
-### Auth — device grant, once
+### Auth — device grant, per user
 
-lard is an OAuth 2.1 protected resource. kloe authenticates as a **collector**
-with the device authorization grant (RFC 8628): discover the AS from lard's
-`/.well-known/oauth-protected-resource`, POST the device endpoint, show the user
-a code + verification URL, poll the token endpoint, store the token (with
-`offline_access` → a refresh token, so kloe outlives the 1-hour access token).
-This is an operator action run once (`bun run lard-login`), **not** a per-user
-login — kloe holds one machine identity to lard, distinct from kloe's own user
-auth. The token lives outside the event log (a token file / one-row table),
-refreshed lazily before each call.
+lard is an OAuth 2.1 protected resource, and its identity model is **per user**
+(`allowed_users` gates by `me` url). So kloe's link to lard follows kloe's own
+auth: it's **per kloe user**. Each user connects their own lard account with the
+device authorization grant (RFC 8628) — kloe, acting as a fixed OAuth client
+(the deployment's collector `clientId`), discovers the AS from
+`/.well-known/oauth-protected-resource`, starts the device flow, shows a code +
+verification URL, polls the token endpoint, and stores the resulting token
+**keyed by the kloe user's `sub`**. Memory reads, tool calls, and ingest in a run
+use *that* user's token, so each user sees and writes only their own lard memory.
+`offline_access` yields a refresh token; kloe refreshes lazily.
+
+Config splits accordingly. `kloe.json`'s `lard` section is deployment-level —
+*which* lard and *which* OAuth client to be (`baseUrl`, `clientId`, `scopes`,
+`collector`). The per-user token and project pins live in kloe's DB keyed by
+`sub`, never in `kloe.json` and never in the event log. When kloe auth is
+disabled (single-user/local) there's one implicit user and one token — the
+`bun run lard-login` CLI covers that case; with auth on, users connect from
+kloe's settings page. A user for whom lard is enabled but unconnected simply gets
+none of the three behaviours until they link.
 
 ### Three ways kloe uses lard
 
@@ -880,19 +892,20 @@ cleanly into read, tool, and write paths:
 
 ### Data-model & boundaries
 
-- New `projects` table (id, name, lard_project, timestamps) and `project_context`
-  (project_id, path, body) for context files; `conversations` gains a nullable
-  `project_id`. Project mutations are ordinary API actions, **not** conversation
-  events (a project isn't a stream); the conversation↔project link is a column,
-  set at creation or moved later. lard tokens live in their own store, never in
-  the conversation log.
+- New `projects` table (id, name, lard_project, timestamps); `conversations` gains
+  a nullable `project_id`. Context files are **not** stored in kloe — they're lard
+  subjects, edited through the memory surface. Project mutations are ordinary API
+  actions, **not** conversation events (a project isn't a stream); the
+  conversation↔project link is a column, set at creation or moved later. lard
+  tokens live in their own store, never in the conversation log.
 - lard is **optional and external** — kloe degrades to today's flat behavior when
   it's absent or unreachable (a failed `/context` fetch is logged and skipped,
   never blocks a run).
-- kloe holds **one** machine identity to lard; per-kloe-user scoping of lard
-  subjects is out of scope for the base build (single-tenant homelab assumption,
-  matching lard's own model). Context files are kloe-owned and always-on; lard
-  subjects are lard-owned and learned — complementary, not the same thing.
+- lard identity is **per kloe user** — each user's own device-grant token maps to
+  their own lard subjects (kloe is a fixed OAuth *client* to lard, but the token
+  carries the user, so multi-user kloe rides lard's per-user model cleanly). With
+  kloe auth off, one implicit user. Projects belong to a user; the pinned lard
+  project + that user's identity together scope memory.
 
 ## Stack
  
@@ -979,7 +992,9 @@ buy *reconciliation*, which most of a chat UI never needs.
   project id (facts already extracted under the old one are lard's to
   supersede), and whether context-file changes should retroactively affect past
   chats' replays (they shouldn't — context is injected per run, not stored).
-- Single machine identity vs. per-user: kloe authenticates to lard once as a
-  collector, so all kloe users share one lard view. If kloe ever becomes truly
-  multi-tenant, the auth boundary to lard (one token vs. per-user device grant)
-  reopens.
+- Per-user lard tokens: each kloe user device-grants their own lard token (keyed
+  by `sub`), so memory is per-user. Open: token refresh races if two runs for one
+  user refresh at once (single-flight the refresh), and whether an admin can
+  connect on another user's behalf. Also: a project is owned by one user — do
+  shared/team projects (multiple kloe users, one lard project) need their own
+  model, or is "same lard project, each with their own token" enough?
