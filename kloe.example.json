@@ -21,6 +21,15 @@
     "apiKey": "$CERAMIC_API_KEY",
     "maxResults": 5
   },
+  "prompt": {
+    "name": "Kloe",
+    "tagline": "your homelab chat",
+    "personality": "You are warm, direct, and unpretentious.",
+    "preferences": "Prefer metric units and 24-hour time.",
+    "math": true,
+    "noEmoji": false,
+    "contextFiles": []
+  },
   "providers": [
     {
       "id": "anthropic",

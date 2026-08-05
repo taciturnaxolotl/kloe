@@ -89,12 +89,34 @@ const ServerSchema = v.object({
   dbPath: v.optional(v.string(), "data/kloe.db"),
 });
 
+/**
+ * System-prompt persona/preferences. Rendered into `prompt.tpl` per run (see
+ * prompt.ts). All freeform and optional — an empty config yields a sane default
+ * assistant grounded in the current date and the exposed tools.
+ */
+const PromptSchema = v.object({
+  name: v.optional(v.string(), "Kloe"),
+  tagline: v.optional(v.string()),
+  personality: v.optional(v.string()),
+  preferences: v.optional(v.string()),
+  boundaries: v.optional(v.string()),
+  /** The client renders LaTeX (KaTeX), so math is advertised by default. */
+  math: v.optional(v.boolean(), true),
+  noEmoji: v.optional(v.boolean(), false),
+  platform: v.optional(v.string()),
+  /** Files whose contents are injected into the <memory> block (missing ones skipped). */
+  contextFiles: v.optional(v.array(v.string()), []),
+  /** Override the bundled template; absent → the built-in prompt.tpl. */
+  templatePath: v.optional(v.string()),
+});
+
 export const ConfigSchema = v.object({
   $schema: v.optional(v.string()),
   server: section(ServerSchema),
   blobs: section(BlobsSchema),
   catwalk: section(CatwalkSchema),
   search: section(SearchSchema),
+  prompt: section(PromptSchema),
   providers: v.optional(v.array(ProviderSchema), []),
 });
 export type Config = v.InferOutput<typeof ConfigSchema>;

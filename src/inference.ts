@@ -1,5 +1,6 @@
 import { streamText, stepCountIs, type LanguageModel, type ModelMessage, type JSONValue } from "ai";
 import { toolSet } from "./tools";
+import { buildSystemPrompt } from "./prompt";
 import { MAX_TOOL_STEPS } from "./config";
 import { ProviderRegistry } from "./providers";
 import { RateLimiter } from "./ratelimit";
@@ -144,8 +145,12 @@ export async function* run(
   // it prevents the endpoint's low default from cutting a run off mid-reasoning
   // (which surfaced as finishReason=length with no answer text).
   const maxOutputTokens = cfg?.maxOutputTokens || modelInfo(opts.model)?.defaultMaxTokens || undefined;
+  // System prompt: grounds the turn in the current date and tells the model
+  // which tools it may reach for (built from the set actually exposed above).
+  const system = buildSystemPrompt({ tools });
   const result = streamText({
     model,
+    system,
     messages,
     temperature: opts.temperature ?? 0.7,
     abortSignal: opts.abortSignal,

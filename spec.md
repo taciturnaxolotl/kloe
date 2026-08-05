@@ -544,6 +544,22 @@ and the picker already renders a "reasoning" tag.
   text delta. Handle all three real cases gracefully: raw thinking, summary
   only, none.
 
+### System prompt
+
+Every run is grounded by a system prompt (`streamText`'s `system`), built per
+turn in `prompt.ts` from a publisher-owned template (`prompt.tpl`, Go
+text/template syntax so it reads like Crush's). Rendered with: the **current
+date** (so the model isn't stuck at its training cutoff), the deployment's
+persona/preferences/boundaries from the `prompt` config section, and the set of
+tools **actually exposed to this run** — the `<tools>` block (and its "reach for
+tools rather than speculate" nudge) appears only when tools exist, which is the
+other half of getting a model to call them (the first half is exposing them at
+all — a search provider must be configured, or `toolSet()` is empty and no
+`tools` are sent). The renderer implements only the subset the file uses
+(`{{.Field}}`, `{{if}}/{{else}}/{{end}}`, `{{range}}`, comments); it is not a
+general engine. A deployment can override the template path or drop context
+files into the `<memory>` block via config.
+
 ### Tools — the explicit, durable loop
 
 The AI SDK will run the whole tool loop itself (`stopWhen` + `tool.execute`).

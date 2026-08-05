@@ -131,6 +131,55 @@
         "maxResults": 5
       }
     },
+    "prompt": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "default": "Kloe"
+        },
+        "tagline": {
+          "type": "string"
+        },
+        "personality": {
+          "type": "string"
+        },
+        "preferences": {
+          "type": "string"
+        },
+        "boundaries": {
+          "type": "string"
+        },
+        "math": {
+          "type": "boolean",
+          "default": true
+        },
+        "noEmoji": {
+          "type": "boolean",
+          "default": false
+        },
+        "platform": {
+          "type": "string"
+        },
+        "contextFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "templatePath": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "default": {
+        "name": "Kloe",
+        "math": true,
+        "noEmoji": false,
+        "contextFiles": []
+      }
+    },
     "providers": {
       "type": "array",
       "items": {
