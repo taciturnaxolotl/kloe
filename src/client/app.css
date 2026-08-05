@@ -655,6 +655,7 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
 
 /* Edit-details modal. */
 .modal { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 1.5rem; }
+.modal[hidden] { display: none; } /* a `display` rule otherwise beats the hidden attribute */
 .modalback { position: absolute; inset: 0; background: rgba(0,0,0,.4); }
 .modalcard { position: relative; width: 100%; max-width: 27rem; background: var(--bg-raise);
   border: 1px solid var(--rule); border-radius: var(--radius-lg); padding: 22px; }
