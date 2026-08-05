@@ -7,7 +7,8 @@
     "dev": "bun --watch server.ts",
     "start": "NODE_ENV=production bun server.ts",
     "test": "bun test",
-    "schema": "bun scripts/gen-schema.ts"
+    "schema": "bun scripts/gen-schema.ts",
+    "lard-login": "bun scripts/lard-login.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.27",

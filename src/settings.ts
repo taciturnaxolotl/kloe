@@ -101,6 +101,26 @@ const SearchSchema = v.object({
   maxResults: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 5),
 });
 
+/**
+ * Optional integration with a lard memory server (../lard). Deployment-level:
+ * WHICH lard and WHICH OAuth client to be. Per-user device-grant tokens and
+ * project pins live in the DB keyed by the kloe user `sub` — never here, never in
+ * the event log. Disabled by default; when enabled, each user connects their own
+ * lard account (device grant) before any memory behaviour applies to them.
+ */
+const LardSchema = v.object({
+  enabled: v.optional(v.boolean(), false),
+  /** lard server base URL, e.g. https://lard.dunkirk.sh */
+  baseUrl: v.optional(v.string(), ""),
+  /** OAuth client id for the device grant; empty → fetch lard's /auth/collector registration. */
+  clientId: v.optional(v.string(), ""),
+  /** Scopes requested at login; `offline_access` yields a refresh token. */
+  scopes: v.optional(v.string(), "profile offline_access"),
+  /** Collector name stamped on ingested sessions. */
+  collector: v.optional(v.string(), "kloe"),
+  timeoutMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 15_000),
+});
+
 const ServerSchema = v.object({
   port: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(65535)), 3000),
   dbPath: v.optional(v.string(), "data/kloe.db"),
@@ -165,6 +185,7 @@ export const ConfigSchema = v.object({
   search: section(SearchSchema),
   fetch: section(FetchSchema),
   auth: section(AuthSchema),
+  lard: section(LardSchema),
   prompt: section(PromptSchema),
   providers: v.optional(v.array(ProviderSchema), []),
 });

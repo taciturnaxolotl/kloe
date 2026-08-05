@@ -229,6 +229,45 @@
         "logoUri": ""
       }
     },
+    "lard": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "baseUrl": {
+          "type": "string",
+          "default": ""
+        },
+        "clientId": {
+          "type": "string",
+          "default": ""
+        },
+        "scopes": {
+          "type": "string",
+          "default": "profile offline_access"
+        },
+        "collector": {
+          "type": "string",
+          "default": "kloe"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 15000
+        }
+      },
+      "required": [],
+      "default": {
+        "enabled": false,
+        "baseUrl": "",
+        "clientId": "",
+        "scopes": "profile offline_access",
+        "collector": "kloe",
+        "timeoutMs": 15000
+      }
+    },
     "prompt": {
       "type": "object",
       "properties": {

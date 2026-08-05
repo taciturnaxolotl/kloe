@@ -249,6 +249,17 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions (expires_at);
+
+-- Per-user OAuth device-grant tokens for the lard memory server. One row per
+-- kloe user (sub); "local" is the implicit user when kloe auth is disabled.
+-- Never in the event log. access_token is refreshed lazily via refresh_token.
+CREATE TABLE IF NOT EXISTS lard_tokens (
+  sub           TEXT PRIMARY KEY,
+  access_token  TEXT NOT NULL,
+  refresh_token TEXT,
+  expires_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
 `;
 
 /** Cached profile fields for a signed-in user (from the OAuth token response). */
@@ -257,6 +268,13 @@ export interface SessionProfile {
   email?: string;
   picture?: string;
   url?: string;
+}
+
+/** A user's stored lard device-grant token. `expiresAt` is epoch ms (0 = unknown). */
+export interface LardToken {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt: number;
 }
 /** A live auth session: the cookie id, the user's stable subject, and profile. */
 export interface Session {
@@ -625,6 +643,30 @@ export class Store {
   /** Drops expired sessions (periodic sweep). */
   sweepSessions(now: number = Date.now()): void {
     this.db.query("DELETE FROM sessions WHERE expires_at <= ?").run(now);
+  }
+
+  // ---- lard device-grant tokens (per kloe user) --------------------------
+  getLardToken(sub: string): LardToken | undefined {
+    const row = this.db
+      .query("SELECT access_token, refresh_token, expires_at FROM lard_tokens WHERE sub = ?")
+      .get(sub) as { access_token: string; refresh_token: string | null; expires_at: number } | null;
+    if (!row) return undefined;
+    return { accessToken: row.access_token, refreshToken: row.refresh_token ?? undefined, expiresAt: row.expires_at };
+  }
+
+  setLardToken(sub: string, tok: LardToken): void {
+    this.db
+      .query(
+        `INSERT INTO lard_tokens (sub, access_token, refresh_token, expires_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(sub) DO UPDATE SET access_token=excluded.access_token,
+           refresh_token=excluded.refresh_token, expires_at=excluded.expires_at, updated_at=excluded.updated_at`,
+      )
+      .run(sub, tok.accessToken, tok.refreshToken ?? null, tok.expiresAt, Date.now());
+  }
+
+  deleteLardToken(sub: string): void {
+    this.db.query("DELETE FROM lard_tokens WHERE sub = ?").run(sub);
   }
 
   /**
