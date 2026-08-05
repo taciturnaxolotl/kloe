@@ -6,9 +6,8 @@
  */
 import { mountSidebar } from "./sidebar.js";
 import { mountDialogs } from "./confirm.js";
-import { openChatMenu } from "./chatmenu.js";
+import { convRow } from "./convrow.js";
 import { requireAuth, setPfp } from "./authguard.js";
-import { CONV_ICON, MORE_ICON as MORE } from "./icons.js";
 
 (function () {
   "use strict";
@@ -38,18 +37,6 @@ import { CONV_ICON, MORE_ICON as MORE } from "./icons.js";
   }
   function writeListCache(list) {
     try { sessionStorage.setItem(LIST_CACHE, JSON.stringify(list || [])); } catch (_) {}
-  }
-
-  // "Today" / "Yesterday" / "Jun 6" / "Jun 6, 2024" — a compact last-active date.
-  function fmtDate(ms) {
-    var d = new Date(ms), now = new Date();
-    var startOfDay = function (x) { return new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime(); };
-    var days = Math.round((startOfDay(now) - startOfDay(d)) / 86400000);
-    if (days === 0) return "Today";
-    if (days === 1) return "Yesterday";
-    var opts = { month: "short", day: "numeric" };
-    if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
-    return d.toLocaleDateString(undefined, opts);
   }
 
   function checks() { return Array.prototype.slice.call(rows.querySelectorAll(".chatcheck")); }
@@ -107,60 +94,20 @@ import { CONV_ICON, MORE_ICON as MORE } from "./icons.js";
       return;
     }
     list.forEach(function (c) {
-      var row = document.createElement("div");
-      row.className = "chatrow"; row.dataset.id = c.id;
-
-      var cb = document.createElement("input");
-      cb.type = "checkbox"; cb.className = "chatcheck"; cb.setAttribute("aria-label", "Select conversation");
-
-      var main = document.createElement("div");
-      main.className = "chatmain";
-      var t = document.createElement("div");
-      t.className = "chattitle"; t.textContent = c.title || "Untitled";
-      main.appendChild(t);
-      if (c.snippet && c.snippet !== c.title) {
-        var s = document.createElement("div");
-        s.className = "chatsnip"; s.textContent = c.snippet;
-        main.appendChild(s);
-      }
-
-      // The date holds the slot; the ⋮ overlays it (absolute) and fades in on
-      // hover, so revealing it never reflows the row.
-      var end = document.createElement("div");
-      end.className = "chatend";
-      var date = document.createElement("div");
-      date.className = "chatdate"; date.textContent = fmtDate(c.updatedAt || c.createdAt);
-      var more = document.createElement("button");
-      more.className = "chatmore"; more.type = "button";
-      more.setAttribute("aria-label", "Conversation options"); more.innerHTML = MORE;
-      end.appendChild(date); end.appendChild(more);
-
-      var icon = document.createElement("span");
-      icon.className = "chaticon"; icon.innerHTML = CONV_ICON;
-      row.appendChild(cb); row.appendChild(icon); row.appendChild(main); row.appendChild(end);
-
-      function openMenu(x, y) {
-        openChatMenu(x, y, {
-          id: c.id, title: c.title, dialogs: dialogs, reload: reloadAll,
-          extra: [{ label: "Select", onClick: function () {
+      rows.appendChild(convRow(c, {
+        dialogs: dialogs, reload: reloadAll, snippet: true, selectable: true,
+        onCheck: updateDeleteBtn,
+        onClick: function (c, ref) {
+          if (selectMode) { ref.checkbox.checked = !ref.checkbox.checked; updateDeleteBtn(); }
+          else window.location.href = "/c/" + encodeURIComponent(c.id);
+        },
+        extra: function (c, ref) {
+          return [{ label: "Select", onClick: function () {
             if (!selectMode) setSelectMode(true);
-            cb.checked = true; updateDeleteBtn();
-          } }],
-        });
-      }
-      row.addEventListener("click", function () {
-        if (selectMode) { cb.checked = !cb.checked; updateDeleteBtn(); }
-        else window.location.href = "/c/" + encodeURIComponent(c.id);
-      });
-      row.addEventListener("contextmenu", function (ev) { ev.preventDefault(); openMenu(ev.clientX, ev.clientY); });
-      cb.addEventListener("click", function (ev) { ev.stopPropagation(); updateDeleteBtn(); });
-      more.addEventListener("click", function (ev) {
-        ev.stopPropagation();
-        var r = more.getBoundingClientRect();
-        openMenu(r.right, r.bottom + 4);
-      });
-
-      rows.appendChild(row);
+            ref.checkbox.checked = true; updateDeleteBtn();
+          } }];
+        },
+      }));
     });
   }
 

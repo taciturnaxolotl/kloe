@@ -7,8 +7,9 @@
 import { mountSidebar } from "./sidebar.js";
 import { mountDialogs } from "./confirm.js";
 import { showContextMenu } from "./ctxmenu.js";
+import { convRow } from "./convrow.js";
 import { requireAuth, setPfp } from "./authguard.js";
-import { CONV_ICON, MORE_ICON, PENCIL_ICON, PLUS_ICON, TRASH_ICON, FILE_ICON } from "./icons.js";
+import { MORE_ICON, PENCIL_ICON, PLUS_ICON, TRASH_ICON, FILE_ICON } from "./icons.js";
 
 (function () {
   "use strict";
@@ -30,35 +31,22 @@ import { CONV_ICON, MORE_ICON, PENCIL_ICON, PLUS_ICON, TRASH_ICON, FILE_ICON } f
   $("memEdit").innerHTML = PENCIL_ICON;
   $("ctxAdd").innerHTML = PLUS_ICON;
 
-  function fmtDate(ms) {
-    var d = new Date(ms), now = new Date();
-    var sod = function (x) { return new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime(); };
-    var days = Math.round((sod(now) - sod(d)) / 86400000);
-    if (days === 0) return "Today";
-    if (days === 1) return "Yesterday";
-    var o = { month: "short", day: "numeric" };
-    if (d.getFullYear() !== now.getFullYear()) o.year = "numeric";
-    return d.toLocaleDateString(undefined, o);
-  }
-
   // ---- chats ----
   function renderChats(list) {
     var rows = $("rows");
     rows.innerHTML = "";
     if (!list.length) { rows.innerHTML = '<div class="chatsempty">No chats yet. Start one below.</div>'; return; }
     list.forEach(function (c) {
-      var row = document.createElement("a");
-      row.className = "chatrow"; row.href = "/c/" + encodeURIComponent(c.id);
-      var icon = document.createElement("span"); icon.className = "chaticon"; icon.innerHTML = CONV_ICON;
-      var main = document.createElement("div"); main.className = "chatmain";
-      var t = document.createElement("div"); t.className = "chattitle"; t.textContent = c.title || "Untitled";
-      main.appendChild(t);
-      var end = document.createElement("div"); end.className = "chatend";
-      var date = document.createElement("div"); date.className = "chatdate"; date.textContent = fmtDate(c.updatedAt || c.createdAt);
-      end.appendChild(date);
-      row.appendChild(icon); row.appendChild(main); row.appendChild(end);
-      rows.appendChild(row);
+      rows.appendChild(convRow(c, { dialogs: dialogs, reload: loadChats }));
     });
+  }
+
+  // Re-fetch just this project's chats (after a rename/delete from the ⋮ menu).
+  async function loadChats() {
+    try {
+      var d = await (await fetch("/api/projects/" + encodeURIComponent(projectId))).json();
+      renderChats(d.conversations || []);
+    } catch (_) { /* leave the current rows */ }
   }
 
   async function patch(fields) {
