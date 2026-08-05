@@ -1,6 +1,11 @@
 import { tool, jsonSchema, type Tool, type ToolSet } from "ai";
 import { createSearchProvider, type SearchProvider } from "./search";
 import { createFetchProvider, type FetchProvider } from "./fetch";
+import {
+  lardEnabled, lardConnected, contextToText,
+  getContext, memoryList, memoryRead, memoryWrite, memoryAppend,
+} from "./lard";
+import type { Store } from "./store";
 
 /**
  * The tool registry. Each entry is an AI SDK `tool` with an input schema and an
@@ -68,12 +73,61 @@ const REGISTRY: Array<{ name: string; create: () => Tool | null }> = [
   { name: "web_search", create: () => { const p = createSearchProvider(); return p ? webSearch(p) : null; } },
 ];
 
+// lard memory tools, bound to ONE kloe user's token (store + sub). Only offered
+// when that user is connected, so the model can read/record durable context.
+// Paths are lard's own: `profile`, `areas/<n>`, `topics/<n>`, `people/<n>`.
+function lardTools(store: Store, sub: string): ToolSet {
+  const pathSchema = jsonSchema<{ path: string }>({
+    type: "object", additionalProperties: false, required: ["path"],
+    properties: { path: { type: "string", description: "Subject path, e.g. profile, areas/homelab, people/kieran." } },
+  });
+  return {
+    memory_get_context: tool({
+      description: "Get the durable memory context: the user profile plus a listing of every subject on record. Call this to ground yourself before answering.",
+      inputSchema: jsonSchema<Record<string, never>>({ type: "object", additionalProperties: false, properties: {} }),
+      execute: async () => contextToText(await getContext(store, sub)),
+    }),
+    memory_list: tool({
+      description: "List all memory subjects (path, kind, name, description).",
+      inputSchema: jsonSchema<Record<string, never>>({ type: "object", additionalProperties: false, properties: {} }),
+      execute: async () => JSON.stringify(await memoryList(store, sub)),
+    }),
+    memory_read: tool({
+      description: "Read one memory subject's markdown body.",
+      inputSchema: pathSchema,
+      execute: async ({ path }) => memoryRead(store, sub, path),
+    }),
+    memory_write: tool({
+      description: "Overwrite a memory subject with new markdown. Use to correct or rewrite a subject; prefer memory_append for adding a single fact.",
+      inputSchema: jsonSchema<{ path: string; body: string }>({
+        type: "object", additionalProperties: false, required: ["path", "body"],
+        properties: { path: { type: "string" }, body: { type: "string", description: "Full markdown body to store." } },
+      }),
+      execute: async ({ path, body }) => { await memoryWrite(store, sub, path, body); return `wrote ${path}`; },
+    }),
+    memory_append: tool({
+      description: "Append one line/fact to a memory subject (created if absent).",
+      inputSchema: jsonSchema<{ path: string; line: string }>({
+        type: "object", additionalProperties: false, required: ["path", "line"],
+        properties: { path: { type: "string" }, line: { type: "string", description: "A single line to append." } },
+      }),
+      execute: async ({ path, line }) => { await memoryAppend(store, sub, path, line); return `appended to ${path}`; },
+    }),
+  };
+}
+
+/** Extra context a run passes in so per-user tools (lard) bind to the right token. */
+export interface ToolContext { store?: Store; owner?: string; }
+
 /** The tools available to a run; empty → no tools passed to the provider. */
-export function toolSet(): ToolSet {
+export function toolSet(ctx: ToolContext = {}): ToolSet {
   const tools: ToolSet = {};
   for (const entry of REGISTRY) {
     const t = entry.create();
     if (t) tools[entry.name] = t;
+  }
+  if (ctx.store && ctx.owner && lardEnabled() && lardConnected(ctx.store, ctx.owner)) {
+    Object.assign(tools, lardTools(ctx.store, ctx.owner));
   }
   return tools;
 }

@@ -66,3 +66,11 @@ Today's date: {{.Date}}
 </file>
 {{end}}</memory>
 {{end}}
+
+{{if .Memory}}
+<recall>
+Durable memory about the user and their work, from lard. Treat it as background you already know; use the memory_* tools to read a subject in full or record new facts.
+
+{{.Memory}}
+</recall>
+{{end}}

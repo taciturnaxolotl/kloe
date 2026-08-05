@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ModelMessage } from "ai";
 import { Store, parseJobParams, type JobParams, type JobRow } from "./store";
+import { LOCAL_SUB } from "./lard";
 import { ConversationActor, type RunStep } from "./actor";
 import { run, modelSupportsImages } from "./inference";
 import type { BlobStore } from "./blobs";
@@ -141,10 +142,13 @@ export class JobDriver {
       supportsImages: modelSupportsImages(spec.model),
     });
     if (timing) timing.historyMs = Date.now() - hStart;
+    // Resolve who owns this conversation so the run's tools + memory bind to
+    // that user's lard token (local user when unstamped / auth off).
+    const owner = this.store.getConversationOwner(actor.conversationId) ?? LOCAL_SUB;
     await actor.runText(
       spec.runId,
       spec.messageId,
-      (signal) => this.streamTimed(messages, spec, signal, timing),
+      (signal) => this.streamTimed(messages, spec, signal, owner, timing),
       (seq) => {
         // Advance the job's durable checkpoint + lease on each flush so a
         // crash mid-run is re-claimed from the last flushed seq.
@@ -159,9 +163,10 @@ export class JobDriver {
     messages: ModelMessage[],
     spec: RunSpec,
     signal: AbortSignal,
+    owner: string,
     timing?: RunTiming,
   ): AsyncGenerator<RunStep> {
-    for await (const step of run(messages, { runId: spec.runId, model: spec.model, abortSignal: signal })) {
+    for await (const step of run(messages, { runId: spec.runId, model: spec.model, abortSignal: signal, store: this.store, owner })) {
       if (timing && step.kind === "text") {
         if (!timing.firstTokenAt) timing.firstTokenAt = Date.now();
         timing.chunks++;

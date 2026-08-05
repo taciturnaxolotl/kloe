@@ -162,9 +162,10 @@ function contextFiles(paths: string[]): Array<{ Path: string; Content: string }>
  * this run (so the <tools> section — and its "reach for tools" nudge — appears
  * only when there are tools to reach for).
  */
-export function buildSystemPrompt(opts: { tools: ToolSet; now?: Date }): string {
+export function buildSystemPrompt(opts: { tools: ToolSet; now?: Date; memory?: string }): string {
   const p = getConfig().prompt;
   const data: Record<string, unknown> = {
+    Memory: opts.memory?.trim() ?? "",
     Name: p.name,
     Tagline: p.tagline ?? "",
     Date: formatDate(opts.now ?? new Date()),

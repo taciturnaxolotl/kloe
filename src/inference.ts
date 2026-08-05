@@ -1,6 +1,8 @@
 import { streamText, stepCountIs, type LanguageModel, type ModelMessage, type JSONValue } from "ai";
 import { toolSet } from "./tools";
 import { buildSystemPrompt } from "./prompt";
+import { lardEnabled, lardConnected, getContext, contextToText } from "./lard";
+import type { Store } from "./store";
 import { MAX_TOOL_STEPS } from "./config";
 import { ProviderRegistry } from "./providers";
 import { RateLimiter } from "./ratelimit";
@@ -123,6 +125,9 @@ export interface RunOptions {
   runId: string;
   abortSignal?: AbortSignal;
   temperature?: number;
+  /** For per-user lard: the run's store + the conversation owner's `sub`. */
+  store?: Store;
+  owner?: string;
 }
 
 export async function* run(
@@ -138,16 +143,23 @@ export async function* run(
   // Only send tools when some are configured (e.g. web_search needs a search
   // provider) — a toolless deployment sends no `tools`, so endpoints that reject
   // an unknown tools field are unaffected.
-  const tools = toolSet();
+  const tools = toolSet({ store: opts.store, owner: opts.owner });
   const hasTools = Object.keys(tools).length > 0;
   // Output cap: an explicit provider override wins; otherwise fall back to the
   // model's own default/max from the catalog (e.g. Hyper reports 384K). Sending
   // it prevents the endpoint's low default from cutting a run off mid-reasoning
   // (which surfaced as finishReason=length with no answer text).
   const maxOutputTokens = cfg?.maxOutputTokens || modelInfo(opts.model)?.defaultMaxTokens || undefined;
-  // System prompt: grounds the turn in the current date and tells the model
+  // Per-user durable memory (lard): fold the owner's context bundle into the
+  // prompt. Best-effort — a failed/absent fetch never blocks the run.
+  let memory = "";
+  if (opts.store && opts.owner && lardEnabled() && lardConnected(opts.store, opts.owner)) {
+    try { memory = contextToText(await getContext(opts.store, opts.owner)); }
+    catch (e) { console.error("lard context:", (e as Error).message); }
+  }
+  // System prompt: grounds the turn in the current date, the durable memory, and
   // which tools it may reach for (built from the set actually exposed above).
-  const system = buildSystemPrompt({ tools });
+  const system = buildSystemPrompt({ tools, memory });
   const result = streamText({
     model,
     system,

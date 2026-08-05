@@ -152,7 +152,19 @@ async function api<T>(store: Store, sub: string, path: string, init?: RequestIni
 }
 
 // ---- memory API (paths: profile, areas/<n>, topics/<n>, people/<n>) ------
-export interface ContextBundle { profile: string; area?: string; listing: { path: string; title?: string }[]; projectId?: string; }
+export interface SubjectListing { path: string; kind?: string; name?: string; description?: string; }
+export interface ContextBundle { profile: string; area?: string; listing: SubjectListing[]; projectId?: string; }
+
+/** Fold a context bundle into a compact system-prompt block. */
+export function contextToText(ctx: ContextBundle): string {
+  const parts: string[] = [];
+  if (ctx.profile?.trim()) parts.push(ctx.profile.trim());
+  if (ctx.area?.trim()) parts.push("# This project\n" + ctx.area.trim());
+  if (ctx.listing?.length) {
+    parts.push("# Subjects on record\n" + ctx.listing.map((s) => `- ${s.path}${s.description ? ` — ${s.description}` : ""}`).join("\n"));
+  }
+  return parts.join("\n\n");
+}
 const cleanPath = (p: string): string => p.replace(/^\/+/, "").replace(/\.\.(\/|$)/g, ""); // no leading slash, no traversal
 
 export function getContext(store: Store, sub: string, project?: string): Promise<ContextBundle> {
