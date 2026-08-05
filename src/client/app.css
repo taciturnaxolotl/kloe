@@ -642,7 +642,7 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
 .lardvmenu { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px;
   border: 0; border-radius: var(--radius-md); background: none; color: var(--ink-muted); cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease; }
-.lardvmenu:hover { background: var(--bg-sunk); color: var(--ink); }
+.lardvmenu:hover { background: color-mix(in srgb, var(--ink) 9%, transparent); color: var(--ink); }
 .lardvmenu svg { width: 18px; height: 18px; }
 .lardvpath { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); margin-top: 3px; }
 .lardprose { margin-top: 16px; border-top: 1px solid var(--rule); padding-top: 16px; font-size: 14px; line-height: 1.6; }
