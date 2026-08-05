@@ -36,7 +36,7 @@ async function getJSON<T>(url: string): Promise<T> {
 // metadata — the exact string we must send as the RFC 8707 `resource` (and that
 // lard checks the token's `aud` against). Sending its advertised value rather
 // than a guess from baseUrl avoids audience mismatches if the two ever diverge.
-interface Endpoints { authorization?: string; token: string; deviceAuthorization: string; resource: string; }
+interface Endpoints { authorization?: string; token: string; deviceAuthorization: string; revocation?: string; resource: string; }
 let discoveryCache: Promise<Endpoints> | null = null;
 export function resetLardCache(): void { discoveryCache = null; }
 function discover(): Promise<Endpoints> {
@@ -46,9 +46,9 @@ function discover(): Promise<Endpoints> {
       const prm = await getJSON<{ authorization_servers?: string[]; resource?: string }>(base + "/.well-known/oauth-protected-resource");
       const as = trimSlash(prm.authorization_servers?.[0] ?? "");
       if (!as) throw new Error("lard: the server advertises no authorization server");
-      const meta = await getJSON<{ authorization_endpoint?: string; token_endpoint?: string; device_authorization_endpoint?: string }>(as + "/.well-known/oauth-authorization-server");
+      const meta = await getJSON<{ authorization_endpoint?: string; token_endpoint?: string; device_authorization_endpoint?: string; revocation_endpoint?: string }>(as + "/.well-known/oauth-authorization-server");
       if (!meta.token_endpoint || !meta.device_authorization_endpoint) throw new Error("lard: authorization server metadata is missing endpoints");
-      return { authorization: meta.authorization_endpoint, token: meta.token_endpoint, deviceAuthorization: meta.device_authorization_endpoint, resource: prm.resource || base };
+      return { authorization: meta.authorization_endpoint, token: meta.token_endpoint, deviceAuthorization: meta.device_authorization_endpoint, revocation: meta.revocation_endpoint, resource: prm.resource || base };
     })().catch((e) => { discoveryCache = null; throw e; });
   }
   return discoveryCache;
@@ -267,7 +267,31 @@ export async function handleLardCallback(req: Request, store: Store): Promise<Re
 }
 
 /** Disconnect this user's lard (drop their token). */
-export function lardDisconnect(store: Store, sub: string): void { store.deleteLardToken(sub); }
+// RFC 7009 revocation: tell the AS to invalidate the token. Revoking the refresh
+// token invalidates the whole grant (§2.1), so a later reconnect can't silently
+// ride the old authorization — it must obtain consent afresh.
+async function revokeToken(token: string): Promise<void> {
+  const eps = await discover();
+  if (!eps.revocation) return; // AS advertises none — nothing we can do
+  const c = await resolveClient();
+  const form = new URLSearchParams({ token, token_type_hint: "refresh_token", client_id: c.id });
+  if (c.secret) form.set("client_secret", c.secret);
+  await postForm(eps.revocation, form);
+}
+
+/**
+ * Disconnect a user from lard: revoke the grant upstream, then drop the local
+ * token. The local delete always happens (even if the revoke call fails or the
+ * AS is unreachable) so the UI never gets stuck "connected"; the revoke is
+ * best-effort on top so the disconnect is real, not just local.
+ */
+export async function lardDisconnect(store: Store, sub: string): Promise<void> {
+  const tok = store.getLardToken(sub);
+  store.deleteLardToken(sub);
+  if (!tok) return;
+  try { await revokeToken(tok.refreshToken || tok.accessToken); }
+  catch { /* best-effort: the local token is already gone */ }
+}
 
 // ---- ingest --------------------------------------------------------------
 export interface IngestTurn { index: number; role: string; content: string; ts: string; }

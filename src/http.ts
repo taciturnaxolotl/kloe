@@ -458,8 +458,8 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
         return Response.json({ enabled: lardEnabled(), connected: lardEnabled() && lardConnected(store, sub) });
       },
-      DELETE: (req: Bun.BunRequest<"/api/lard">) => {
-        lardDisconnect(store, getSession(req, store)?.sub ?? LOCAL_SUB);
+      DELETE: async (req: Bun.BunRequest<"/api/lard">) => {
+        await lardDisconnect(store, getSession(req, store)?.sub ?? LOCAL_SUB);
         return Response.json({ ok: true });
       },
     },
