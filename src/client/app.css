@@ -276,8 +276,13 @@ body.selecting #selectBtn { order: 4; }
 .turn .body table { border-collapse: collapse; margin: 0 0 12px; display: block; overflow-x: auto; }
 .turn .body th, .turn .body td { border: 1px solid var(--rule); padding: 4px 9px; text-align: left; }
 .turn .body img { max-width: 100%; border-radius: var(--radius-sm); }
-/* streaming caret (spec: blinking caret at the stream head), no injected node */
-.turn.generating .prose::after { content: ""; display: inline-block; width: 7px; height: 1.05em;
+/* streaming caret (spec: blinking caret at the stream head), no injected node.
+   Shows on the active trailing prose while text streams; and on the still-empty
+   body between message-start and the first delta (segments are created lazily,
+   so there's no prose yet — the caret signals the turn has begun). Earlier prose
+   segments, closed by a tool/thinking run, are done and mustn't blink. */
+.turn.generating .body:empty::after,
+.turn.generating .body > .prose:last-child::after { content: ""; display: inline-block; width: 7px; height: 1.05em;
   vertical-align: text-bottom; margin-left: 1px; background: var(--accent); border-radius: 1px;
   animation: blink 1s steps(2) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
@@ -289,14 +294,16 @@ body.selecting #selectBtn { order: 4; }
 :root[data-theme="light"] .turn .body pre code.hl span { color: var(--shiki-light); }
 :root[data-theme="dark"] .turn .body pre code.hl span { color: var(--shiki-dark); }
 
-/* Agent-activity timeline — reasoning (and, later, tool call/result) steps as an
-   ordered column of collapsed rows above the answer. Each row is plain muted
-   text; a chevron appears on hover (or when open) and rotates to point down.
-   Expanded bodies are height-capped and scroll so long content can't blow up
-   the page. */
+/* Agent-activity timeline — reasoning and tool call/result steps as an ordered
+   column of collapsed rows, interleaved with the answer text in arrival order.
+   Each row is plain muted text; a chevron appears on hover (or when open) and
+   rotates to point down. Expanded bodies are height-capped and scroll so long
+   content can't blow up the page. */
 .turn .body .timeline { display: flex; flex-direction: column; gap: 1px; margin: 2px 0 0; }
-/* Timeline + answer are one continuous turn — keep them tight, not block-spaced. */
-.turn .body .timeline + .prose { margin-top: 5px; }
+/* Timeline + answer are one continuous turn — keep them tight, not block-spaced,
+   in both directions as reasoning/tools and text interleave down the turn. */
+.turn .body .timeline + .prose,
+.turn .body .prose + .timeline { margin-top: 5px; }
 .turn .body .timeline .step > summary { list-style: none; cursor: pointer; user-select: none;
   display: flex; align-items: center; gap: 6px; padding: 3px 2px;
   font-family: var(--mono); font-size: 11px; letter-spacing: .02em; color: var(--ink-muted); }

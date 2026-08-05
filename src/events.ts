@@ -12,6 +12,7 @@ export const Event = {
   MsgStart: "message-start",
   TextDelta: "text-delta",
   ReasoningDelta: "reasoning-delta",
+  ReasoningSig: "reasoning-signature",
   ToolCall: "tool-call",
   ToolResult: "tool-result",
   MsgEnd: "message-end",
@@ -81,6 +82,21 @@ export interface ReasoningDeltaData {
   delta: string;
 }
 
+/**
+ * Closes a signed reasoning block: the provider metadata (e.g. Anthropic's
+ * thinking-block signature) that must be echoed back verbatim when this turn is
+ * replayed as history, or the provider rejects the follow-up. Persisted only
+ * when the provider actually signed the reasoning — unsigned reasoning (most
+ * providers) is never echoed. `providerOptions` is the raw metadata, keyed by
+ * provider, and is passed straight back as the reasoning part's providerOptions.
+ */
+export interface ReasoningSignatureData {
+  threadId: string;
+  runId: string;
+  messageId: string;
+  providerOptions: Record<string, Record<string, unknown>>;
+}
+
 export interface ToolCallData {
   threadId: string;
   runId: string;
@@ -139,6 +155,7 @@ export type EventData =
   | MessageStartData
   | TextDeltaData
   | ReasoningDeltaData
+  | ReasoningSignatureData
   | ToolCallData
   | ToolResultData
   | MessageEndData

@@ -742,7 +742,10 @@ Part-B work.
    `SearchProvider` (Ceramic), offered only when configured.
 3. **Thinking** ✅ — reasoning parts, adapter-level effort map (per-provider
    `providerOptions`), the collapsible timeline step, durable `reasoningMs`.
-   Signature preservation for reasoning+tools is still open (see below).
+   Signature preservation for reasoning+tools is done: a provider-signed thinking
+   block is persisted (`reasoning-signature` event) and echoed back verbatim as a
+   `reasoning` part in `history()`, so a follow-up turn that replays tool calls
+   isn't rejected; unsigned reasoning stays dropped from history.
 4. **Approval gate** — the parked `pending-approval` status over the steer/job
    machinery. *(not built)*
 5. **`SpindleExecutor` + broker** — first dangerous tool (`run_shell`) over
@@ -751,10 +754,13 @@ Part-B work.
 6. **Sandbox lifecycle polish** — warm/cold tiers, slot-as-job, snapshot restore
    — only when boot latency justifies it. *(not built)*
 
-Known follow-ups within what's built: reasoning-signature preservation for
-reasoning+tools (Anthropic), interleaved rendering of text between tool steps
-(today reasoning/tool steps group in the timeline above the answer), and
-truncating very large tool outputs in the durable log.
+Interleaved rendering is done: a turn's body is an ordered run of segments —
+prose blocks and timeline runs (reasoning + tool steps) — so text that resumes
+after a tool starts a fresh block below it and a reasoning→tool→text→tool
+transcript renders top to bottom, rather than grouping all steps above the
+answer. Oversized tool outputs are truncated (`TOOL_OUTPUT_MAX`) before they hit
+the durable log. No known follow-ups remain within the in-process tool system;
+the sandbox executor + approval gate (items 4–6 above) are the next slice.
 
 ## Stack
  

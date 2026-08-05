@@ -10,11 +10,13 @@ import {
   type AttachmentRef,
   type UserMessageData,
   type TextDeltaData,
+  type ReasoningDeltaData,
+  type ReasoningSignatureData,
   type ToolCallData,
   type ToolResultData,
 } from "./events";
 import { truncateUtf8 } from "./sse";
-import { BATCH_FLUSH_MS, BATCH_MAX_DELTAS, ATTACHMENT_INLINE_TEXT_MAX } from "./config";
+import { BATCH_FLUSH_MS, BATCH_MAX_DELTAS, ATTACHMENT_INLINE_TEXT_MAX, TOOL_OUTPUT_MAX } from "./config";
 import type { BlobStore } from "./blobs";
 
 /** A user-message content part while building model messages. */
@@ -42,8 +44,26 @@ function isTextLike(mime: string): boolean {
 
 /** A tool-call part in a reconstructed assistant message. */
 type ToolCallPart = { type: "tool-call"; toolCallId: string; toolName: string; input: unknown };
-/** An assistant message's content while folding: streamed text + tool calls. */
-type AsstPart = { type: "text"; text: string } | ToolCallPart;
+/** A signed reasoning block echoed back on replay (Anthropic thinking). */
+type ReasoningPart = { type: "reasoning"; text: string; providerOptions: Record<string, Record<string, unknown>> };
+/** An assistant message's content while folding: reasoning + text + tool calls. */
+type AsstPart = ReasoningPart | { type: "text"; text: string } | ToolCallPart;
+
+/**
+ * Caps a tool output before it's persisted so one tool that returns a whole
+ * file or a giant JSON blob can't bloat the durable log (and every future
+ * replay/context). A string is truncated in place; anything else is measured by
+ * its JSON serialization and, if oversized, degraded to a truncated string note.
+ * Returned unchanged when within budget, so the common small result is untouched.
+ */
+function capToolOutput(output: unknown): unknown {
+  const note = (s: string): string =>
+    s.slice(0, TOOL_OUTPUT_MAX) + `\n…[truncated, ${s.length} chars total]`;
+  if (typeof output === "string") return output.length > TOOL_OUTPUT_MAX ? note(output) : output;
+  let json: string;
+  try { json = JSON.stringify(output); } catch { return output; }
+  return json.length > TOOL_OUTPUT_MAX ? note(json) : output;
+}
 
 /** Wraps a logged tool output in the AI SDK's typed tool-result output shape. */
 function toolOutput(output: unknown, isError?: boolean) {
@@ -73,6 +93,15 @@ export interface ReasoningStep {
   kind: "reasoning";
   chunk: string;
 }
+/**
+ * Closes a reasoning block that the provider SIGNED — carries the metadata to
+ * echo back on replay (Anthropic's thinking signature). Emitted only when a
+ * signature is present; unsigned reasoning yields no such step.
+ */
+export interface ReasoningSignatureStep {
+  kind: "reasoning-signature";
+  providerOptions: Record<string, Record<string, unknown>>;
+}
 /** The model invoked a tool. */
 export interface ToolCallStep {
   kind: "tool-call";
@@ -93,7 +122,13 @@ export interface UsageStep {
   kind: "usage";
   usage: TokenUsage;
 }
-export type RunStep = TextStep | ReasoningStep | ToolCallStep | ToolResultStep | UsageStep;
+export type RunStep =
+  | TextStep
+  | ReasoningStep
+  | ReasoningSignatureStep
+  | ToolCallStep
+  | ToolResultStep
+  | UsageStep;
 
 /**
  * One single-writer conversation. Owns the durable event log (via Store), the
@@ -240,18 +275,26 @@ export class ConversationActor {
    *
    * Only tool calls that have a matching result are folded (and vice-versa): a
    * dangling tool-call — e.g. from a run cancelled mid-tool — makes providers
-   * error, so it's dropped. Reasoning, the unsent steer queue, and control
-   * events are excluded; empty assistant turns are dropped.
+   * error, so it's dropped. Reasoning is normally dropped too, EXCEPT a block
+   * the provider signed (Anthropic thinking): its signature must be echoed back
+   * verbatim or the provider rejects a follow-up that contains tool calls, so a
+   * signed block is reconstructed as a `reasoning` part ahead of the text/tools
+   * it preceded. The unsent steer queue and control events are excluded; empty
+   * assistant turns are dropped.
    */
   async history(opts: HistoryOptions = {}): Promise<ModelMessage[]> {
     const out: ModelMessage[] = [];
 
-    // Fold only tool-call/result pairs where both sides exist.
+    // Fold only tool-call/result pairs where both sides exist; and note which
+    // messages carry signed reasoning, so unsigned-reasoning turns skip the
+    // (potentially huge) text accumulation entirely.
     const callIds = new Set<string>();
     const resultIds = new Set<string>();
+    const signedMsgs = new Set<string>();
     for (const e of this.store.replay(this.conversationId, 0)) {
       if (e.event === Event.ToolCall) callIds.add((e.data as ToolCallData).toolCallId);
       else if (e.event === Event.ToolResult) resultIds.add((e.data as ToolResultData).toolCallId);
+      else if (e.event === Event.ReasoningSig) signedMsgs.add((e.data as ReasoningSignatureData).messageId);
     }
     const paired = new Set([...callIds].filter((id) => resultIds.has(id)));
 
@@ -259,6 +302,10 @@ export class ConversationActor {
     let userParts: UserPart[] | null = null;
     let asstText = "";
     let asstParts: AsstPart[] = [];
+    // The reasoning block currently accumulating and its signature (set when the
+    // block's reasoning-signature event lands). Emitted as a part only if signed.
+    let asstReasoning = "";
+    let asstReasoningSig: Record<string, Record<string, unknown>> | null = null;
     let toolResults: Array<{ type: "tool-result"; toolCallId: string; toolName: string; output: unknown }> = [];
 
     const flushUser = (): void => {
@@ -272,7 +319,18 @@ export class ConversationActor {
         out.push({ role: "user", content: parts } as ModelMessage);
       }
     };
+    // Emit the pending reasoning block as a part if the provider signed it (must
+    // precede the text/tool it introduced); otherwise drop it. Always resets, so
+    // each block is considered once.
+    const flushReasoningPart = (): void => {
+      if (asstReasoning.length > 0 && asstReasoningSig) {
+        asstParts.push({ type: "reasoning", text: asstReasoning, providerOptions: asstReasoningSig });
+      }
+      asstReasoning = "";
+      asstReasoningSig = null;
+    };
     const pushAsstText = (): void => {
+      flushReasoningPart(); // a signed thinking block sits before the answer text
       if (asstText.length > 0) { asstParts.push({ type: "text", text: asstText }); asstText = ""; }
     };
     const flushAsst = (): void => {
@@ -304,6 +362,15 @@ export class ConversationActor {
         flushUser();
         if (toolResults.length > 0) flushTools(); // text after a result: new step
         asstText += (e.data as TextDeltaData).delta;
+      } else if (e.event === Event.ReasoningDelta) {
+        flushUser();
+        if (toolResults.length > 0) flushTools(); // reasoning after a result: new step
+        const d = e.data as ReasoningDeltaData;
+        // Accumulate only for turns that carry a signature — everything else is
+        // dropped from history, so there's no need to build the string.
+        if (signedMsgs.has(d.messageId)) asstReasoning += d.delta;
+      } else if (e.event === Event.ReasoningSig) {
+        asstReasoningSig = (e.data as ReasoningSignatureData).providerOptions;
       } else if (e.event === Event.ToolCall) {
         flushUser();
         const d = e.data as ToolCallData;
@@ -497,6 +564,15 @@ export class ConversationActor {
             flushReasoning();
             rbatch = 0;
           }
+        } else if (step.kind === "reasoning-signature") {
+          // The signed reasoning block just ended: flush its buffered text so the
+          // signature event lands right after it in the log, then persist the
+          // signature (durable, so history() can echo it back on replay).
+          flushReasoning();
+          this.persist(Event.ReasoningSig, {
+            runId, threadId: this.conversationId, messageId,
+            providerOptions: step.providerOptions,
+          });
         } else if (step.kind === "tool-call") {
           // Flush pending text/reasoning first so the durable log stays ordered
           // (a tool call sits after the text that preceded it). Tool events are
@@ -511,7 +587,7 @@ export class ConversationActor {
           this.persist(Event.ToolResult, {
             runId, threadId: this.conversationId, messageId,
             toolCallId: step.toolCallId, toolName: step.toolName,
-            output: step.output, isError: step.isError,
+            output: capToolOutput(step.output), isError: step.isError,
           });
         } else if (step.kind === "usage") {
           usage = step.usage;

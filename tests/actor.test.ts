@@ -367,3 +367,52 @@ test("history wraps an errored tool result as error output", async () => {
   const toolMsg = h.find((m) => m.role === "tool") as { content: Array<{ output: unknown }> };
   expect(toolMsg.content[0]!.output).toEqual({ type: "error-text", value: "boom" });
 });
+
+test("an oversized tool output is truncated in the durable log", async () => {
+  const a = new ConversationActor("t-tool-big", store);
+  a.appendUser("q");
+  const big = "x".repeat(40 * 1024); // > TOOL_OUTPUT_MAX (32K)
+  await a.runText("r", "m", async function* (_signal) {
+    yield { kind: "tool-call", toolCallId: "c1", toolName: "web_search", input: {} };
+    yield { kind: "tool-result", toolCallId: "c1", toolName: "web_search", output: big };
+    yield { kind: "text", chunk: "done" };
+  });
+  const h = await a.history();
+  const toolMsg = h.find((m) => m.role === "tool") as { content: Array<{ output: { value: string } }> };
+  const value = toolMsg.content[0]!.output.value;
+  expect(value.length).toBeLessThan(big.length);
+  expect(value).toContain("truncated");
+  // A small result is left untouched (verified above); truncation only kicks in past the cap.
+});
+
+test("history echoes a signed reasoning block back as a reasoning part before its tool call", async () => {
+  const a = new ConversationActor("t-reason-sig", store);
+  a.appendUser("q");
+  const opts = { anthropic: { signature: "sig-abc" } };
+  await a.runText("r", "m", async function* (_signal) {
+    yield { kind: "reasoning", chunk: "let me " };
+    yield { kind: "reasoning", chunk: "think" };
+    yield { kind: "reasoning-signature", providerOptions: opts };
+    yield { kind: "tool-call", toolCallId: "c1", toolName: "web_search", input: { query: "x" } };
+    yield { kind: "tool-result", toolCallId: "c1", toolName: "web_search", output: { r: 1 } };
+    yield { kind: "text", chunk: "answer" };
+  });
+  const h = await a.history();
+  const asst = h.find((m) => m.role === "assistant" && Array.isArray(m.content)) as
+    { content: Array<{ type: string; text?: string; providerOptions?: unknown; toolCallId?: string }> };
+  expect(asst.content[0]).toEqual({ type: "reasoning", text: "let me think", providerOptions: opts });
+  expect(asst.content[1]).toMatchObject({ type: "tool-call", toolCallId: "c1" });
+});
+
+test("history drops unsigned reasoning (only signed thinking is echoed)", async () => {
+  const a = new ConversationActor("t-reason-unsigned", store);
+  a.appendUser("q");
+  await a.runText("r", "m", async function* (_signal) {
+    yield { kind: "reasoning", chunk: "thinking with no signature" };
+    yield { kind: "text", chunk: "answer" };
+  });
+  expect(await a.history()).toEqual([
+    { role: "user", content: "q" },
+    { role: "assistant", content: "answer" },
+  ]);
+});

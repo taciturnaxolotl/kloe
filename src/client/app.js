@@ -225,8 +225,10 @@ import { mountDialogs } from "./confirm.js";
     var painted = false;
     for (var id in msgs) {
       var r = msgs[id];
-      if (r.reasoning && r.reasoning.buf) { smd.parser_write(r.reasoning.parser, r.reasoning.buf); r.reasoning.buf = ""; painted = true; updateReasoningPreview(r.reasoning); }
-      if (r.buf) { smd.parser_write(r.parser, r.buf); r.buf = ""; painted = true; liveMeta(r); }
+      var or = r.openReasoning;
+      if (or && or.buf) { smd.parser_write(or.parser, or.buf); or.buf = ""; painted = true; updateReasoningPreview(or); }
+      var ts = r.textSink;
+      if (ts && ts.buf) { smd.parser_write(ts.parser, ts.buf); ts.buf = ""; painted = true; liveMeta(r); }
     }
     if (painted) autoScroll();
   }
@@ -357,32 +359,59 @@ import { mountDialogs } from "./confirm.js";
   function assistantTurn(messageId) {
     if (msgs[messageId]) return msgs[messageId];
     var t = makeTurn("Assistant", "generating");
-    var body = t.querySelector(".body");
-    var prose = proseBlock(body); // deltas stream into this block
-    var np = newParser(prose);
     var rec = {
-      turn: t, body: body, prose: prose, meta: t.querySelector(".meta"),
-      parser: np.parser, renderer: np.renderer, buf: "",
+      turn: t, body: t.querySelector(".body"), meta: t.querySelector(".meta"),
+      // Segments append to body in arrival order, so reasoning, tool steps, and
+      // answer text interleave exactly as the model emits them. `textSink` is the
+      // open prose block; `tl` the open timeline run; `openReasoning` the reasoning
+      // step currently streaming. `proses`/`reasonings` hold every block for the
+      // final flush. A tool step or text delta closes the other kind of segment,
+      // so the next of its kind starts a fresh block below.
+      textSink: null, tl: null, openReasoning: null,
+      proses: [], reasonings: [], firstReasoning: null, tools: null,
       startedAt: Date.now(), firstDeltaAt: 0,
     };
     msgs[messageId] = rec;
     autoScroll();
     return rec;
   }
-  // ---- agent-activity timeline -------------------------------------------
-  // Intermediate steps (reasoning now; tool calls + results later) render above
-  // the answer as an ordered column of collapsed rows: plain muted text, a
-  // hover-revealed chevron that rotates open, each expandable on its own.
-  function ensureTimeline(rec) {
-    if (rec.timeline) return rec.timeline;
+  // ---- interleaved segments ----------------------------------------------
+  // A turn's body is an ordered run of segments — prose blocks (answer text) and
+  // timeline runs (reasoning + tool steps as collapsed rows). They interleave in
+  // arrival order: a tool step or a text delta closes the other kind of segment,
+  // so text that resumes after a tool starts a fresh prose block BELOW it, and a
+  // faithful reasoning→tool→text→tool transcript renders top to bottom.
+
+  // The open prose block, accepting text deltas. Opening it ends the current
+  // thinking and closes the timeline run, so the next step opens a new run below.
+  function openText(rec) {
+    endReasoningStep(rec);
+    rec.tl = null;
+    if (rec.textSink) return rec.textSink;
+    var el = proseBlock(rec.body);
+    var np = newParser(el);
+    var sink = { el: el, parser: np.parser, renderer: np.renderer, buf: "" };
+    rec.proses.push(sink);
+    rec.textSink = sink;
+    autoScroll();
+    return sink;
+  }
+  // The open timeline run. Opening it closes the current prose block (flushing
+  // its buffered text), so a later text delta lands in a new block below.
+  function openTimeline(rec) {
+    if (rec.textSink) {
+      if (rec.textSink.buf) { smd.parser_write(rec.textSink.parser, rec.textSink.buf); rec.textSink.buf = ""; }
+      rec.textSink = null;
+    }
+    if (rec.tl) return rec.tl;
     var t = document.createElement("div");
     t.className = "block timeline";
-    rec.body.insertBefore(t, rec.prose); // steps precede the answer
-    rec.timeline = t;
+    rec.body.appendChild(t);
+    rec.tl = t;
     return t;
   }
-  // A collapsed step row (a <details>) appended to the timeline; `cls` tags its
-  // type (e.g. "reasoning", "tool"). Returns its details/label/body.
+  // A collapsed step row (a <details>) appended to the current timeline run;
+  // `cls` tags its type ("reasoning"/"tool"). Returns its details/label/body.
   function makeStep(rec, cls) {
     var d = document.createElement("details");
     d.className = "step " + cls;
@@ -390,49 +419,51 @@ import { mountDialogs } from "./confirm.js";
     sum.innerHTML = '<span class="steplabel"></span>' + CHEV;
     var body = document.createElement("div"); body.className = "stepbody";
     d.appendChild(sum); d.appendChild(body);
-    ensureTimeline(rec).appendChild(d);
+    openTimeline(rec).appendChild(d);
     return { details: d, label: sum.querySelector(".steplabel"), body: body };
   }
-  // The reasoning step: created lazily on first reasoning delta. Its label
-  // shimmers "Thinking" while active, then settles to "Thought for Ns" from the
-  // server's authoritative duration (message-end reasoningMs — client wall-clock
-  // can't see silent server-side thinking).
-  function ensureReasoning(rec) {
-    if (rec.reasoning) return rec.reasoning;
+  // The reasoning step currently streaming. A run may hold several (thinking
+  // resumes between tools); each shimmers "Thinking" while live, then settles to
+  // "Thought". The first block also gets the server's authoritative duration
+  // ("Thought for Ns") at message-end — client wall-clock can't see silent
+  // server-side thinking.
+  function openReasoning(rec) {
+    if (rec.openReasoning) return rec.openReasoning;
     var step = makeStep(rec, "reasoning thinking");
     step.label.textContent = "Thinking";
     var np = newParser(step.body);
-    rec.reasoning = { details: step.details, label: step.label, body: step.body,
-                      parser: np.parser, renderer: np.renderer, buf: "", collapsed: false, ended: false };
+    var rr = { details: step.details, label: step.label, body: step.body,
+               parser: np.parser, renderer: np.renderer, buf: "", ended: false };
+    rec.reasonings.push(rr);
+    if (!rec.firstReasoning) rec.firstReasoning = rr;
+    rec.openReasoning = rr;
     autoScroll();
-    return rec.reasoning;
+    return rr;
   }
   // Follow the reasoning stream to the bottom while its row is expanded.
   function updateReasoningPreview(rc) {
     if (rc.details.open) rc.body.scrollTop = rc.body.scrollHeight;
   }
-  function labelThought(rec, reasoningMs) {
-    var rc = rec.reasoning;
-    if (!rc) return;
-    rc.details.classList.remove("thinking");
-    rc.label.textContent = reasoningMs != null
+  // Finish the streaming reasoning block (a tool call, answer text, or turn end
+  // followed it): flush + enrich it, stop the shimmer, settle the label.
+  function endReasoningStep(rec) {
+    var rr = rec.openReasoning;
+    if (!rr) return;
+    rec.openReasoning = null;
+    if (!rr.ended) {
+      if (rr.buf) { smd.parser_write(rr.parser, rr.buf); rr.buf = ""; }
+      smd.parser_end(rr.parser); rr.ended = true;
+      enrich(rr.body);
+    }
+    rr.details.classList.remove("thinking");
+    if (rr.label.textContent === "Thinking") rr.label.textContent = "Thought";
+  }
+  function labelThought(rr, reasoningMs) {
+    if (!rr) return;
+    rr.details.classList.remove("thinking");
+    rr.label.textContent = reasoningMs != null
       ? "Thought for " + Math.max(0, Math.round(reasoningMs / 1000)) + "s"
       : "Thought";
-  }
-  // Thinking finished (answer started): stop the shimmer (row stays collapsed).
-  function collapseReasoning(rec) {
-    var rc = rec.reasoning;
-    if (!rc || rc.collapsed) return;
-    rc.collapsed = true;
-    rc.details.classList.remove("thinking");
-    rc.label.textContent = "Thought"; // duration lands on message-end
-  }
-  function endReasoning(rec) {
-    var rc = rec.reasoning;
-    if (!rc || rc.ended) return;
-    if (rc.buf) { smd.parser_write(rc.parser, rc.buf); rc.buf = ""; }
-    smd.parser_end(rc.parser); rc.ended = true;
-    enrich(rc.body);
   }
   // Pretty value for a tool's args/result (JSON, or a string as-is).
   function toolValue(v) {
@@ -445,6 +476,7 @@ import { mountDialogs } from "./confirm.js";
   function toolStep(rec, data) {
     rec.tools = rec.tools || Object.create(null);
     if (rec.tools[data.toolCallId]) return rec.tools[data.toolCallId];
+    endReasoningStep(rec); // the thinking that led to this call is done
     var step = makeStep(rec, "tool thinking");
     step.label.textContent = data.toolName;
     var args = toolValue(data.input);
@@ -467,12 +499,19 @@ import { mountDialogs } from "./confirm.js";
     autoScroll();
   }
   function endAssistant(rec, finishReason, usage, reasoningMs) {
-    endReasoning(rec);
-    labelThought(rec, reasoningMs);
-    if (rec.buf) { smd.parser_write(rec.parser, rec.buf); rec.buf = ""; }
-    smd.parser_end(rec.parser);
-    var stripped = finalize(rec.renderer);
-    enrich(rec.prose); // completed turn: highlight code, render math
+    endReasoningStep(rec);
+    labelThought(rec.firstReasoning, reasoningMs); // duration on the first block only
+    // Finalize every prose segment (the open one plus any a timeline closed):
+    // flush remaining text, end the parser, then run the completed-block
+    // enhancers (code highlight, math).
+    var stripped = false;
+    for (var i = 0; i < rec.proses.length; i++) {
+      var p = rec.proses[i];
+      if (p.buf) { smd.parser_write(p.parser, p.buf); p.buf = ""; }
+      smd.parser_end(p.parser);
+      if (finalize(p.renderer)) stripped = true;
+      enrich(p.el);
+    }
     rec.turn.classList.remove("generating");
     if (finishReason === "aborted") {
       rec.meta.textContent = "";
@@ -535,7 +574,7 @@ import { mountDialogs } from "./confirm.js";
         break;
       case "reasoning-delta": {
         var rrec = assistantTurn(data.messageId);
-        ensureReasoning(rrec).buf += data.delta;
+        openReasoning(rrec).buf += data.delta;
         scheduleFlush();
         break;
       }
@@ -547,8 +586,9 @@ import { mountDialogs } from "./confirm.js";
         break;
       case "text-delta": {
         var rec = assistantTurn(data.messageId);
-        if (!rec.firstDeltaAt) { rec.firstDeltaAt = Date.now(); collapseReasoning(rec); }
-        rec.buf += data.delta;
+        var sink = openText(rec); // ends any open thinking; starts a new block after a tool
+        if (!rec.firstDeltaAt) rec.firstDeltaAt = Date.now();
+        sink.buf += data.delta;
         scheduleFlush();
         break;
       }

@@ -21,3 +21,8 @@ export const ATTACHMENT_INLINE_TEXT_MAX = 32 * 1024;
 // Max provider round-trips per run when tools are in play (call → execute →
 // feed back → …). Bounds a runaway tool loop.
 export const MAX_TOOL_STEPS = 8;
+// A tool result larger than this (serialized length) is truncated before it's
+// written to the durable log — a tool that returns a whole file or a giant JSON
+// blob shouldn't bloat every future replay/context. The live run already fed the
+// model the full output; only the persisted (and replayed) copy is capped.
+export const TOOL_OUTPUT_MAX = 32 * 1024;
