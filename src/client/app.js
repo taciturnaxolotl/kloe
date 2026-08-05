@@ -196,9 +196,26 @@ import {
   // Wrap smd's default renderer to harden URLs. smd never emits raw HTML tags
   // (model text lands in text nodes), so href/src are the only injection
   // vector — we neutralize dangerous schemes and reveal external link targets.
+  // smd's built-in $…$/$$…$$ equation tokenizer is unreliable: a stray or
+  // mispaired `$`/`$$` makes it swallow whole sections — consuming the `$`
+  // delimiters as it goes — which destroys both the markdown structure and the
+  // math (unrecoverable after the fact). So we hide every `$` from smd behind a
+  // private-use sentinel before parsing; smd then only builds structure, the
+  // renderer restores `$` for display (add_text below), and enrich.js renders the
+  // math from the real `$`. smdParserWrite keeps a raw handle so smdWrite doesn't
+  // recurse.
+  var MATH_SENTINEL = String.fromCharCode(0xe000);
+  var smdParserWrite = smd.parser_write;
+  function smdWrite(parser, text) {
+    smdParserWrite(parser, text.indexOf("$") < 0 ? text : text.split("$").join(MATH_SENTINEL));
+  }
   function makeRenderer(root) {
     var r = smd.default_renderer(root);
     r._stripped = false;
+    var baseAddText = r.add_text;
+    r.add_text = function (data, text) {
+      baseAddText(data, text.indexOf(MATH_SENTINEL) < 0 ? text : text.split(MATH_SENTINEL).join("$"));
+    };
     var base = r.set_attr;
     r.set_attr = function (data, type, value) {
       var out = value;
@@ -243,7 +260,7 @@ import {
   function renderStaticMd(container, text) {
     var el = proseBlock(container);
     var np = newParser(el);
-    smd.parser_write(np.parser, text);
+    smdWrite(np.parser, text);
     smd.parser_end(np.parser);
     queueEnrich(el);
     return finalize(np.renderer);
@@ -257,9 +274,9 @@ import {
     for (var id in msgs) {
       var r = msgs[id];
       var or = r.activity && r.activity.openReasoning;
-      if (or && or.buf) { smd.parser_write(or.parser, or.buf); or.buf = ""; painted = true; updateReasoningPreview(or); }
+      if (or && or.buf) { smdWrite(or.parser, or.buf); or.buf = ""; painted = true; updateReasoningPreview(or); }
       var ts = r.textSink;
-      if (ts && ts.buf) { smd.parser_write(ts.parser, ts.buf); ts.buf = ""; painted = true; liveMeta(r); }
+      if (ts && ts.buf) { smdWrite(ts.parser, ts.buf); ts.buf = ""; painted = true; liveMeta(r); }
     }
     if (painted) autoScroll();
   }
@@ -449,7 +466,7 @@ import {
   // (flushing it), so a later text delta starts a fresh prose block below.
   function openActivity(rec) {
     if (rec.textSink) {
-      if (rec.textSink.buf) { smd.parser_write(rec.textSink.parser, rec.textSink.buf); rec.textSink.buf = ""; }
+      if (rec.textSink.buf) { smdWrite(rec.textSink.parser, rec.textSink.buf); rec.textSink.buf = ""; }
       rec.textSink = null;
     }
     if (rec.activity) return rec.activity;
@@ -557,7 +574,7 @@ import {
     if (!rr) return;
     a.openReasoning = null;
     if (!rr.ended) {
-      if (rr.buf) { smd.parser_write(rr.parser, rr.buf); rr.buf = ""; }
+      if (rr.buf) { smdWrite(rr.parser, rr.buf); rr.buf = ""; }
       smd.parser_end(rr.parser); rr.ended = true;
       queueEnrich(rr.body);
     }
@@ -779,7 +796,7 @@ import {
     var stripped = false;
     for (var i = 0; i < rec.proses.length; i++) {
       var p = rec.proses[i];
-      if (p.buf) { smd.parser_write(p.parser, p.buf); p.buf = ""; }
+      if (p.buf) { smdWrite(p.parser, p.buf); p.buf = ""; }
       smd.parser_end(p.parser);
       if (finalize(p.renderer)) stripped = true;
       queueEnrich(p.el);

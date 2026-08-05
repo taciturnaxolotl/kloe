@@ -115,75 +115,19 @@ async function katex() {
   }
   return _katex;
 }
-// streaming-markdown tokenizes $…$ → <equation-inline> and $$…$$ →
-// <equation-block> (the delimiters are consumed and the LaTeX preserved inside),
-// so we render those elements with KaTeX rather than scanning text for `$`.
+// app.js masks `$` before feeding smd (smd's own equation tokenizer is unreliable
+// and swallows content), so the finished DOM holds literal $…$/$$…$$ in its text
+// nodes. We render those with KaTeX here. Only balanced spans match, so a stray
+// or mispaired `$` is simply left as text instead of eating the rest of the block.
 async function enrichMath(root) {
-  var eqs = root.querySelectorAll("equation-inline:not([data-tex]), equation-block:not([data-tex])");
-  if (!eqs.length) return; // no math → don't load katex
-  var k = await katex();
-  for (var i = 0; i < eqs.length; i++) {
-    var el = eqs[i];
-    el.setAttribute("data-tex", "1"); // don't revisit on a later enrich pass
-    var tex = el.textContent;
-    if (!tex) continue;
-    var display = el.tagName.toLowerCase() === "equation-block";
-    // An unbalanced `$` in the model's output makes smd's inline-equation
-    // tokenizer swallow everything after it — headings, tables, prose — into one
-    // element. Rendering that with KaTeX splashes a giant red error across the
-    // page; instead detect it and re-render the content as markdown.
-    if (looksSwallowed(tex, !display)) { await unswallow(el, tex); continue; }
-    // throwOnError so genuinely-invalid LaTeX throws and we show its source,
-    // rather than KaTeX painting its red \color{red} error markup inline.
-    try { el.innerHTML = k.renderToString(tex, { displayMode: display, throwOnError: true }); }
-    catch (_) { el.textContent = tex; }
-  }
+  if (root.textContent.indexOf("$") < 0) return; // no math → don't load katex
+  renderInlineMath(root, await katex());
 }
 
-// A real equation is short and, if inline, single-line. Newlines in inline math,
-// an embedded markdown heading/table row, or absurd length all mean smd
-// mis-tokenized a stray `$` and swallowed real content.
-function looksSwallowed(tex, inline) {
-  if (inline && /\n/.test(tex)) return true;
-  if (/(^|\n)\s{0,3}#{1,6}\s/.test(tex)) return true; // markdown heading inside
-  if (/\n\s*\|.*\|/.test(tex)) return true;           // markdown table row inside
-  return tex.length > 800;
-}
-
-// Recover swallowed content in place. We can't feed the text back to smd as-is
-// (the stray `$` would swallow again), so we mask every `$` with a sentinel first
-// — smd then builds the real markdown (headings, tables, prose) without treating
-// anything as an equation. Afterwards we restore the `$` and render the
-// well-formed, single-line $…$/$$…$$ spans with KaTeX; a lone/unbalanced `$`
-// simply stays as literal text. Lazy-imported so this only ships when hit.
-var SENTINEL = ""; // private-use char, won't occur in real content
-async function unswallow(el, text) {
-  var smd = await import("streaming-markdown");
-  var span = document.createElement("span");
-  var p = smd.parser(smd.default_renderer(span));
-  smd.parser_write(p, text.split("$").join(SENTINEL));
-  smd.parser_end(p);
-  var links = span.querySelectorAll("a[href]"); // link hardening, matching app.js
-  for (var i = 0; i < links.length; i++) {
-    if (/^\s*(javascript|vbscript|data):/i.test(links[i].getAttribute("href") || "")) links[i].setAttribute("href", "#");
-    links[i].setAttribute("target", "_blank");
-    links[i].setAttribute("rel", "noopener noreferrer nofollow");
-  }
-  restoreSentinel(span);        // sentinel → `$` in every text node (incl. code)
-  renderInlineMath(span, await katex());
-  el.replaceWith(span);
-}
-function restoreSentinel(root) {
-  var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  var nodes = []; while (w.nextNode()) nodes.push(w.currentNode);
-  for (var i = 0; i < nodes.length; i++) {
-    if (nodes[i].nodeValue.indexOf(SENTINEL) >= 0) nodes[i].nodeValue = nodes[i].nodeValue.split(SENTINEL).join("$");
-  }
-}
-// Render balanced, single-line $…$ / $$…$$ in a subtree's text nodes (skipping
-// code). Unbalanced `$` never match, so they're left as-is. Only the recovery
-// path needs this — normally smd tokenizes `$` into equation elements for us.
-var MATH_RE = /\$\$([^\n]+?)\$\$|\$([^$\n]+?)\$/g;
+// Render $$…$$ (display, may span a soft line break) and $…$ (inline, single
+// line) in a subtree's text nodes, skipping code. Balanced spans only — a stray
+// `$` never matches and is left as literal text (no swallow, unlike smd).
+var MATH_RE = /\$\$([\s\S]+?)\$\$|\$([^$\n]+?)\$/g;
 function renderInlineMath(root, k) {
   var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode: function (n) {
