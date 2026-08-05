@@ -187,6 +187,14 @@
           "type": "string",
           "default": ""
         },
+        "clientId": {
+          "type": "string",
+          "default": ""
+        },
+        "clientSecret": {
+          "type": "string",
+          "default": ""
+        },
         "allowedSubs": {
           "type": "array",
           "items": {
@@ -213,6 +221,8 @@
         "enabled": false,
         "issuer": "",
         "baseUrl": "",
+        "clientId": "",
+        "clientSecret": "",
         "allowedSubs": [],
         "sessionTtlDays": 30,
         "appName": "kloe",

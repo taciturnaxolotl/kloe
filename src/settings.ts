@@ -109,17 +109,26 @@ const ServerSchema = v.object({
 /**
  * OAuth/OIDC auth via an indiko-style server. Disabled by default (local dev and
  * single-user setups need no login). When enabled, `/api/*` requires a session
- * and the client redirects to `/auth/login`. Public client (URL client_id +
- * PKCE, no secret): `clientId` is the /client-metadata.json doc and `redirectUri`
- * is /auth/callback, both derived from `baseUrl`. `allowedSubs` empty → any
- * authenticated user; otherwise only those subject URLs may sign in.
+ * and the client redirects to `/auth/login`. Two client styles are supported:
+ *   - Default (public/dynamic): the `client_id` is kloe's own
+ *     /client-metadata.json document (a Client ID Metadata Document), PKCE, no
+ *     secret. Just set `issuer` + `baseUrl`.
+ *   - Pre-registered: set `clientId` (and optionally `clientSecret`) to a client
+ *     you registered with the provider. PKCE is still used; a secret, if given,
+ *     is sent at the token endpoint (client_secret_post).
+ * `redirectUri` is always /auth/callback (derived from `baseUrl`). `allowedSubs`
+ * empty → any authenticated user; otherwise only those subject URLs may sign in.
  */
 const AuthSchema = v.object({
   enabled: v.optional(v.boolean(), false),
   /** The OIDC issuer origin, e.g. https://indiko.dunkirk.sh */
   issuer: v.optional(v.string(), ""),
-  /** kloe's own public origin, e.g. https://kloe.dunkirk.sh (used to derive client_id + redirect). */
+  /** kloe's own public origin, e.g. https://kloe.dunkirk.sh (used to derive the client_id + redirect). */
   baseUrl: v.optional(v.string(), ""),
+  /** Pre-registered client_id. Empty → derive the /client-metadata.json doc from baseUrl. */
+  clientId: v.optional(v.string(), ""),
+  /** Client secret for a confidential pre-registered client. Empty → public client (PKCE only). */
+  clientSecret: v.optional(v.string(), ""),
   /** Allowed subject URLs (indiko `me`/`sub`); empty = any authenticated user. */
   allowedSubs: v.optional(v.array(v.string()), []),
   sessionTtlDays: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 30),

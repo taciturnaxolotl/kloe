@@ -31,7 +31,9 @@ function pkce(): { verifier: string; challenge: string } {
 }
 const trimSlash = (s: string): string => s.replace(/\/+$/, "");
 const isSecure = (): boolean => getConfig().auth.baseUrl.startsWith("https");
-const clientId = (): string => trimSlash(getConfig().auth.baseUrl) + "/client-metadata.json";
+// A pre-registered client_id wins; otherwise kloe's own Client ID Metadata
+// Document URL (the public/dynamic default).
+const clientId = (): string => getConfig().auth.clientId || trimSlash(getConfig().auth.baseUrl) + "/client-metadata.json";
 const redirectUri = (): string => trimSlash(getConfig().auth.baseUrl) + "/auth/callback";
 /** Only same-origin relative paths — never an open redirect off-site. */
 function safeReturn(rt: unknown): string {
@@ -114,13 +116,51 @@ export function gateApi<T extends Routes>(routes: T, store: Store): T {
 
 // ---- route handlers -----------------------------------------------------
 
+const esc = (s: string): string => s.replace(/[<>&"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[c]!);
+
+/**
+ * A standalone, theme-aware auth page (login lives on the IdP, so this is the
+ * only kloe-served auth screen). Palette mirrors app.css so it looks like the app
+ * in both light and dark. Self-contained — it's served before the SPA loads.
+ */
+function authPage(opts: { title: string; message: string; actionHref?: string; actionLabel?: string; status?: number; clearCookie?: boolean }): Response {
+  const brand = esc(getConfig().auth.appName || "kloe");
+  const action = opts.actionHref
+    ? `<a class="btn" href="${esc(opts.actionHref)}">${esc(opts.actionLabel ?? "Continue")}</a>`
+    : "";
+  const body = `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>${esc(opts.title)} · ${brand}</title>
+<style>
+  :root{--bg:#ffffff;--card:#ffffff;--ink:#17181a;--muted:#6a6d73;--rule:#e6e7e9;--accent:#5577a3}
+  @media (prefers-color-scheme:dark){:root{--bg:#121315;--card:#1a1b1e;--ink:#e8e9ea;--muted:#9a9da3;--rule:#2a2c2f;--accent:#7aa0cc}}
+  *{box-sizing:border-box}html,body{height:100%}
+  body{margin:0;display:grid;place-items:center;padding:1.5rem;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;line-height:1.55}
+  .card{width:100%;max-width:23rem;background:var(--card);border:1px solid var(--rule);border-radius:14px;padding:2rem 1.75rem;text-align:center}
+  .brand{display:inline-flex;align-items:center;gap:.55rem;font-weight:600;font-size:1.05rem;letter-spacing:-.02em}
+  .brand .dot{width:22px;height:22px;border-radius:7px;background:var(--accent)}
+  h1{font-size:1.02rem;font-weight:600;margin:1.4rem 0 .35rem}
+  p{color:var(--muted);font-size:.9rem;margin:.35rem 0}
+  .btn{display:inline-block;margin-top:1.4rem;padding:.6rem 1.15rem;background:var(--accent);color:#fff;border-radius:9px;text-decoration:none;font-size:.9rem;font-weight:500}
+  .btn:hover{filter:brightness(1.06)}
+</style></head>
+<body><main class="card">
+  <span class="brand"><span class="dot"></span>${brand}</span>
+  <h1>${esc(opts.title)}</h1>
+  <p>${esc(opts.message)}</p>
+  ${action}
+</main></body></html>`;
+  const headers = new Headers({ "Content-Type": "text/html; charset=utf-8" });
+  if (opts.clearCookie) headers.append("Set-Cookie", serializeCookie(OAUTH_COOKIE, "", 0));
+  return new Response(body, { status: opts.status ?? 200, headers });
+}
+
 function htmlError(message: string, status = 400): Response {
-  const clear = serializeCookie(OAUTH_COOKIE, "", 0);
-  const safe = message.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]!);
-  const body = `<!doctype html><meta charset="utf-8"><title>Sign in</title>` +
-    `<body style="font-family:system-ui;max-width:32rem;margin:15vh auto;padding:0 1.5rem;line-height:1.5">` +
-    `<h1 style="font-size:1.1rem">Sign-in failed</h1><p>${safe}</p><p><a href="/auth/login">Try again</a></p>`;
-  return new Response(body, { status, headers: { "Content-Type": "text/html; charset=utf-8", "Set-Cookie": clear } });
+  return authPage({ title: "Sign-in failed", message, actionHref: "/auth/login", actionLabel: "Try again", status, clearCookie: true });
 }
 
 /** /auth/login — start the flow: PKCE + state in a cookie, redirect to the IdP. */
@@ -163,16 +203,18 @@ export async function handleCallback(req: Request, store: Store): Promise<Respon
   if (iss && trimSlash(iss) !== trimSlash(cfg.issuer)) return htmlError("The response came from an unexpected issuer.");
 
   const d = await discover();
+  const tokenBody = new URLSearchParams({
+    grant_type: "authorization_code",
+    code,
+    client_id: clientId(),
+    redirect_uri: redirectUri(),
+    code_verifier: saved.verifier ?? "",
+  });
+  if (cfg.clientSecret) tokenBody.set("client_secret", cfg.clientSecret); // confidential pre-registered client
   const tokenRes = await fetch(d.token_endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
-      client_id: clientId(),
-      redirect_uri: redirectUri(),
-      code_verifier: saved.verifier ?? "",
-    }),
+    body: tokenBody,
   });
   if (!tokenRes.ok) return htmlError(`Token exchange failed (${tokenRes.status}).`);
   const tok = (await tokenRes.json()) as TokenResponse;
