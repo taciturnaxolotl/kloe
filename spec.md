@@ -803,6 +803,97 @@ answer. Oversized tool outputs are truncated (`TOOL_OUTPUT_MAX`) before they hit
 the durable log. No known follow-ups remain within the in-process tool system;
 the sandbox executor + approval gate (items 4–6 above) are the next slice.
 
+## Projects & the memory layer (lard)
+
+kloe on its own is a flat list of conversations. Two related layers give it
+durable, cross-session context: **projects** group chats and pin them to shared
+context, and an integration with **lard** — a homelab memory server (chuck LLM
+sessions in, get consolidated subjects back) — gives that context a brain that
+learns across *every* tool the user runs, not just kloe.
+
+### Projects
+
+A **project** is a named collection of conversations plus the context they
+share — a first-class entity alongside the conversation:
+
+```
+project { id, name, lardProject: "<lard project id>" | null, createdAt, updatedAt }
+```
+
+- A conversation optionally **belongs to** one project (`conversation.projectId`,
+  nullable — an "unfiled" chat has none). The sidebar can group recents under
+  their project; a project page lists its chats.
+- **Shared context files.** A project owns a small set of editable markdown
+  documents — context files — injected verbatim into the system prompt of
+  *every* chat in the project (the way a repo's AGENTS.md grounds a coding
+  agent). They are the project's hand-authored, always-on memory: instructions,
+  glossaries, standing decisions. Keyed by project, edited from the project page.
+- **Why a layer, not a tag.** Grouping is the cheap part; the value is that a
+  project is the unit that *shares state* — context files plus a pinned memory
+  project — so a new chat in it starts already knowing what the others
+  established.
+
+### Pinning to lard
+
+Each project may pin a **lard memory project** (`lardProject`). lard already
+models project identity (a canonical id that git remotes / paths / names resolve
+to); kloe's project holds that id so every chat, tool call, and ingested session
+routes to the same lard area. Set it explicitly, or resolve it once from hints
+via lard's `POST /projects/resolve`.
+
+### Auth — device grant, once
+
+lard is an OAuth 2.1 protected resource. kloe authenticates as a **collector**
+with the device authorization grant (RFC 8628): discover the AS from lard's
+`/.well-known/oauth-protected-resource`, POST the device endpoint, show the user
+a code + verification URL, poll the token endpoint, store the token (with
+`offline_access` → a refresh token, so kloe outlives the 1-hour access token).
+This is an operator action run once (`bun run lard-login`), **not** a per-user
+login — kloe holds one machine identity to lard, distinct from kloe's own user
+auth. The token lives outside the event log (a token file / one-row table),
+refreshed lazily before each call.
+
+### Three ways kloe uses lard
+
+Opt-in via a `lard` config section (absent → none of this exists), splitting
+cleanly into read, tool, and write paths:
+
+1. **Auto-injected context (read).** At run start, if the chat's project pins a
+   lard project, kloe fetches `GET /context?project=<id>` (profile + subject
+   listing + that project's area) and folds it into the system prompt beside the
+   project's own context files. The model starts every turn already knowing the
+   durable picture — no tool call needed for the common case.
+2. **Memory tools (read/write).** Native tools mirror lard's HTTP surface —
+   `memory_get_context`, `memory_list`, `memory_read(path)`,
+   `memory_write(path, body)`, `memory_append(path, line)` — gated by the `lard`
+   config exactly as `web_search` is gated by a search provider. Paths are
+   lard's own (`profile`, `areas/<name>`, `topics/<name>`, `people/<name>`);
+   writes default to the pinned project's area. A chat can durably record a
+   decision mid-conversation, and the user can ask "what do you know about X".
+3. **Ingest (write).** Completed conversations are pushed to `POST /ingest` as
+   sessions (`{collector, sessions:[{sessionId, source:"kloe", projectHints,
+   startedAt, turns:[{index,role,content,ts}]}]}`) so lard extracts facts and
+   consolidates them — making kloe a source alongside the user's other LLM
+   sessions. Ingest is idempotent (upsert by `sessionId`), so re-sending a grown
+   conversation is safe; it runs debounced on `message-end` or a periodic sync,
+   off the hot path.
+
+### Data-model & boundaries
+
+- New `projects` table (id, name, lard_project, timestamps) and `project_context`
+  (project_id, path, body) for context files; `conversations` gains a nullable
+  `project_id`. Project mutations are ordinary API actions, **not** conversation
+  events (a project isn't a stream); the conversation↔project link is a column,
+  set at creation or moved later. lard tokens live in their own store, never in
+  the conversation log.
+- lard is **optional and external** — kloe degrades to today's flat behavior when
+  it's absent or unreachable (a failed `/context` fetch is logged and skipped,
+  never blocks a run).
+- kloe holds **one** machine identity to lard; per-kloe-user scoping of lard
+  subjects is out of scope for the base build (single-tenant homelab assumption,
+  matching lard's own model). Context files are kloe-owned and always-on; lard
+  subjects are lard-owned and learned — complementary, not the same thing.
+
 ## Stack
  
 | Layer            | Choice                                                        |
@@ -877,3 +968,18 @@ buy *reconciliation*, which most of a chat UI never needs.
 - Blob GC cadence: refcount mark-sweep on delete is clear; open is the
   background sweep interval and whether to keep a grace window before collecting
   a newly-unreferenced blob.
+- lard ingest cadence & granularity: per-conversation session upsert on
+  `message-end` (simple, re-sends the whole thread each time) vs. a periodic sync
+  of only changed conversations. What debounce, and whether to ingest partial
+  (mid-run) threads at all.
+- Project ↔ lard resolution: when a project has no pinned `lardProject`, do we
+  auto-resolve one from hints (name / a git remote the user supplies) via
+  `/projects/resolve`, or leave memory off until explicitly pinned?
+- Moving a chat between projects: whether that re-ingests it under the new
+  project id (facts already extracted under the old one are lard's to
+  supersede), and whether context-file changes should retroactively affect past
+  chats' replays (they shouldn't — context is injected per run, not stored).
+- Single machine identity vs. per-user: kloe authenticates to lard once as a
+  collector, so all kloe users share one lard view. If kloe ever becomes truly
+  multi-tenant, the auth boundary to lard (one token vs. per-user device grant)
+  reopens.
