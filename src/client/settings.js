@@ -292,12 +292,48 @@ import { requireAuth, setPfp } from "./authguard.js";
     });
   }
 
+  // ---- lard (memory) link ----
+  function renderLard(el, connected) {
+    el.innerHTML = "";
+    var dot = document.createElement("span");
+    dot.className = "larddot " + (connected ? "on" : "off");
+    var label = document.createElement("span");
+    label.className = "lardlabel";
+    label.textContent = connected ? "Connected" : "Not connected";
+    var btn = document.createElement(connected ? "button" : "a");
+    btn.className = "lardbtn";
+    if (connected) {
+      btn.type = "button"; btn.textContent = "Disconnect";
+      btn.onclick = async function () {
+        btn.disabled = true;
+        await fetch("/api/lard", { method: "DELETE" }).catch(function () {});
+        renderLard(el, false);
+      };
+    } else {
+      btn.href = "/lard/connect"; btn.textContent = "Connect";
+    }
+    el.appendChild(dot); el.appendChild(label); el.appendChild(btn);
+  }
+  async function loadLard() {
+    var section = document.getElementById("lardSection");
+    var status = document.getElementById("lardStatus");
+    try {
+      var j = await (await fetch("/api/lard")).json();
+      if (!j.enabled) { section.hidden = true; return; }
+      section.hidden = false;
+      renderLard(status, j.connected);
+    } catch (_) { section.hidden = true; }
+    // Clean the ?lard=connected|error flag the callback leaves behind.
+    if (location.search.indexOf("lard=") >= 0) history.replaceState({}, "", location.pathname);
+  }
+
   (async function () {
     // Fire all three requests at once — the auth check shouldn't gate the data
     // fetches behind an extra round trip. The sidebar renders from its cache
     // immediately (mountSidebar) and refreshes when loadSidebar resolves.
     var mePromise = requireAuth();
     loadSidebar();
+    loadLard();
     var modelsPromise = fetch("/api/models").then(function (r) { return r.json(); });
     var me = await mePromise;
     if (!me) return; // redirecting to login

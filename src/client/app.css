@@ -563,6 +563,18 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
 .setpage code { font-family: var(--mono); font-size: 0.9em; background: var(--bg-sunk);
   border: 1px solid var(--rule); border-radius: var(--radius-xs); padding: 0.05em 0.35em; }
 
+/* Settings → Memory (lard) link status. */
+.setblock { margin-top: 34px; padding-top: 24px; border-top: 1px solid var(--rule); }
+.lardstatus { display: flex; align-items: center; gap: 10px; }
+.larddot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.larddot.on { background: var(--ok); }
+.larddot.off { background: var(--ink-faint); }
+.lardlabel { font-size: 14px; color: var(--ink-muted); }
+.lardbtn { margin-left: auto; padding: 6px 14px; border-radius: var(--radius-md);
+  border: 1px solid var(--rule-strong); background: var(--bg-raise); color: var(--ink);
+  font-size: 13px; font-weight: 500; text-decoration: none; cursor: pointer; }
+.lardbtn:hover { background: var(--bg-sunk); }
+
 .seclabel { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
   color: var(--ink-faint); font-weight: 500; margin: 22px 0 8px; }
 .seclabel:first-child { margin-top: 2px; }
