@@ -76,6 +76,23 @@ const CatwalkSchema = v.object({
   seedPath: v.optional(v.string()),
 });
 
+/**
+ * The `fetch_url` tool: fetch a page and return its main content as markdown.
+ * Enabled by default (no credential needed). `allowPrivate` lets a homelab read
+ * its own internal services — off by default, since it disables the SSRF guard.
+ */
+const FetchSchema = v.object({
+  enabled: v.optional(v.boolean(), true),
+  /** Cap on bytes downloaded per page. */
+  maxBytes: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 2 * 1024 * 1024),
+  /** Cap on markdown chars returned to the model. */
+  maxChars: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 50_000),
+  timeoutMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 15_000),
+  /** Allow fetching private/reserved addresses (disables SSRF protection). */
+  allowPrivate: v.optional(v.boolean(), false),
+  userAgent: v.optional(v.string(), "Mozilla/5.0 (compatible; kloe/1.0; +https://kloe.dunkirk.sh)"),
+});
+
 /** Web-search backing for the `web_search` tool. Disabled by default. */
 const SearchSchema = v.object({
   provider: v.optional(v.picklist(["none", "ceramic"]), "none"),
@@ -116,6 +133,7 @@ export const ConfigSchema = v.object({
   blobs: section(BlobsSchema),
   catwalk: section(CatwalkSchema),
   search: section(SearchSchema),
+  fetch: section(FetchSchema),
   prompt: section(PromptSchema),
   providers: v.optional(v.array(ProviderSchema), []),
 });

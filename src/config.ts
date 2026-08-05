@@ -26,3 +26,5 @@ export const MAX_TOOL_STEPS = 8;
 // blob shouldn't bloat every future replay/context. The live run already fed the
 // model the full output; only the persisted (and replayed) copy is capped.
 export const TOOL_OUTPUT_MAX = 32 * 1024;
+// Max redirect hops the fetch_url tool follows (each hop re-checked for SSRF).
+export const FETCH_MAX_REDIRECTS = 5;

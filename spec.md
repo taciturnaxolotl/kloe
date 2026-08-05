@@ -562,6 +562,16 @@ files into the `<memory>` block via config.
 
 ### Tools — the explicit, durable loop
 
+**Shipped so far — in-process pure tools** (read-only, side-effect-free, safe to
+re-run on reclaim): `web_search` (swappable `SearchProvider`, Ceramic backend)
+and `fetch_url` (fetch a page → its main content as markdown via Readability +
+Turndown, behind a swappable `FetchProvider`, on by default). `fetch_url` can't
+gate each call on a human approval the way a dev CLI does, so its safety is an
+SSRF guard: http(s) only, the *resolved* IP checked against private/reserved
+ranges, every redirect hop re-checked, plus an `allowPrivate` escape hatch for
+reading homelab-internal services. The durable loop + sandbox below is for the
+*dangerous* tools still to come.
+
 The AI SDK will run the whole tool loop itself (`stopWhen` + `tool.execute`).
 **Don't use that**: it executes tools *inside* one `streamText`, so a worker
 crash mid-tool re-runs the tool on reclaim — fine for a read-only search,

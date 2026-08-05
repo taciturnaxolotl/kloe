@@ -1,5 +1,6 @@
 import { tool, jsonSchema, type ToolSet } from "ai";
 import { createSearchProvider, type SearchProvider } from "./search";
+import { createFetchProvider, type FetchProvider } from "./fetch";
 
 /**
  * The tool registry. Each entry is an AI SDK `tool` with an input schema and an
@@ -40,8 +41,28 @@ function webSearch(provider: SearchProvider) {
   });
 }
 
+function fetchUrl(provider: FetchProvider) {
+  return tool({
+    description:
+      "Fetch a web page and return its main article content as clean markdown " +
+      "(navigation, ads, and boilerplate removed). Use it to read a page found " +
+      "via web_search, or any known URL. Provide the full http(s) URL.",
+    inputSchema: jsonSchema<{ url: string }>({
+      type: "object",
+      properties: { url: { type: "string", description: "The full http(s) URL to fetch" } },
+      required: ["url"],
+      additionalProperties: false,
+    }),
+    execute: async ({ url }) => provider.fetch(url),
+  });
+}
+
 /** The tools available to a run; empty → no tools passed to the provider. */
 export function toolSet(): ToolSet {
+  const tools: ToolSet = {};
+  const fetcher = createFetchProvider();
+  if (fetcher) tools.fetch_url = fetchUrl(fetcher);
   const search = createSearchProvider();
-  return search ? { web_search: webSearch(search) } : {};
+  if (search) tools.web_search = webSearch(search);
+  return tools;
 }

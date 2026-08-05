@@ -64,10 +64,11 @@ test("createSearchProvider selects the backend (and disables gracefully)", () =>
 
 test("toolSet exposes web_search only when a search provider is configured", () => {
   const base = loadConfig({ path: "does-not-exist.json", env: {} });
+  const noFetch = { ...base.fetch, enabled: false }; // isolate web_search (fetch_url is on by default)
   try {
-    setConfig({ ...base, search: { ...base.search, provider: "none" } });
+    setConfig({ ...base, fetch: noFetch, search: { ...base.search, provider: "none" } });
     expect(Object.keys(toolSet())).toEqual([]);
-    setConfig({ ...base, search: { provider: "ceramic", apiKey: "k", maxResults: 5 } });
+    setConfig({ ...base, fetch: noFetch, search: { provider: "ceramic", apiKey: "k", maxResults: 5 } });
     expect(Object.keys(toolSet())).toContain("web_search");
   } finally {
     setConfig(null);

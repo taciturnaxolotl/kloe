@@ -21,6 +21,13 @@
     "apiKey": "$CERAMIC_API_KEY",
     "maxResults": 5
   },
+  "fetch": {
+    "enabled": true,
+    "maxBytes": 2097152,
+    "maxChars": 50000,
+    "timeoutMs": 15000,
+    "allowPrivate": false
+  },
   "prompt": {
     "name": "Kloe",
     "tagline": "your homelab chat",

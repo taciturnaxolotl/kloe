@@ -13,15 +13,19 @@
     "@ai-sdk/anthropic": "^4.0.27",
     "@ai-sdk/openai": "^4.0.27",
     "@ai-sdk/openai-compatible": "^3.0.20",
+    "@mozilla/readability": "^0.6.0",
     "@standard-schema/spec": "^1.1.0",
     "ai": "^7.0.48",
     "katex": "^0.18.1",
+    "linkedom": "^0.18.13",
     "shiki": "^4.4.1",
     "streaming-markdown": "^0.2.15",
+    "turndown": "^7.2.4",
     "valibot": "^1.4.2"
   },
   "devDependencies": {
     "@types/bun": "^1.2.2",
+    "@types/turndown": "^5.0.6",
     "@valibot/to-json-schema": "^1.7.1"
   }
 }

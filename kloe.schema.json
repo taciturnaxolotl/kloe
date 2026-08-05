@@ -131,6 +131,47 @@
         "maxResults": 5
       }
     },
+    "fetch": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2097152
+        },
+        "maxChars": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 50000
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 15000
+        },
+        "allowPrivate": {
+          "type": "boolean",
+          "default": false
+        },
+        "userAgent": {
+          "type": "string",
+          "default": "Mozilla/5.0 (compatible; kloe/1.0; +https://kloe.dunkirk.sh)"
+        }
+      },
+      "required": [],
+      "default": {
+        "enabled": true,
+        "maxBytes": 2097152,
+        "maxChars": 50000,
+        "timeoutMs": 15000,
+        "allowPrivate": false,
+        "userAgent": "Mozilla/5.0 (compatible; kloe/1.0; +https://kloe.dunkirk.sh)"
+      }
+    },
     "prompt": {
       "type": "object",
       "properties": {
