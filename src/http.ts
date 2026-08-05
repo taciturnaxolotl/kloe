@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { brotliCompressSync, gzipSync, constants as zlibConstants } from "node:zlib";
 import { Store } from "./store";
 import { ConversationActor, type Subscriber, type WireEvent } from "./actor";
 import { getRegistry } from "./inference";
@@ -112,6 +113,25 @@ export function evictIdleActors(): void {
       actors.delete(id);
     }
   }
+}
+
+/**
+ * A JSON response compressed per the client's Accept-Encoding — brotli (quality
+ * 5, a fast ratio/speed balance) preferred over gzip, both better than nothing
+ * over a tunnel (Bun.serve does no compression of its own). Used for `/events`,
+ * whose history payload can be large; the browser decompresses transparently.
+ */
+function compressedJson(req: Request, value: unknown): Response {
+  const json = JSON.stringify(value);
+  const accept = req.headers.get("accept-encoding") ?? "";
+  if (/\bbr\b/.test(accept)) {
+    const out = brotliCompressSync(json, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 } });
+    return new Response(out, { headers: { "Content-Type": "application/json", "Content-Encoding": "br" } });
+  }
+  if (/\bgzip\b/.test(accept)) {
+    return new Response(gzipSync(json), { headers: { "Content-Type": "application/json", "Content-Encoding": "gzip" } });
+  }
+  return new Response(json, { headers: { "Content-Type": "application/json" } });
 }
 
 /** Refs of every model this deployment can run (enabled providers + echo). */
@@ -477,7 +497,7 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     },
     "/api/conversations/:id/events": {
       GET: (req: Bun.BunRequest<"/api/conversations/:id/events">) =>
-        Response.json(getActor(req.params.id, store).replay(0)),
+        compressedJson(req, getActor(req.params.id, store).replay(0)),
     },
     "/api/conversations/:id": {
       DELETE: async (req: Bun.BunRequest<"/api/conversations/:id">) => {

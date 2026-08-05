@@ -864,27 +864,29 @@ import { mountDialogs } from "./confirm.js";
   function openStream(id) {
     if (source) { source.close(); source = null; }
     if (connTimer) { clearTimeout(connTimer); connTimer = null; }
-    clearThread();
     convId = id;
     atBottom = true; // a freshly opened conversation should land at the end
     void loadHistoryThenStream(id);
   }
   async function loadHistoryThenStream(id) {
-    var lastId = null;
+    var events = null;
     try {
       var res = await fetch("/api/conversations/" + encodeURIComponent(id) + "/events");
       if (convId !== id) return; // switched conversations while loading
-      var events = await res.json();
+      events = await res.json();
       if (convId !== id) return;
-      if (Array.isArray(events) && events.length) {
-        for (var i = 0; i < events.length; i++) applyEvent(events[i].event, events[i].data);
-        if (flushHandle) { cancelAnimationFrame(flushHandle); flushHandle = null; }
-        flush(); // render any buffered deltas now (completed turns already rendered on message-end)
-        scroll.scrollTop = scroll.scrollHeight;
-        lastId = events[events.length - 1].id;
-      }
-    } catch (_) { /* fall through: the stream (no ?after) replays from the start */ }
-    if (convId !== id) return;
+    } catch (_) { /* render empty + let the stream replay from the start */ }
+    // Swap in ONE step: the previous conversation stays on screen until the new
+    // one is ready, so the window never flashes empty during the fetch.
+    clearThread();
+    var lastId = null;
+    if (Array.isArray(events) && events.length) {
+      for (var i = 0; i < events.length; i++) applyEvent(events[i].event, events[i].data);
+      if (flushHandle) { cancelAnimationFrame(flushHandle); flushHandle = null; }
+      flush(); // render buffered deltas now (completed turns already rendered on message-end)
+      scroll.scrollTop = scroll.scrollHeight;
+      lastId = events[events.length - 1].id;
+    }
     connectStream(id, lastId);
   }
   function connectStream(id, afterId) {
