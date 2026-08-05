@@ -252,13 +252,17 @@ export function handleLogout(req: Request, store: Store): Response {
 /** /client-metadata.json — the public Client ID Metadata Document indiko fetches. */
 export function clientMetadata(): Response {
   const cfg = getConfig().auth;
+  const base = trimSlash(cfg.baseUrl);
   return Response.json({
     client_id: clientId(),
     client_name: cfg.appName,
-    ...(cfg.logoUri ? { logo_uri: cfg.logoUri } : {}),
+    client_uri: base,
+    // A logo so the AS consent page shows kloe's branding (DCR/CIMD). Defaults to
+    // kloe's own square icon; override with auth.logoUri.
+    logo_uri: cfg.logoUri || base + "/icon-512.png",
     // /auth/callback for kloe's own login; /lard/callback for linking a user's
     // lard account (same client, shared authorization server).
-    redirect_uris: [redirectUri(), trimSlash(cfg.baseUrl) + "/lard/callback"],
+    redirect_uris: [redirectUri(), base + "/lard/callback"],
     token_endpoint_auth_method: "none",
     grant_types: ["authorization_code"],
     response_types: ["code"],
