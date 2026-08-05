@@ -1,4 +1,4 @@
-import { tool, jsonSchema, type ToolSet } from "ai";
+import { tool, jsonSchema, type Tool, type ToolSet } from "ai";
 import { createSearchProvider, type SearchProvider } from "./search";
 import { createFetchProvider, type FetchProvider } from "./fetch";
 
@@ -57,12 +57,23 @@ function fetchUrl(provider: FetchProvider) {
   });
 }
 
+/**
+ * The tool table: each entry's `create` returns its AI SDK tool, or null when
+ * its backing capability isn't configured (so it's simply not offered). Add a
+ * tool by adding one entry here (and, for a nicer UI, one entry in the client's
+ * TOOL_UI registry — unknown tools still render with a sensible default).
+ */
+const REGISTRY: Array<{ name: string; create: () => Tool | null }> = [
+  { name: "fetch_url", create: () => { const p = createFetchProvider(); return p ? fetchUrl(p) : null; } },
+  { name: "web_search", create: () => { const p = createSearchProvider(); return p ? webSearch(p) : null; } },
+];
+
 /** The tools available to a run; empty → no tools passed to the provider. */
 export function toolSet(): ToolSet {
   const tools: ToolSet = {};
-  const fetcher = createFetchProvider();
-  if (fetcher) tools.fetch_url = fetchUrl(fetcher);
-  const search = createSearchProvider();
-  if (search) tools.web_search = webSearch(search);
+  for (const entry of REGISTRY) {
+    const t = entry.create();
+    if (t) tools[entry.name] = t;
+  }
   return tools;
 }

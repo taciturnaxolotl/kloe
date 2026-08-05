@@ -363,6 +363,11 @@ body.selecting #selectBtn { order: 4; }
   line-height: 1.5; white-space: pre-wrap; word-break: break-word; margin: 2px 0; }
 .turn .body .stepper .step.tool .targs { color: var(--ink-faint); }
 .turn .body .stepper .step.tool .tout.err { color: var(--err); }
+/* fetch_url result: a linked page title above the rendered page content. */
+.turn .body .stepper .fetchtitle { display: block; font-family: var(--sans); font-weight: 500;
+  color: var(--ink); text-decoration: none; margin: 0 0 6px; }
+.turn .body .stepper .fetchtitle:hover { text-decoration: underline; }
+.turn .body .stepper .tnote { color: var(--ink-faint); font-size: 0.9em; margin-top: 4px; }
 
 /* Search results card: favicon + title + domain, each row a link. */
 .turn .body .stepper .results { display: flex; flex-direction: column; margin: 2px 0 4px;

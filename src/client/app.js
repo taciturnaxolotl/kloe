@@ -46,6 +46,7 @@ import { mountDialogs } from "./confirm.js";
   var ICON_CLOCK = '<svg ' + SVG + '><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
   var ICON_GLOBE = '<svg ' + SVG + '><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.5 2.5 15.5 0 18M12 3c-2.5 2.5-2.5 15.5 0 18"/></svg>';
   var ICON_TOOL = '<svg ' + SVG + '><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2-2 2.6-2.6z"/></svg>';
+  var ICON_PAGE = '<svg ' + SVG + '><path d="M6 2h7l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/><path d="M13 2v5h5"/><path d="M8 13h8M8 17h6"/></svg>';
 
   var SEND ='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>';
 
@@ -402,7 +403,7 @@ import { mountDialogs } from "./confirm.js";
       details: d, stepper: stepper,
       headIcon: sum.querySelector(".stepicon"), headLabel: sum.querySelector(".activity-label"),
       openReasoning: null, firstReasoning: null, thoughtLabel: "", stepCount: 0,
-      searches: [], otherTools: [], activeTool: null,
+      tools: [], activeTool: null, // tools: ordered {name, input}; activeTool: the in-flight one
     };
   }
   // The current open activity block. Opening one closes the current prose block
@@ -432,22 +433,24 @@ import { mountDialogs } from "./confirm.js";
   // "Searching the web for cats"); once settled, summarize — tools win over
   // thinking, so a block that searched reads "Searched the web for cats" and a
   // pure-thinking block reads "Thought for Ns". No "Done".
+  // Steps in this block that used a given tool (for per-tool counts/summaries).
+  function stepsOfTool(a, name) {
+    return a.tools.filter(function (e) { return e.name === name; });
+  }
+  // The collapsed header. While a step is live it reflects that step; once the
+  // block settles it summarizes the LATEST tool used (last-tool-wins for a mixed
+  // block), or the thinking if no tools ran. Per-tool phrasing comes from TOOL_UI.
   function blockHeadState(a) {
     if (a.openReasoning) return { icon: ICON_CLOCK, label: "Thinking", working: true };
     if (a.activeTool) {
-      var t = a.activeTool;
-      if (t.toolName === "web_search")
-        return { icon: ICON_GLOBE, label: t.query ? "Searching the web for " + t.query : "Searching the web", working: true };
-      return { icon: ICON_TOOL, label: t.toolName, working: true };
+      var ui = toolUI(a.activeTool.name);
+      return { icon: ui.icon, label: ui.summary(stepsOfTool(a, a.activeTool.name), true, a.activeTool.name), working: true };
     }
-    if (a.searches.length) {
-      var q = a.searches[a.searches.length - 1];
-      return { icon: ICON_GLOBE, working: false, label: a.searches.length > 1
-        ? "Searched the web · " + a.searches.length + " searches"
-        : (q ? "Searched the web for " + q : "Searched the web") };
+    if (a.tools.length) {
+      var last = a.tools[a.tools.length - 1];
+      var lui = toolUI(last.name);
+      return { icon: lui.icon, label: lui.summary(stepsOfTool(a, last.name), false, last.name), working: false };
     }
-    if (a.otherTools.length)
-      return { icon: ICON_TOOL, working: false, label: a.otherTools.length > 1 ? "Used " + a.otherTools.length + " tools" : "Used " + a.otherTools[0] };
     if (a.firstReasoning) return { icon: ICON_CLOCK, label: a.thoughtLabel || "Thought", working: false };
     return null;
   }
@@ -559,11 +562,12 @@ import { mountDialogs } from "./confirm.js";
     if (rec.toolSteps[data.toolCallId]) return rec.toolSteps[data.toolCallId];
     var a = openActivity(rec);
     blockEndReasoning(a); // the thinking that led to this call is done
-    var isSearch = data.toolName === "web_search";
-    var step = makeStepIn(a, "tool thinking" + (isSearch ? " search" : ""), isSearch ? ICON_GLOBE : ICON_TOOL, true);
-    var query = data.input && data.input.query;
-    step.label.textContent = isSearch && query ? query : data.toolName;
-    if (!isSearch) {
+    var ui = toolUI(data.toolName);
+    var step = makeStepIn(a, "tool thinking", ui.icon, true);
+    step.label.textContent = ui.row(data.input, data.toolName);
+    // Unknown tools show their raw args (a known tool conveys its input via the
+    // row label + a custom result renderer, so args would be redundant there).
+    if (ui === DEFAULT_TOOL) {
       var args = toolValue(data.input);
       if (args && args !== "{}") {
         var el = document.createElement("div"); el.className = "targs"; el.textContent = args;
@@ -572,8 +576,9 @@ import { mountDialogs } from "./confirm.js";
     }
     var t = { row: step.row, label: step.label, body: step.body, toolName: data.toolName, block: a };
     rec.toolSteps[data.toolCallId] = t;
-    if (isSearch) { a.searches.push(query || ""); a.activeTool = { toolName: "web_search", query: query }; }
-    else { a.otherTools.push(data.toolName); a.activeTool = { toolName: data.toolName }; }
+    var entry = { name: data.toolName, input: data.input };
+    a.tools.push(entry);
+    a.activeTool = entry;
     blockUpdateHead(a);
     autoScroll();
     return t;
@@ -584,13 +589,9 @@ import { mountDialogs } from "./confirm.js";
     if (data.isError) {
       console.error("[kloe tool error]", data.toolName, data.output);
       t.row.classList.add("errored");
-      var err = document.createElement("div"); err.className = "tout err"; err.textContent = toolValue(data.output);
-      t.body.appendChild(err);
-    } else if (t.toolName === "web_search" && data.output && Array.isArray(data.output.results)) {
-      renderSearchResults(t, data.output.results);
+      errorResult(t, data.output); // errors render uniformly for every tool
     } else {
-      var out = document.createElement("div"); out.className = "tout"; out.textContent = toolValue(data.output);
-      t.body.appendChild(out);
+      toolUI(t.toolName).result(t, data.output); // success rendering is per-tool
     }
     t.block.activeTool = null; // this tool finished
     blockUpdateHead(t.block);
@@ -625,6 +626,69 @@ import { mountDialogs } from "./confirm.js";
     });
     t.body.appendChild(card);
   }
+  // A fetched page: a linked title + its content rendered as markdown.
+  function renderFetchResult(t, output) {
+    var head = document.createElement("a");
+    head.className = "fetchtitle"; head.href = output.url; head.target = "_blank"; head.rel = "noopener noreferrer nofollow";
+    head.textContent = output.title || output.url;
+    t.body.appendChild(head);
+    if (output.content) renderStaticMd(t.body, output.content);
+    if (output.truncated) { var n = document.createElement("div"); n.className = "tnote"; n.textContent = "(truncated)"; t.body.appendChild(n); }
+  }
+  // Generic result body: the value as text/JSON. `errorResult` is the same, in red.
+  function defaultResult(t, output) {
+    var out = document.createElement("div"); out.className = "tout"; out.textContent = toolValue(output);
+    t.body.appendChild(out);
+  }
+  function errorResult(t, output) {
+    var out = document.createElement("div"); out.className = "tout err"; out.textContent = toolValue(output);
+    t.body.appendChild(out);
+  }
+  // ---- per-tool UI registry ----------------------------------------------
+  // How each tool renders: its icon, the step-row label (from the call input),
+  // the collapsed-header summary (given this tool's steps in the block + whether
+  // it's live), and the success result body. Unknown tools fall back to
+  // DEFAULT_TOOL — so a new tool renders sensibly with zero UI code, and gets a
+  // nicer treatment by adding one entry here.
+  function lastInput(steps) { return steps.length ? steps[steps.length - 1].input || {} : {}; }
+  var TOOL_UI = {
+    web_search: {
+      icon: ICON_GLOBE,
+      row: function (input) { return (input && input.query) || "web_search"; },
+      summary: function (steps, active) {
+        var verb = active ? "Searching the web" : "Searched the web";
+        if (steps.length > 1) return verb + " · " + steps.length + " searches";
+        var q = lastInput(steps).query;
+        return q ? verb + " for " + q : verb;
+      },
+      result: function (t, output) {
+        if (output && Array.isArray(output.results)) renderSearchResults(t, output.results);
+        else defaultResult(t, output);
+      },
+    },
+    fetch_url: {
+      icon: ICON_PAGE,
+      row: function (input) { return domainOf(input && input.url) || "fetch_url"; },
+      summary: function (steps, active) {
+        var verb = active ? "Reading" : "Read";
+        if (steps.length > 1) return verb + " " + steps.length + " pages";
+        return verb + " " + (domainOf(lastInput(steps).url) || "a page");
+      },
+      result: function (t, output) {
+        if (output && output.content != null) renderFetchResult(t, output);
+        else defaultResult(t, output);
+      },
+    },
+  };
+  var DEFAULT_TOOL = {
+    icon: ICON_TOOL,
+    row: function (_input, name) { return name; },
+    summary: function (steps, active, name) {
+      return (active ? "Running " : "Ran ") + name + (steps.length > 1 ? " ×" + steps.length : "");
+    },
+    result: defaultResult,
+  };
+  function toolUI(name) { return TOOL_UI[name] || DEFAULT_TOOL; }
   function endAssistant(rec, finishReason, usage, reasoningMs) {
     closeActivity(rec); // finish + collapse any open activity block
     // The server reports one reasoning duration for the turn (start → first
