@@ -5,6 +5,7 @@ import { Store } from "./src/store";
 import { initInference } from "./src/inference";
 import { apiRoutes, getActor, evictIdleActors } from "./src/http";
 import { handleLogin, handleCallback, handleLogout, clientMetadata } from "./src/auth";
+import { handleLardConnect, handleLardCallback } from "./src/lard";
 import { JobDriver } from "./src/drive";
 import { createBlobStore } from "./src/blobs";
 import { sweepOrphanBlobs } from "./src/gc";
@@ -164,6 +165,9 @@ if (import.meta.main) {
       "/auth/login": (req: Request) => handleLogin(req),
       "/auth/callback": (req: Request) => handleCallback(req, store),
       "/auth/logout": (req: Request) => handleLogout(req, store),
+      // Per-user lard link: auth-code + PKCE to lard's (shared) authorization server.
+      "/lard/connect": (req: Request) => handleLardConnect(req, store),
+      "/lard/callback": (req: Request) => handleLardCallback(req, store),
       ...staticRoutes,
       ...vendorRoutes,
       ...assetRoutes,

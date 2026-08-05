@@ -256,7 +256,9 @@ export function clientMetadata(): Response {
     client_id: clientId(),
     client_name: cfg.appName,
     ...(cfg.logoUri ? { logo_uri: cfg.logoUri } : {}),
-    redirect_uris: [redirectUri()],
+    // /auth/callback for kloe's own login; /lard/callback for linking a user's
+    // lard account (same client, shared authorization server).
+    redirect_uris: [redirectUri(), trimSlash(cfg.baseUrl) + "/lard/callback"],
     token_endpoint_auth_method: "none",
     grant_types: ["authorization_code"],
     response_types: ["code"],

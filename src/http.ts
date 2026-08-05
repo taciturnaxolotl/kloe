@@ -10,6 +10,7 @@ import { PromptBody, SteerBody, ModelPatchBody, RenameBody } from "./schemas";
 import { ACTOR_IDLE_TTL_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
 import { getConfig } from "./settings";
 import { gateApi, getSession, sessionUser } from "./auth";
+import { lardEnabled, lardConnected, lardDisconnect, LOCAL_SUB } from "./lard";
 import type { BlobStore } from "./blobs";
 
 /**
@@ -421,6 +422,19 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       GET: (req: Bun.BunRequest<"/api/me">) => {
         const s = getSession(req, store);
         return s ? Response.json(sessionUser(s)) : Response.json({ authenticated: false });
+      },
+    },
+
+    // lard link status for the settings page: whether the integration is enabled
+    // for this deployment and whether THIS user has connected their account.
+    "/api/lard": {
+      GET: (req: Bun.BunRequest<"/api/lard">) => {
+        const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
+        return Response.json({ enabled: lardEnabled(), connected: lardEnabled() && lardConnected(store, sub) });
+      },
+      DELETE: (req: Bun.BunRequest<"/api/lard">) => {
+        lardDisconnect(store, getSession(req, store)?.sub ?? LOCAL_SUB);
+        return Response.json({ ok: true });
       },
     },
 
