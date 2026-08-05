@@ -250,7 +250,13 @@ body.selecting #selectBtn { order: 4; }
 
 .scroll { flex: 1; overflow-y: auto; min-height: 0; position: relative; scrollbar-gutter: stable; }
 .thread { max-width: var(--measure); margin: 0 auto; padding: 22px 20px 32px; }
-.turn { padding: 18px 0; border-top: 1px solid var(--rule); }
+/* Let the browser skip layout/style/paint for off-screen turns (native
+   "virtualization", no scroll math). `contain-intrinsic-size: auto <est>`
+   remembers each turn's real height once rendered, so the scrollbar stays
+   stable and re-entry doesn't shift; the 240px estimate only seeds a
+   never-yet-rendered turn. */
+.turn { padding: 18px 0; border-top: 1px solid var(--rule);
+  content-visibility: auto; contain-intrinsic-size: auto 240px; }
 .turn:first-child { border-top: 0; }
 .turn .label { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
 .turn .who { font-size: 13px; font-weight: 600; }
