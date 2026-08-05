@@ -304,6 +304,9 @@ import { mountDialogs } from "./confirm.js";
     // One button in the action slot: Stop while a run streams, Send otherwise.
     // Mid-run you still queue by pressing Enter (submit() steers when streaming);
     // the panel above the composer shows what's staged.
+    // Skip during a bulk history load — replaying each turn's message-start/end
+    // would strobe the button between Stop and Send; the caller repaints once after.
+    if (bulkLoading) return;
     $("stop").style.display = streaming ? "inline-flex" : "none";
     send.style.display = streaming ? "none" : "inline-flex";
     send.innerHTML = SEND;
@@ -942,6 +945,7 @@ import { mountDialogs } from "./confirm.js";
     if (convId !== id) return; // switched conversations while loading
     var tail = await streamInto(res, id, null, true); // phase 1: newest turns at the bottom
     if (convId !== id) return;
+    updateSend(); // repaint the action button once to the final state (no strobe)
     connectStream(id, tail.lastId); // live tail from the newest event we have
     if (tail.rendered && tail.firstSeq > 1) void backfill(id, tail.firstSeq); // older turns, in the background
   }
@@ -952,7 +956,13 @@ import { mountDialogs } from "./confirm.js";
     var res = null;
     try { res = await fetch(eventsUrl(id, "before=" + beforeSeq)); } catch (_) { return; }
     if (convId !== id || !res) return;
+    // Backfill replays OLD, complete turns — don't let their message-start/end
+    // clobber the live streaming state (e.g. when the conversation opened mid-run).
+    var savedStreaming = streaming;
     await streamInto(res, id, thread.firstChild, false); // prepend before the current top; don't scroll
+    if (convId !== id) return;
+    streaming = savedStreaming;
+    updateSend();
   }
   // Read an NDJSON history stream (the browser decompresses the brotli response on
   // the fly) and apply events incrementally. `prepend` (a turn element) inserts
