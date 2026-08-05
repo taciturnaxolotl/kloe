@@ -20,14 +20,16 @@ import type { BlobStore } from "./blobs";
  */
 
 /**
- * Parses the Last-Event-ID header. The browser sends back the full event id
- * (`<conversationId>:<seq>`); we extract the seq. Returns 0 (replay all) on
- * any parse failure, or when the id belongs to a different conversation — an
- * id is scoped to its own conversation, so a stale or foreign cursor must
- * never skip events here.
+ * The seq to replay after when a stream opens. On a live reconnect the browser
+ * sends the full event id (`<conversationId>:<seq>`) as `Last-Event-ID`; on the
+ * INITIAL connect the client hands off from a batch history load via `?after=`
+ * (native EventSource can't set a header on the first request). The header wins
+ * when present (it's the freshest cursor). Returns 0 (replay all) on any parse
+ * failure, or when the id belongs to a different conversation — an id is scoped
+ * to its own conversation, so a stale or foreign cursor must never skip events.
  */
-function readLastEventId(req: Request, conversationId: string): number {
-  const raw = req.headers.get("last-event-id");
+function afterSeqFor(req: Request, conversationId: string): number {
+  const raw = req.headers.get("last-event-id") ?? new URL(req.url).searchParams.get("after");
   if (raw === null) return 0;
   try {
     const parsed = parseEventId(raw);
@@ -167,9 +169,8 @@ function chatModels(store: Store) {
 
 /** The long-lived SSE stream for a conversation (down channel). */
 function openStream(conversationId: string, req: Request, store: Store): Response {
-  // TODO(auth): cookie/session auth so native EventSource works unmodified.
   const actor = getActor(conversationId, store);
-  const after = readLastEventId(req, conversationId);
+  const after = afterSeqFor(req, conversationId);
 
   let unsub: () => void = () => {};
   const sub = new StreamSubscriber(() => unsub());

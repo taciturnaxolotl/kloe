@@ -852,18 +852,47 @@ import { mountDialogs } from "./confirm.js";
 
   // ---- SSE stream --------------------------------------------------------
   var connTimer = null;
+  var SSE_EVENTS = ["user-message", "queued-message", "queued-cancelled", "run-started",
+    "message-start", "reasoning-delta", "tool-call", "tool-result", "text-delta",
+    "message-end", "run-error", "cancelled"];
+
+  // Open a conversation: batch-load the whole history in ONE request and render
+  // it in a single pass (far faster than streaming the entire log back over SSE,
+  // especially over a tunnel), then open the live SSE stream for only the events
+  // after what we already have. The history events reconstruct the steer queue
+  // on their own, so no separate fetch is needed.
   function openStream(id) {
     if (source) { source.close(); source = null; }
     if (connTimer) { clearTimeout(connTimer); connTimer = null; }
     clearThread();
     convId = id;
-    // The stream replays from seq 0 on a fresh EventSource, so the queued-message
-    // events reconstruct the steer queue on their own — no separate fetch needed.
-    var es = new EventSource("/api/conversations/" + encodeURIComponent(id) + "/stream");
+    atBottom = true; // a freshly opened conversation should land at the end
+    void loadHistoryThenStream(id);
+  }
+  async function loadHistoryThenStream(id) {
+    var lastId = null;
+    try {
+      var res = await fetch("/api/conversations/" + encodeURIComponent(id) + "/events");
+      if (convId !== id) return; // switched conversations while loading
+      var events = await res.json();
+      if (convId !== id) return;
+      if (Array.isArray(events) && events.length) {
+        for (var i = 0; i < events.length; i++) applyEvent(events[i].event, events[i].data);
+        if (flushHandle) { cancelAnimationFrame(flushHandle); flushHandle = null; }
+        flush(); // render any buffered deltas now (completed turns already rendered on message-end)
+        scroll.scrollTop = scroll.scrollHeight;
+        lastId = events[events.length - 1].id;
+      }
+    } catch (_) { /* fall through: the stream (no ?after) replays from the start */ }
+    if (convId !== id) return;
+    connectStream(id, lastId);
+  }
+  function connectStream(id, afterId) {
+    var url = "/api/conversations/" + encodeURIComponent(id) + "/stream";
+    if (afterId) url += "?after=" + encodeURIComponent(afterId); // only the tail after the batch
+    var es = new EventSource(url);
     source = es;
-    ["user-message", "queued-message", "queued-cancelled", "run-started", "message-start",
-     "reasoning-delta", "tool-call", "tool-result", "text-delta", "message-end", "run-error",
-     "cancelled"].forEach(function (nm) {
+    SSE_EVENTS.forEach(function (nm) {
       es.addEventListener(nm, function (ev) {
         var data; try { data = JSON.parse(ev.data); } catch (_) { return; }
         applyEvent(nm, data);
@@ -874,7 +903,8 @@ import { mountDialogs } from "./confirm.js";
       // readyState 2 (CLOSED) is terminal; 0 (CONNECTING) is the browser already
       // auto-reconnecting — usually done within a second. Only surface
       // "reconnecting" if the gap actually lingers, so a quick reconnect doesn't
-      // flash the header.
+      // flash the header. (On reconnect the browser sends Last-Event-ID, which
+      // the server prefers over the initial ?after cursor.)
       if (es.readyState === 2) { setConn("offline"); return; }
       if (!connTimer) connTimer = setTimeout(function () { connTimer = null; setConn("reconnecting"); }, 1500);
     };

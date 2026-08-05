@@ -215,6 +215,31 @@ test("resume via HTTP Last-Event-ID replays only the gap", async () => {
   }
 });
 
+test("batch /events + /stream?after= loads history then only the tail", async () => {
+  const conv = "s2b";
+  const actor = getActor(conv, store);
+  await actor.runText("rb", "mb", async function* (_signal) {
+    yield { kind: "text", chunk: "hi" };
+  });
+
+  // The whole history in one request (what the client batch-renders on open).
+  const events = (await (await fetch(`${base}/api/conversations/${conv}/events`)).json()) as Array<{ id: string; event: string }>;
+  expect(events.length).toBeGreaterThan(0);
+  expect(events.some((e) => e.event === "message-end")).toBe(true);
+  const lastId = events[events.length - 1]!.id;
+  const lastSeq = Number(lastId.split(":")[1]);
+
+  // A new event, then open the stream from that cursor via ?after= (native
+  // EventSource can't set a header on the first connect): only the tail arrives.
+  actor.appendUser("more", "rb2");
+  const tail = await readSse(
+    await fetch(`${base}/api/conversations/${conv}/stream?after=${encodeURIComponent(lastId)}`),
+    (f) => f.length >= 1,
+  );
+  expect(tail.length).toBeGreaterThan(0);
+  expect(tail.every((f) => Number(f.id.split(":")[1]!) > lastSeq)).toBe(true);
+});
+
 test("a Last-Event-ID from a different conversation replays from the start", async () => {
   const conv = "s3";
   const actor = getActor(conv, store);
