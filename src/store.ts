@@ -105,6 +105,9 @@ export interface ConversationSummary {
   lastSeq: number;
   /** First user message, truncated — null for a conversation with no prompt yet. */
   title: string | null;
+  /** The project this conversation is filed under, for the header breadcrumb (null when unfiled). */
+  projectId?: string | null;
+  projectName?: string | null;
 }
 
 /** A project groups conversations and pins shared context (a lard memory project). */
@@ -146,6 +149,9 @@ interface ConversationRow {
   last_seq: number;
   first_user: string | null;
   custom_title: string | null;
+  /** Present on the list query (LEFT JOIN projects); absent on search. */
+  project_id?: string | null;
+  project_name?: string | null;
 }
 
 function rowToSummary(r: ConversationRow): ConversationSummary {
@@ -161,7 +167,10 @@ function rowToSummary(r: ConversationRow): ConversationSummary {
       // malformed row: leave title null rather than crash the list
     }
   }
-  return { id: r.id, createdAt: r.created_at, updatedAt: r.last_activity, lastSeq: r.last_seq, title };
+  return {
+    id: r.id, createdAt: r.created_at, updatedAt: r.last_activity, lastSeq: r.last_seq, title,
+    projectId: r.project_id ?? null, projectName: r.project_name ?? null,
+  };
 }
 
 /** Escapes LIKE wildcards so a user query matches literally (paired with ESCAPE '\'). */
@@ -467,13 +476,14 @@ export class Store {
 
     this.listConversationsStmt = this.db.prepare(
       `SELECT c.id AS id, c.created_at AS created_at, c.last_seq AS last_seq, c.custom_title AS custom_title,
-              c.owner_sub AS owner_sub, c.project_id AS project_id,
+              c.owner_sub AS owner_sub, c.project_id AS project_id, p.name AS project_name,
               (SELECT e.data FROM events e
                WHERE e.conversation_id = c.id AND e.event = 'user-message'
                ORDER BY e.seq ASC LIMIT 1) AS first_user,
               COALESCE((SELECT MAX(e.created_at) FROM events e
                         WHERE e.conversation_id = c.id), c.created_at) AS last_activity
        FROM conversations c
+       LEFT JOIN projects p ON p.id = c.project_id
        ORDER BY last_activity DESC`,
     );
     // Full-text-ish search over titles AND message contents: a conversation

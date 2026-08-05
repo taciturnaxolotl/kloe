@@ -88,8 +88,10 @@ import {
   // ---- state -------------------------------------------------------------
   var convId = null;          // current conversation id
   // Opened from a project page (/?project=<id>): file the new chat into it once
-  // its first message creates the conversation.
+  // its first message creates the conversation. We fetch the project's name up
+  // front so the header breadcrumb can show it before the first message lands.
   var pendingProject = new URLSearchParams(location.search).get("project");
+  var pendingProjectName = null;
   var source = null;          // active EventSource
   var streaming = false;      // a run is in flight for the current conversation
   var atBottom = true;
@@ -1156,7 +1158,7 @@ import {
         return;
       }
       if (wasNew && content) {
-        title.textContent = content.slice(0, 80); setDocTitle(content.slice(0, 80));
+        setHeader(content.slice(0, 80), pendingProject ? { id: pendingProject, name: pendingProjectName } : null);
         setUrl("/c/" + encodeURIComponent(convId), true); // a new chat is now saved — reflect it in the URL
         if (pendingProject) {
           fetch("/api/conversations/" + encodeURIComponent(convId) + "/project", {
@@ -1269,6 +1271,28 @@ import {
   // Browser tab: "<conversation> - Kloe" once a conversation has a title, else
   // just "Kloe".
   function setDocTitle(t) { document.title = t ? t + " - Kloe" : "Kloe"; }
+  // The header shows the chat title, and — when the chat is filed under a
+  // project — a `Project / title` breadcrumb whose project name links back to
+  // the project page. `project` is {id, name} or null.
+  function setHeader(t, project) {
+    title.innerHTML = "";
+    if (project && project.id) {
+      var a = document.createElement("a");
+      a.className = "crumblink"; a.href = "/p/" + encodeURIComponent(project.id);
+      a.textContent = project.name || "Project";
+      var sep = document.createElement("span"); sep.className = "crumbsep"; sep.textContent = "/";
+      title.appendChild(a); title.appendChild(sep);
+    }
+    var tt = document.createElement("span"); tt.className = "crumbtitle";
+    tt.textContent = t || "Conversation";
+    title.appendChild(tt);
+    setDocTitle(t);
+  }
+  // The project (if any) for a conversation id, from the sidebar list data.
+  function projectOf(id) {
+    var c = conversations.find(function (x) { return x.id === id; });
+    return c && c.projectId ? { id: c.projectId, name: c.projectName } : null;
+  }
   // URL ⇄ conversation. `/c/<id>` deep-links a conversation (reload/bookmark/back
   // all work); "/" is a fresh chat. `nav` on select/new controls history:
   // "push" (default, a user action) adds an entry, "replace" swaps the current
@@ -1283,12 +1307,14 @@ import {
     if (replace) history.replaceState({}, "", path); else history.pushState({}, "", path);
   }
   function selectConversation(id, t, nav) {
-    title.textContent = t || "Conversation"; setDocTitle(t); openStream(id); sidebar.render(conversations);
+    setHeader(t, projectOf(id)); openStream(id); sidebar.render(conversations);
     if (nav !== "none") setUrl("/c/" + encodeURIComponent(id), nav === "replace");
   }
   function newConversation(nav) {
     var id = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
-    title.textContent = "New conversation"; setDocTitle(null);
+    // A brand-new chat opened from a project already knows its project (pending);
+    // otherwise it's unfiled until its first message optionally files it.
+    setHeader("New conversation", pendingProject ? { id: pendingProject, name: pendingProjectName } : null);
     openStream(id); sidebar.render(conversations); sidebar.closeRail(); input.focus();
     if (nav !== "none") setUrl("/", nav === "replace");
   }
@@ -1412,6 +1438,22 @@ import {
 
     // Open with "replace" so the initial route doesn't add a spurious history
     // entry. Falls back to the last-opened conversation, then the most recent.
+    // A project-scoped new chat (/?new=1&project=<id>): learn the project's name
+    // so the header breadcrumb reads "Project / …" rather than a bare caret.
+    if (pendingProject) {
+      fetch("/api/projects/" + encodeURIComponent(pendingProject))
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          // `pendingProject` is still set only while the new chat is unfiled; if
+          // it's been cleared (first message filed it), leave the header alone.
+          if (!d || !d.project || !pendingProject) return;
+          pendingProjectName = d.project.name;
+          var cur = title.querySelector(".crumbtitle");
+          setHeader(cur ? cur.textContent : "New conversation", { id: pendingProject, name: pendingProjectName });
+        })
+        .catch(function () {});
+    }
+
     if (params.has("new")) {
       newConversation("replace");
     } else if (wantId) {
