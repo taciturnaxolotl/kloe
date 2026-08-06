@@ -365,10 +365,9 @@ import {
   function updateCtx() {
     var used = usedTokens(lastUsage);
     if (!selected || !selected.contextWindow || used == null) { ctx.classList.add("hidden"); return; }
-    var pct = Math.max(0, Math.min(100, Math.round((used / selected.contextWindow) * 100)));
-    var n = 12, f = Math.round((pct / 100) * n);
-    ctxbar.textContent = "▓".repeat(f) + "░".repeat(n - f);
-    ctxpct.textContent = pct + "%";
+    var raw = Math.max(0, Math.min(100, (used / selected.contextWindow) * 100));
+    ctxbar.style.setProperty("--f", raw.toFixed(1) + "%"); // continuous fill, not 12 blocks
+    ctxpct.textContent = Math.round(raw) + "%";
     ctx.classList.remove("hidden");
     ctx.title = used.toLocaleString() + " / " + selected.contextWindow.toLocaleString() + " tokens";
   }
