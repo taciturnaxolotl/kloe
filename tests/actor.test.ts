@@ -416,3 +416,28 @@ test("history drops unsigned reasoning (only signed thinking is echoed)", async 
     { role: "assistant", content: "answer" },
   ]);
 });
+
+test("reclaim: completed tools stay paired in history; an in-flight one is dropped", async () => {
+  // A run that finished tool A (call + result persisted) then "crashed" during
+  // tool B (call persisted, result never). This is exactly the log a reclaim
+  // replays from.
+  const a = new ConversationActor("t-reclaim", store);
+  a.appendUser("do two things");
+  await a.runText("r", "m", async function* (_signal) {
+    yield { kind: "tool-call", toolCallId: "A", toolName: "run_shell", input: { command: "echo a" } };
+    yield { kind: "tool-result", toolCallId: "A", toolName: "run_shell", output: "a done" };
+    yield { kind: "tool-call", toolCallId: "B", toolName: "run_shell", input: { command: "echo b" } };
+    // no result for B — the crash point
+  });
+
+  // history() is what a reclaimed job feeds back to the model.
+  const h = await a.history();
+  const flat = JSON.stringify(h);
+  // A is a complete pair → the resumed model sees it and will NOT re-issue it.
+  expect(flat).toContain('"toolCallId":"A"');
+  expect(flat).toContain('"type":"tool-result"');
+  expect(flat).toContain("a done");
+  // B is unpaired → dropped, so the model re-issues it. The in-flight tool is
+  // the ONLY thing that re-runs on reclaim; every completed tool is preserved.
+  expect(flat).not.toContain('"toolCallId":"B"');
+});

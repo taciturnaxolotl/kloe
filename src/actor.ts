@@ -291,9 +291,13 @@ export class ConversationActor {
   async history(opts: HistoryOptions = {}): Promise<ModelMessage[]> {
     const out: ModelMessage[] = [];
 
-    // Fold only tool-call/result pairs where both sides exist; and note which
-    // messages carry signed reasoning, so unsigned-reasoning turns skip the
-    // (potentially huge) text accumulation entirely.
+    // Fold only tool-call/result pairs where both sides exist — this is the
+    // reclaim guarantee: a completed tool (call + result both persisted) is
+    // replayed so the resumed model continues past it instead of re-issuing it,
+    // while an in-flight tool (call but no result, from a crash) is dropped and
+    // re-run. Never emit a call without its result — the provider rejects an
+    // unmatched tool-call. Also note which messages carry signed reasoning, so
+    // unsigned-reasoning turns skip the (potentially huge) text accumulation.
     const callIds = new Set<string>();
     const resultIds = new Set<string>();
     const signedMsgs = new Set<string>();
@@ -582,7 +586,12 @@ export class ConversationActor {
         } else if (step.kind === "tool-call") {
           // Flush pending text/reasoning first so the durable log stays ordered
           // (a tool call sits after the text that preceded it). Tool events are
-          // durable (via persist), not batched.
+          // persisted SYNCHRONOUSLY and unbatched (unlike deltas) — this is the
+          // durability contract: a completed tool's result is in the log before
+          // the loop moves on, so on reclaim history() replays it (paired) and
+          // the model never re-executes it. Only an in-flight tool (call
+          // persisted here, but the crash beat its result) is re-run. Keep these
+          // `persist` calls direct — batching them would reopen that window.
           flushReasoning();
           flushDelta();
           this.persist(Event.ToolCall, {
