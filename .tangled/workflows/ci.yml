@@ -2,18 +2,25 @@ when:
   - event: ["push", "pull_request"]
     branch: ["main"]
 
-# terebithia's spindle has no pre-built microVM images; the nixery engine builds
-# an image on demand from the nixpkgs packages below.
+# terebithia's spindle has no pre-built microVM images, so use the nixery engine:
+# it builds an image on demand from the nixpkgs packages below. Everything runs
+# nix-native — prebuilt npm binaries (biome, the native TS compiler) can't
+# execute in a pure-nix image, so the tools come from nixpkgs instead.
 engine: nixery
 
 dependencies:
+  # stable channel: bun runs the app/tests, typescript 5.9.3 matches the pinned
+  # devDependency exactly (its tsc brings its own node), git + certs for clone.
   nixpkgs:
-    # biome comes from nixpkgs (nix-built), NOT the npm @biomejs/biome binary —
-    # that's a prebuilt glibc-FHS binary and won't execute in a pure-nix image.
     - bun
-    - biome
+    - typescript
     - git
     - cacert
+  # biome from unstable — the stable channel here pins an old 2.3.x with a
+  # static-member false positive; unstable tracks a current 2.5.x that agrees
+  # with the config and the npm biome GitHub Actions uses.
+  nixpkgs/nixpkgs-unstable:
+    - biome
 
 steps:
   - name: install
@@ -26,7 +33,7 @@ steps:
 
   - name: typecheck
     command: |
-      bunx tsc --noEmit
+      tsc --noEmit
 
   - name: test
     command: |
