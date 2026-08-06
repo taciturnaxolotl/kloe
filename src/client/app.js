@@ -1057,8 +1057,11 @@ import {
     if (source) { source.close(); source = null; }
     if (connTimer) { clearTimeout(connTimer); connTimer = null; }
     convId = id;
+    // Reset the context-window gauge for the conversation we're switching to;
+    // replay of an existing chat's last turn repopulates it, a new chat leaves
+    // it hidden (no usage yet) instead of showing the previous chat's number.
+    lastUsage = null; updateCtx();
     atBottom = true; // a freshly opened conversation should land at the end
-    try { localStorage.setItem("kloe:lastConv", id); } catch (_) { /* private mode */ }
     void loadHistoryThenStream(id);
   }
   // Bottom-first: render the last few turns instantly at the bottom, open the live
@@ -1483,13 +1486,12 @@ import {
     // lists, and the (usually reopened) conversation's /events overlap in one
     // round-trip window instead of chaining.
     // Which conversation to open comes from the URL: the /c/<id> path, or the
-    // legacy ?c= / ?new query (from the conversations page). Prefetch that one
-    // (else the last-opened) so its history overlaps the boot round-trip.
+    // legacy ?c= / ?new query (from the conversations page). Prefetch that one so
+    // its history overlaps the boot round-trip. A bare `/` starts a new chat
+    // (below), so there's nothing to prefetch there.
     var params = new URLSearchParams(location.search);
     var wantId = convIdFromPath() || params.get("c");
-    var lastConv = null;
-    try { lastConv = localStorage.getItem("kloe:lastConv"); } catch (_) { /* private mode */ }
-    prefetchEvents(wantId || lastConv);
+    if (wantId) prefetchEvents(wantId);
 
     var mePromise = requireAuth();
     var dataPromise = Promise.all([loadModels(), loadConversations()]);
@@ -1499,7 +1501,8 @@ import {
     await dataPromise;
 
     // Open with "replace" so the initial route doesn't add a spurious history
-    // entry. Falls back to the last-opened conversation, then the most recent.
+    // entry. A bare landing (no /c/<id>, no ?new) starts a fresh chat rather than
+    // reopening the last conversation.
     // A project-scoped new chat (/?new=1&project=<id>): learn the project's name
     // so the header breadcrumb reads "Project / …" rather than a bare caret.
     if (pendingProject) {
@@ -1522,10 +1525,7 @@ import {
       var c = conversations.find(function (x) { return x.id === wantId; });
       selectConversation(wantId, c ? c.title : null, "replace");
     } else {
-      var lc = lastConv && conversations.find(function (x) { return x.id === lastConv; });
-      var open = lc || conversations[0];
-      if (open) selectConversation(open.id, open.title, "replace");
-      else newConversation("replace");
+      newConversation("replace"); // land on a fresh chat, not the last conversation
     }
     updateSend();
   })();
