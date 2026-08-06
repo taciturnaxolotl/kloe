@@ -1,7 +1,7 @@
-import { test, expect } from "bun:test";
+import { expect, test } from "bun:test";
 import { CeramicSearchProvider, createSearchProvider } from "../src/search";
+import { loadConfig, setConfig } from "../src/settings";
 import { toolSet } from "../src/tools";
-import { setConfig, loadConfig } from "../src/settings";
 
 function jsonFetch(body: unknown, status = 200): typeof fetch {
   return (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
@@ -37,7 +37,9 @@ test("CeramicSearchProvider normalizes results and sends the bearer key + query"
 
 test("maxResults caps how many results come back", async () => {
   const fetchImpl = jsonFetch({
-    result: { results: [1, 2, 3].map((n) => ({ title: `t${n}`, url: `u${n}`, description: `d${n}` })) },
+    result: {
+      results: [1, 2, 3].map((n) => ({ title: `t${n}`, url: `u${n}`, description: `d${n}` })),
+    },
   });
   const p = new CeramicSearchProvider({ apiKey: "k", fetchImpl, maxResults: 2 });
   expect((await p.search("q")).length).toBe(2);
@@ -49,9 +51,16 @@ test("a non-OK response throws", async () => {
 });
 
 test("a problem+json error surfaces its detail, code, and requestId", async () => {
-  const body = { title: "Unprocessable Content", detail: "Query string cannot be empty.", code: "invalid_parameter", requestId: "abc-123" };
+  const body = {
+    title: "Unprocessable Content",
+    detail: "Query string cannot be empty.",
+    code: "invalid_parameter",
+    requestId: "abc-123",
+  };
   const p = new CeramicSearchProvider({ apiKey: "k", fetchImpl: jsonFetch(body, 422) });
-  await expect(p.search("")).rejects.toThrow(/Query string cannot be empty\..*invalid_parameter.*abc-123/);
+  await expect(p.search("")).rejects.toThrow(
+    /Query string cannot be empty\..*invalid_parameter.*abc-123/,
+  );
 });
 
 test("createSearchProvider selects the backend (and disables gracefully)", () => {
@@ -68,7 +77,11 @@ test("toolSet exposes web_search only when a search provider is configured", () 
   try {
     setConfig({ ...base, fetch: noFetch, search: { ...base.search, provider: "none" } });
     expect(Object.keys(toolSet())).toEqual([]);
-    setConfig({ ...base, fetch: noFetch, search: { provider: "ceramic", apiKey: "k", maxResults: 5 } });
+    setConfig({
+      ...base,
+      fetch: noFetch,
+      search: { provider: "ceramic", apiKey: "k", maxResults: 5 },
+    });
     expect(Object.keys(toolSet())).toContain("web_search");
   } finally {
     setConfig(null);

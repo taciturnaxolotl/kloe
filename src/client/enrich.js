@@ -41,9 +41,19 @@ var LANGS = {
 };
 // Short/alternate names → a curated lang id.
 var ALIAS = {
-  js: "javascript", ts: "typescript", py: "python", rb: "ruby", rs: "rust",
-  sh: "bash", shell: "bash", zsh: "bash", yml: "yaml", md: "markdown",
-  "c++": "cpp", "c#": "c", golang: "go",
+  js: "javascript",
+  ts: "typescript",
+  py: "python",
+  rb: "ruby",
+  rs: "rust",
+  sh: "bash",
+  shell: "bash",
+  zsh: "bash",
+  yml: "yaml",
+  md: "markdown",
+  "c++": "cpp",
+  "c#": "c",
+  golang: "go",
 };
 var _hl = null;
 async function highlighter() {
@@ -52,7 +62,9 @@ async function highlighter() {
     var eng = await import("shiki/engine/javascript");
     _hl = await core.createHighlighterCore({
       themes: [import("@shikijs/themes/github-light"), import("@shikijs/themes/github-dark")],
-      langs: Object.keys(LANGS).map(function (k) { return LANGS[k](); }),
+      langs: Object.keys(LANGS).map(function (k) {
+        return LANGS[k]();
+      }),
       engine: eng.createJavaScriptRegexEngine(),
     });
   }
@@ -90,8 +102,13 @@ async function enrichCode(root) {
       var tmp = document.createElement("template");
       tmp.innerHTML = html;
       var inner = tmp.content.querySelector("code");
-      if (inner) { el.innerHTML = inner.innerHTML; el.classList.add("hl"); }
-    } catch (_) { /* leave the plain code block */ }
+      if (inner) {
+        el.innerHTML = inner.innerHTML;
+        el.classList.add("hl");
+      }
+    } catch (_) {
+      /* leave the plain code block */
+    }
   }
 }
 
@@ -120,7 +137,7 @@ async function katex() {
 // leading MATH_MARK (U+E000) and a "D" for display. Those land as <code> elements;
 // we KaTeX-render them and swap the <code> out. Real code has no MATH_MARK prefix
 // and is left alone. throwOnError so invalid LaTeX shows its source, never red.
-var MATH_MARK = String.fromCharCode(0xe000);
+var _MATH_MARK = String.fromCharCode(0xe000);
 async function enrichMath(root) {
   var codes = root.querySelectorAll("code");
   var maths = [];
@@ -135,8 +152,11 @@ async function enrichMath(root) {
     var display = payload.charAt(0) === "D";
     var tex = display ? payload.slice(1) : payload;
     var eq = document.createElement(display ? "equation-block" : "equation-inline");
-    try { eq.innerHTML = k.renderToString(tex, { displayMode: display, throwOnError: true }); }
-    catch (_) { eq.textContent = tex; }
+    try {
+      eq.innerHTML = k.renderToString(tex, { displayMode: display, throwOnError: true });
+    } catch (_) {
+      eq.textContent = tex;
+    }
     c.replaceWith(eq);
   }
 }

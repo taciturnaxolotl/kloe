@@ -6,18 +6,44 @@
  * Sizing/colour come from CSS (`currentColor`, no width/height), as before.
  */
 import {
-  MessageSquare, Clock, Globe, Wrench, FileText, File,
-  ArrowUpRight, ArrowUp, ChevronRight, GripVertical, EllipsisVertical, Trash2,
-  Search, PanelLeft, MessageCirclePlus, MessagesSquare, Settings,
-  Plus, Pencil, Folder,
-  User, Users, Hash, Brain, SquareTerminal,
+  ArrowUp,
+  ArrowUpRight,
+  Brain,
+  ChevronRight,
+  Clock,
+  EllipsisVertical,
+  File,
+  FileText,
+  Folder,
+  Globe,
+  GripVertical,
+  Hash,
+  MessageCirclePlus,
+  MessageSquare,
+  MessagesSquare,
+  PanelLeft,
+  Pencil,
+  Plus,
+  Search,
+  Settings,
+  SquareTerminal,
+  Trash2,
+  User,
+  Users,
+  Wrench,
 } from "lucide";
 
 /** Serialize a Lucide IconNode to an SVG string. `attrs` override the defaults. */
 export function icon(node, attrs) {
   var a = Object.assign(
-    { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
-      "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round" },
+    {
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: "currentColor",
+      "stroke-width": 2,
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+    },
     attrs || {},
   );
   var s = "<svg";

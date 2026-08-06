@@ -1,15 +1,15 @@
-import { test, expect, beforeAll, afterAll, beforeEach } from "bun:test";
+import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Store, parseJobParams } from "../src/store";
-import { apiRoutes, getActor, evictIdleActors } from "../src/http";
+import { join } from "node:path";
 import { FsBlobStore } from "../src/blobs";
-import { getConfig, setConfig } from "../src/settings";
+import { Catalog } from "../src/catalog";
 import { JobDriver } from "../src/drive";
+import { apiRoutes, evictIdleActors, getActor } from "../src/http";
 import { setRegistry } from "../src/inference";
 import { ProviderRegistry } from "../src/providers";
-import { Catalog } from "../src/catalog";
+import { getConfig, setConfig } from "../src/settings";
+import { parseJobParams, Store } from "../src/store";
 
 const tmp = mkdtempSync(join(tmpdir(), "kloe-srv-"));
 const store = new Store(join(tmp, "test.db"));
@@ -51,10 +51,7 @@ interface Frame {
  * Reads an SSE response until `until` returns true (or EOF), returning the
  * frames seen. Cancels the reader as soon as the condition is met.
  */
-async function readSse(
-  res: Response,
-  until: (frames: Frame[]) => boolean,
-): Promise<Frame[]> {
+async function readSse(res: Response, until: (frames: Frame[]) => boolean): Promise<Frame[]> {
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -63,7 +60,7 @@ async function readSse(
     const { done, value } = await reader.read();
     if (done) break;
     buffer += typeof value === "string" ? value : decoder.decode(value);
-    let idx;
+    let idx: number;
     while ((idx = buffer.indexOf("\n\n")) !== -1) {
       const block = buffer.slice(0, idx);
       buffer = buffer.slice(idx + 2);
@@ -183,9 +180,8 @@ test("resume via HTTP Last-Event-ID replays only the gap", async () => {
   });
 
   // Cursor 0: full replay over HTTP.
-  const full = await readSse(
-    await fetch(`${base}/api/conversations/${conv}/stream`),
-    (f) => f.some((x) => x.event === "message-end"),
+  const full = await readSse(await fetch(`${base}/api/conversations/${conv}/stream`), (f) =>
+    f.some((x) => x.event === "message-end"),
   );
   const lastSeq = Math.max(...full.map((f) => Number(f.id.split(":")[1]!)));
 
@@ -224,7 +220,10 @@ test("batch /events + /stream?after= loads history then only the tail", async ()
 
   // The whole history in one request (what the client batch-renders on open).
   const ndjson = await (await fetch(`${base}/api/conversations/${conv}/events`)).text();
-  const events = ndjson.split("\n").filter(Boolean).map((l) => JSON.parse(l)) as Array<{ id: string; event: string }>;
+  const events = ndjson
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l)) as Array<{ id: string; event: string }>;
   expect(events.length).toBeGreaterThan(0);
   expect(events.some((e) => e.event === "message-end")).toBe(true);
   const lastId = events[events.length - 1]!.id;
@@ -246,11 +245,15 @@ test("/events ?tailTurns and ?before partition the history (bottom-first backfil
   const actor = getActor(conv, store);
   for (let i = 0; i < 3; i++) {
     actor.appendUser("q" + i, "r" + i);
-    await actor.runText("r" + i, "m" + i, async function* (_s) { yield { kind: "text", chunk: "a" + i }; });
+    await actor.runText("r" + i, "m" + i, async function* (_s) {
+      yield { kind: "text", chunk: "a" + i };
+    });
   }
   const parse = async (q: string) =>
-    ((await (await fetch(`${base}/api/conversations/${conv}/events${q}`)).text())
-      .split("\n").filter(Boolean).map((l) => JSON.parse(l))) as Array<{ id: string; event: string }>;
+    (await (await fetch(`${base}/api/conversations/${conv}/events${q}`)).text())
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l)) as Array<{ id: string; event: string }>;
   const seq = (e: { id: string }) => Number(e.id.split(":")[1]);
 
   const all = await parse("");
@@ -336,7 +339,9 @@ test("JobDriver marks a job with corrupt params failed instead of re-claiming it
   const driver = new JobDriver(store, (id) => getActor(id, store));
   await driver.driveOnce();
 
-  const row = store.db.prepare("SELECT status FROM jobs WHERE id = ?").get(jobId) as { status: string };
+  const row = store.db.prepare("SELECT status FROM jobs WHERE id = ?").get(jobId) as {
+    status: string;
+  };
   expect(row.status).toBe("failed");
 });
 
@@ -395,11 +400,15 @@ test("search escapes LIKE wildcards so a query matches literally", async () => {
   a.appendUser("100% sure about this", "sl-1");
 
   // `%` must be treated as a literal, not a wildcard: "50%" must NOT match.
-  const hit = (await (await fetch(`${base}/api/conversations?q=${encodeURIComponent("100%")}`)).json()) as {
+  const hit = (await (
+    await fetch(`${base}/api/conversations?q=${encodeURIComponent("100%")}`)
+  ).json()) as {
     conversations: Array<{ id: string }>;
   };
   expect(hit.conversations.map((c) => c.id)).toContain("search-literal");
-  const miss = (await (await fetch(`${base}/api/conversations?q=${encodeURIComponent("50%")}`)).json()) as {
+  const miss = (await (
+    await fetch(`${base}/api/conversations?q=${encodeURIComponent("50%")}`)
+  ).json()) as {
     conversations: Array<{ id: string }>;
   };
   expect(miss.conversations.map((c) => c.id)).not.toContain("search-literal");
@@ -475,8 +484,11 @@ test("steer queues the message (durable event) and enqueues exactly one flush jo
 
   // Both steers are durable `queued-message` events (the queue IS the log).
   const events = getActor(conv, store).replay(0);
-  expect(events.filter((e) => e.event === "queued-message").map((e) => (e.data as { runId: string }).runId))
-    .toEqual(["sq-1", "sq-2"]);
+  expect(
+    events
+      .filter((e) => e.event === "queued-message")
+      .map((e) => (e.data as { runId: string }).runId),
+  ).toEqual(["sq-1", "sq-2"]);
 
   // One flush job drains the whole queue; a second steer must not add another.
   const flushJobs = store.db
@@ -517,7 +529,9 @@ test("the flush promotes the WHOLE steer queue as one batched run", async () => 
     .join("");
   expect(text).toBe("echo: first steer\n\nsecond steer");
   // Queue is drained.
-  const body = (await (await fetch(`${base}/api/conversations/${conv}/steer`)).json()) as { queued: unknown[] };
+  const body = (await (await fetch(`${base}/api/conversations/${conv}/steer`)).json()) as {
+    queued: unknown[];
+  };
   expect(body.queued).toEqual([]);
 });
 
@@ -528,8 +542,11 @@ test("a stale flush job with an empty queue completes as a no-op", async () => {
   // Empty queue → the flush promotes nothing, writes no events, and just
   // completes (covers a crash between promote and completion).
   expect(getActor(conv, store).replay(0)).toEqual([]);
-  const status = (store.db.prepare("SELECT status FROM jobs WHERE id = ?")
-    .get(`${conv}:stale`) as { status: string }).status;
+  const status = (
+    store.db.prepare("SELECT status FROM jobs WHERE id = ?").get(`${conv}:stale`) as {
+      status: string;
+    }
+  ).status;
   expect(status).toBe("done");
 });
 
@@ -549,15 +566,22 @@ test("steers mid-run wait for it to end, then flush together", async () => {
   // Steer twice while it's running: both queue, nothing executes yet.
   await steerPost(base, conv, { content: "mid one", model: "echo", runId: "sm-1" });
   await steerPost(base, conv, { content: "mid two", model: "echo", runId: "sm-2" });
-  expect(getActor(conv, store).replay(0).filter((e) => e.event === "user-message")).toHaveLength(0);
+  expect(
+    getActor(conv, store)
+      .replay(0)
+      .filter((e) => e.event === "user-message"),
+  ).toHaveLength(0);
 
   release();
   await running;
 
   await new JobDriver(store, (id) => getActor(id, store)).driveOnce();
   const events = getActor(conv, store).replay(0);
-  expect(events.filter((e) => e.event === "user-message").map((e) => (e.data as { runId: string }).runId))
-    .toEqual(["sm-1", "sm-2"]);
+  expect(
+    events
+      .filter((e) => e.event === "user-message")
+      .map((e) => (e.data as { runId: string }).runId),
+  ).toEqual(["sm-1", "sm-2"]);
   expect(events.filter((e) => e.event === "message-end")).toHaveLength(2); // the mid run + the flush batch
 });
 
@@ -568,9 +592,8 @@ test("a reconnecting stream replays queued-message events (and their promotion)"
   // Connect fresh (simulates a client that was offline when the steer landed):
   // it must see the queued-message, then the promotion on flush.
   await new JobDriver(store, (id) => getActor(id, store)).driveOnce();
-  const frames = await readSse(
-    await fetch(`${base}/api/conversations/${conv}/stream`),
-    (f) => f.some((x) => x.event === "message-end"),
+  const frames = await readSse(await fetch(`${base}/api/conversations/${conv}/stream`), (f) =>
+    f.some((x) => x.event === "message-end"),
   );
   const names = frames.map((f) => f.event);
   expect(names).toContain("queued-message");
@@ -591,7 +614,11 @@ test("POST /api/blobs stores content-addressed bytes; GET returns them", async (
     body: bytes,
   });
   expect(post.status).toBe(201);
-  const { sha256, size, mime } = (await post.json()) as { sha256: string; size: number; mime: string };
+  const { sha256, size, mime } = (await post.json()) as {
+    sha256: string;
+    size: number;
+    mime: string;
+  };
   expect(sha256).toMatch(/^[0-9a-f]{64}$/);
   expect(size).toBe(bytes.byteLength);
   expect(mime).toBe("text/plain");
@@ -632,8 +659,15 @@ test("POST /api/blobs rejects a body over the size cap with 413", async () => {
 
 // ---- attachments on messages ------------------------------------------
 /** Uploads bytes and returns the attachment reference the client would send. */
-async function upload(text: string, name: string, kind: "image" | "file"): Promise<{ sha256: string; name: string; mime: string; kind: "image" | "file" }> {
-  const res = await fetch(`${base}/api/blobs`, { method: "POST", body: new TextEncoder().encode(text) });
+async function upload(
+  text: string,
+  name: string,
+  kind: "image" | "file",
+): Promise<{ sha256: string; name: string; mime: string; kind: "image" | "file" }> {
+  const res = await fetch(`${base}/api/blobs`, {
+    method: "POST",
+    body: new TextEncoder().encode(text),
+  });
   const { sha256, mime } = (await res.json()) as { sha256: string; mime: string };
   return { sha256, name, mime, kind };
 }
@@ -709,12 +743,19 @@ test("steer with attachments queues them, and flush promotes them to the user tu
   const res = await fetch(`${base}/api/conversations/${conv}/steer`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ content: "with a pic", model: "echo", runId: "sa-1", attachments: [att] }),
+    body: JSON.stringify({
+      content: "with a pic",
+      model: "echo",
+      runId: "sa-1",
+      attachments: [att],
+    }),
   });
   expect(res.status).toBe(202);
 
   // The queued-message (visible before promotion) carries the attachments.
-  const queued = getActor(conv, store).replay(0).find((e) => e.event === "queued-message");
+  const queued = getActor(conv, store)
+    .replay(0)
+    .find((e) => e.event === "queued-message");
   expect((queued!.data as { attachments?: unknown[] }).attachments).toHaveLength(1);
   // GET /steer reflects them too (reconnect rebuild path).
   const pending = (await (await fetch(`${base}/api/conversations/${conv}/steer`)).json()) as {
@@ -727,7 +768,9 @@ test("steer with attachments queues them, and flush promotes them to the user tu
   const promoted = getActor(conv, store)
     .replay(0)
     .find((e) => e.event === "user-message" && (e.data as { runId: string }).runId === "sa-1");
-  expect((promoted!.data as { attachments?: Array<{ sha256: string }> }).attachments![0]!.sha256).toBe(att.sha256);
+  expect(
+    (promoted!.data as { attachments?: Array<{ sha256: string }> }).attachments![0]!.sha256,
+  ).toBe(att.sha256);
 });
 
 test("steer rejects an attachment whose blob was never uploaded (422)", async () => {
@@ -761,7 +804,9 @@ test("a queued steer can be removed before it's promoted", async () => {
 });
 
 test("cancelling a non-pending steer is a 404 (no log spam)", async () => {
-  const res = await fetch(`${base}/api/conversations/steer-cancel-404/steer/nope`, { method: "DELETE" });
+  const res = await fetch(`${base}/api/conversations/steer-cancel-404/steer/nope`, {
+    method: "DELETE",
+  });
   expect(res.status).toBe(404);
 });
 
@@ -778,7 +823,9 @@ test("a cancelled steer is not promoted on flush", async () => {
 
 test("GET /api/blobs/:sha256?name= sets the download filename", async () => {
   const bytes = new TextEncoder().encode("named download");
-  const { sha256 } = (await (await fetch(`${base}/api/blobs`, { method: "POST", body: bytes })).json()) as {
+  const { sha256 } = (await (
+    await fetch(`${base}/api/blobs`, { method: "POST", body: bytes })
+  ).json()) as {
     sha256: string;
   };
   const res = await fetch(`${base}/api/blobs/${sha256}?name=report%20final.pdf`);

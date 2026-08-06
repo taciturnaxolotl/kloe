@@ -1,8 +1,8 @@
-import { test, expect } from "bun:test";
-import { ProviderRegistry } from "../src/providers";
-import type { ProviderConfig } from "../src/providers";
-import { RateLimiter } from "../src/ratelimit";
+import { expect, test } from "bun:test";
 import { Catalog } from "../src/catalog";
+import type { ProviderConfig } from "../src/providers";
+import { ProviderRegistry } from "../src/providers";
+import { RateLimiter } from "../src/ratelimit";
 
 /** A small in-memory catalog fixture (raw catwalk shape). */
 function fixtureCatalog(): Catalog {
@@ -97,9 +97,7 @@ function inlineConfig(over: Record<string, unknown> = {}) {
     id: "hyper",
     apiKey: "$HYPER_KEY",
     apiEndpoint: "https://hyper.test/v1",
-    models: [
-      { id: "hyper-1", name: "Hyper One", context_window: 32000 },
-    ],
+    models: [{ id: "hyper-1", name: "Hyper One", context_window: 32000 }],
     ...over,
   };
 }
@@ -262,9 +260,7 @@ test("rate limiter never over-admits when a release and a fresh acquire race", a
 });
 
 test("rate limiter enforces min interval", async () => {
-  const limiter = new RateLimiter(
-    limiterConfig({ maxConcurrency: 10, minIntervalMs: 50 }),
-  );
+  const limiter = new RateLimiter(limiterConfig({ maxConcurrency: 10, minIntervalMs: 50 }));
   const times: number[] = [];
   const task = async () => {
     await limiter.acquire();

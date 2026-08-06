@@ -1,5 +1,5 @@
-import type { Store } from "./store";
 import type { BlobStore } from "./blobs";
+import type { Store } from "./store";
 
 /**
  * Deletes blobs that no conversation references and that are older than the

@@ -11,10 +11,10 @@
  * protects it, then ask that server where its device + token endpoints are.
  * Nothing about the provider is hardcoded (mirrors lard's own client).
  */
-import { randomBytes, createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { authEnabled, getSession, parseCookies } from "./auth";
 import { getConfig } from "./settings";
-import { getSession, authEnabled, parseCookies } from "./auth";
-import type { Store, LardToken } from "./store";
+import type { LardToken, Store } from "./store";
 
 /** The implicit user when kloe auth is disabled (single-user/local). */
 export const LOCAL_SUB = "local";
@@ -22,11 +22,18 @@ export const LOCAL_SUB = "local";
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 const trimSlash = (s: string): string => s.replace(/\/+$/, "");
 const cfg = () => getConfig().lard;
-export function lardEnabled(): boolean { return cfg().enabled && !!cfg().baseUrl; }
-export function lardConnected(store: Store, sub: string): boolean { return !!store.getLardToken(sub); }
+export function lardEnabled(): boolean {
+  return cfg().enabled && !!cfg().baseUrl;
+}
+export function lardConnected(store: Store, sub: string): boolean {
+  return !!store.getLardToken(sub);
+}
 
 async function getJSON<T>(url: string): Promise<T> {
-  const res = await fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(cfg().timeoutMs) });
+  const res = await fetch(url, {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(cfg().timeoutMs),
+  });
   if (!res.ok) throw new Error(`lard: ${url} → ${res.status}`);
   return res.json() as Promise<T>;
 }
@@ -36,20 +43,45 @@ async function getJSON<T>(url: string): Promise<T> {
 // metadata — the exact string we must send as the RFC 8707 `resource` (and that
 // lard checks the token's `aud` against). Sending its advertised value rather
 // than a guess from baseUrl avoids audience mismatches if the two ever diverge.
-interface Endpoints { authorization?: string; token: string; deviceAuthorization: string; revocation?: string; resource: string; }
+interface Endpoints {
+  authorization?: string;
+  token: string;
+  deviceAuthorization: string;
+  revocation?: string;
+  resource: string;
+}
 let discoveryCache: Promise<Endpoints> | null = null;
-export function resetLardCache(): void { discoveryCache = null; }
+export function resetLardCache(): void {
+  discoveryCache = null;
+}
 function discover(): Promise<Endpoints> {
   if (!discoveryCache) {
     discoveryCache = (async () => {
       const base = trimSlash(cfg().baseUrl);
-      const prm = await getJSON<{ authorization_servers?: string[]; resource?: string }>(base + "/.well-known/oauth-protected-resource");
+      const prm = await getJSON<{ authorization_servers?: string[]; resource?: string }>(
+        base + "/.well-known/oauth-protected-resource",
+      );
       const as = trimSlash(prm.authorization_servers?.[0] ?? "");
       if (!as) throw new Error("lard: the server advertises no authorization server");
-      const meta = await getJSON<{ authorization_endpoint?: string; token_endpoint?: string; device_authorization_endpoint?: string; revocation_endpoint?: string }>(as + "/.well-known/oauth-authorization-server");
-      if (!meta.token_endpoint || !meta.device_authorization_endpoint) throw new Error("lard: authorization server metadata is missing endpoints");
-      return { authorization: meta.authorization_endpoint, token: meta.token_endpoint, deviceAuthorization: meta.device_authorization_endpoint, revocation: meta.revocation_endpoint, resource: prm.resource || base };
-    })().catch((e) => { discoveryCache = null; throw e; });
+      const meta = await getJSON<{
+        authorization_endpoint?: string;
+        token_endpoint?: string;
+        device_authorization_endpoint?: string;
+        revocation_endpoint?: string;
+      }>(as + "/.well-known/oauth-authorization-server");
+      if (!meta.token_endpoint || !meta.device_authorization_endpoint)
+        throw new Error("lard: authorization server metadata is missing endpoints");
+      return {
+        authorization: meta.authorization_endpoint,
+        token: meta.token_endpoint,
+        deviceAuthorization: meta.device_authorization_endpoint,
+        revocation: meta.revocation_endpoint,
+        resource: prm.resource || base,
+      };
+    })().catch((e) => {
+      discoveryCache = null;
+      throw e;
+    });
   }
   return discoveryCache;
 }
@@ -60,16 +92,29 @@ function discover(): Promise<Endpoints> {
 // wins; otherwise reuse kloe's own auth client (confidential clientId+secret, or
 // its CIMD doc); as a last resort ask lard which collector client to be.
 async function resolveClient(): Promise<{ id: string; secret?: string }> {
-  const l = cfg(), a = getConfig().auth;
+  const l = cfg(),
+    a = getConfig().auth;
   if (l.clientId) return { id: l.clientId, secret: l.clientSecret || undefined };
-  if (a.clientId || a.baseUrl) return { id: a.clientId || trimSlash(a.baseUrl) + "/client-metadata.json", secret: a.clientSecret || undefined };
+  if (a.clientId || a.baseUrl)
+    return {
+      id: a.clientId || trimSlash(a.baseUrl) + "/client-metadata.json",
+      secret: a.clientSecret || undefined,
+    };
   const reg = await getJSON<{ client_id?: string }>(trimSlash(cfg().baseUrl) + "/auth/collector");
   if (!reg.client_id) throw new Error("lard: no client configured and the server publishes none");
   return { id: reg.client_id };
 }
 
-function tokenFrom(j: { access_token: string; refresh_token?: string; expires_in?: number }): LardToken {
-  return { accessToken: j.access_token, refreshToken: j.refresh_token || undefined, expiresAt: j.expires_in ? Date.now() + j.expires_in * 1000 : 0 };
+function tokenFrom(j: {
+  access_token: string;
+  refresh_token?: string;
+  expires_in?: number;
+}): LardToken {
+  return {
+    accessToken: j.access_token,
+    refreshToken: j.refresh_token || undefined,
+    expiresAt: j.expires_in ? Date.now() + j.expires_in * 1000 : 0,
+  };
 }
 async function postForm(url: string, form: URLSearchParams): Promise<Response> {
   return fetch(url, {
@@ -92,7 +137,14 @@ async function tokenRequest(params: Record<string, string>): Promise<Response> {
 }
 
 // ---- device grant (login) ------------------------------------------------
-export interface DeviceStart { deviceCode: string; userCode: string; verificationUri: string; verificationUriComplete?: string; interval: number; expiresIn: number; }
+export interface DeviceStart {
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  verificationUriComplete?: string;
+  interval: number;
+  expiresIn: number;
+}
 
 async function startDevice(): Promise<DeviceStart> {
   const eps = await discover();
@@ -101,19 +153,33 @@ async function startDevice(): Promise<DeviceStart> {
   form.set("resource", eps.resource); // RFC 8707: bind to lard (audience)
   const res = await postForm(eps.deviceAuthorization, form);
   const j = (await res.json()) as Record<string, string | number>;
-  if (!j.device_code || !j.verification_uri) throw new Error(`lard: device authorization failed (${res.status})`);
+  if (!j.device_code || !j.verification_uri)
+    throw new Error(`lard: device authorization failed (${res.status})`);
   return {
-    deviceCode: String(j.device_code), userCode: String(j.user_code ?? ""),
-    verificationUri: String(j.verification_uri), verificationUriComplete: j.verification_uri_complete ? String(j.verification_uri_complete) : undefined,
-    interval: Number(j.interval) || 5, expiresIn: Number(j.expires_in) || 600,
+    deviceCode: String(j.device_code),
+    userCode: String(j.user_code ?? ""),
+    verificationUri: String(j.verification_uri),
+    verificationUriComplete: j.verification_uri_complete
+      ? String(j.verification_uri_complete)
+      : undefined,
+    interval: Number(j.interval) || 5,
+    expiresIn: Number(j.expires_in) || 600,
   };
 }
 
 async function pollDevice(deviceCode: string): Promise<{ token?: LardToken; status?: string }> {
   let res: Response;
-  try { res = await tokenRequest({ grant_type: DEVICE_GRANT, device_code: deviceCode }); }
-  catch { return { status: "authorization_pending" }; } // transient blip → keep waiting
-  const j = (await res.json()) as { access_token?: string; refresh_token?: string; expires_in?: number; error?: string };
+  try {
+    res = await tokenRequest({ grant_type: DEVICE_GRANT, device_code: deviceCode });
+  } catch {
+    return { status: "authorization_pending" };
+  } // transient blip → keep waiting
+  const j = (await res.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    error?: string;
+  };
   if (j.error) return { status: j.error };
   if (!j.access_token) throw new Error(`lard: token endpoint returned ${res.status}`);
   return { token: tokenFrom(j as { access_token: string }) };
@@ -132,18 +198,28 @@ export async function deviceLogin(onPrompt: (d: DeviceStart) => void): Promise<L
     if (status === "slow_down") interval += 5;
     else if (status === "authorization_pending") continue;
     else if (status === "access_denied") throw new Error("lard: authorization was declined");
-    else if (status && status !== "authorization_pending") throw new Error(`lard: authorization failed (${status})`);
+    else if (status && status !== "authorization_pending")
+      throw new Error(`lard: authorization failed (${status})`);
   }
   throw new Error("lard: this login expired; run it again");
 }
 
 // ---- token lifecycle (per user) ------------------------------------------
 async function refresh(tok: LardToken): Promise<LardToken> {
-  if (!tok.refreshToken) throw new Error("lard: access token expired and no refresh token — reconnect");
+  if (!tok.refreshToken)
+    throw new Error("lard: access token expired and no refresh token — reconnect");
   const res = await tokenRequest({ grant_type: "refresh_token", refresh_token: tok.refreshToken });
-  const j = (await res.json()) as { access_token?: string; refresh_token?: string; expires_in?: number };
+  const j = (await res.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+  };
   if (!res.ok || !j.access_token) throw new Error("lard: refresh was rejected — reconnect");
-  return tokenFrom({ access_token: j.access_token, refresh_token: j.refresh_token || tok.refreshToken, expires_in: j.expires_in });
+  return tokenFrom({
+    access_token: j.access_token,
+    refresh_token: j.refresh_token || tok.refreshToken,
+    expires_in: j.expires_in,
+  });
 }
 
 /** A valid access token for `sub`, refreshing + persisting within 60s of expiry. Throws if unconnected. */
@@ -162,7 +238,11 @@ async function api<T>(store: Store, sub: string, path: string, init?: RequestIni
   const at = await accessToken(store, sub);
   const res = await fetch(trimSlash(cfg().baseUrl) + path, {
     ...init,
-    headers: { authorization: `Bearer ${at}`, accept: "application/json", ...(init?.headers ?? {}) },
+    headers: {
+      authorization: `Bearer ${at}`,
+      accept: "application/json",
+      ...(init?.headers ?? {}),
+    },
     signal: AbortSignal.timeout(cfg().timeoutMs),
   });
   if (!res.ok) throw new Error(`lard: ${init?.method ?? "GET"} ${path} → ${res.status}`);
@@ -171,8 +251,18 @@ async function api<T>(store: Store, sub: string, path: string, init?: RequestIni
 }
 
 // ---- memory API (paths: profile, areas/<n>, topics/<n>, people/<n>) ------
-export interface SubjectListing { path: string; kind?: string; name?: string; description?: string; }
-export interface ContextBundle { profile: string; area?: string; listing: SubjectListing[]; projectId?: string; }
+export interface SubjectListing {
+  path: string;
+  kind?: string;
+  name?: string;
+  description?: string;
+}
+export interface ContextBundle {
+  profile: string;
+  area?: string;
+  listing: SubjectListing[];
+  projectId?: string;
+}
 
 /** Fold a context bundle into a compact system-prompt block. */
 export function contextToText(ctx: ContextBundle): string {
@@ -180,7 +270,12 @@ export function contextToText(ctx: ContextBundle): string {
   if (ctx.profile?.trim()) parts.push(ctx.profile.trim());
   if (ctx.area?.trim()) parts.push("# This project\n" + ctx.area.trim());
   if (ctx.listing?.length) {
-    parts.push("# Subjects on record\n" + ctx.listing.map((s) => `- ${s.path}${s.description ? ` — ${s.description}` : ""}`).join("\n"));
+    parts.push(
+      "# Subjects on record\n" +
+        ctx.listing
+          .map((s) => `- ${s.path}${s.description ? ` — ${s.description}` : ""}`)
+          .join("\n"),
+    );
   }
   return parts.join("\n\n");
 }
@@ -189,19 +284,47 @@ const cleanPath = (p: string): string => p.replace(/^\/+/, "").replace(/\.\.(\/|
 export function getContext(store: Store, sub: string, project?: string): Promise<ContextBundle> {
   return api(store, sub, "/context" + (project ? "?project=" + encodeURIComponent(project) : ""));
 }
-export interface LardProject { id: string; displayName?: string; names?: string[]; }
-export function memoryProjects(store: Store, sub: string): Promise<LardProject[]> { return api(store, sub, "/projects"); }
-export function memoryList(store: Store, sub: string): Promise<unknown> { return api(store, sub, "/memory"); }
-export function memoryRead(store: Store, sub: string, path: string): Promise<string> { return api(store, sub, "/memory/" + cleanPath(path)); }
-export function memoryWrite(store: Store, sub: string, path: string, body: string): Promise<unknown> {
+export interface LardProject {
+  id: string;
+  displayName?: string;
+  names?: string[];
+}
+export function memoryProjects(store: Store, sub: string): Promise<LardProject[]> {
+  return api(store, sub, "/projects");
+}
+export function memoryList(store: Store, sub: string): Promise<unknown> {
+  return api(store, sub, "/memory");
+}
+export function memoryRead(store: Store, sub: string, path: string): Promise<string> {
+  return api(store, sub, "/memory/" + cleanPath(path));
+}
+export function memoryWrite(
+  store: Store,
+  sub: string,
+  path: string,
+  body: string,
+): Promise<unknown> {
   // lard decodes a JSON envelope ({body, description, aliases, repos, version}) — not raw markdown.
-  return api(store, sub, "/memory/" + cleanPath(path), { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ body }) });
+  return api(store, sub, "/memory/" + cleanPath(path), {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ body }),
+  });
 }
 export function memoryDelete(store: Store, sub: string, path: string): Promise<unknown> {
   return api(store, sub, "/memory/" + cleanPath(path), { method: "DELETE" });
 }
-export function memoryAppend(store: Store, sub: string, path: string, line: string): Promise<unknown> {
-  return api(store, sub, "/memory/" + cleanPath(path), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ line }) });
+export function memoryAppend(
+  store: Store,
+  sub: string,
+  path: string,
+  line: string,
+): Promise<unknown> {
+  return api(store, sub, "/memory/" + cleanPath(path), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ line }),
+  });
 }
 
 // ---- in-app connect: authorization code + PKCE ---------------------------
@@ -230,9 +353,13 @@ const redirectTo = (path: string, cookie?: string): Response => {
 export async function handleLardConnect(req: Request, store: Store): Promise<Response> {
   if (!lardEnabled()) return new Response("lard is not enabled", { status: 404 });
   const sub = authEnabled() ? getSession(req, store)?.sub : LOCAL_SUB;
-  if (authEnabled() && !sub) return redirectTo("/auth/login?returnTo=" + encodeURIComponent("/lard/connect"));
+  if (authEnabled() && !sub)
+    return redirectTo("/auth/login?returnTo=" + encodeURIComponent("/lard/connect"));
   const eps = await discover();
-  if (!eps.authorization) return new Response("lard's authorization server has no authorization endpoint", { status: 400 });
+  if (!eps.authorization)
+    return new Response("lard's authorization server has no authorization endpoint", {
+      status: 400,
+    });
   const { verifier, challenge } = pkce();
   const state = b64url(randomBytes(16));
   const url = new URL(eps.authorization);
@@ -244,7 +371,10 @@ export async function handleLardConnect(req: Request, store: Store): Promise<Res
   url.searchParams.set("code_challenge", challenge);
   url.searchParams.set("code_challenge_method", "S256");
   url.searchParams.set("resource", eps.resource); // RFC 8707: audience = lard (from lard's PRM)
-  return redirectTo(url.href, lardCookie(JSON.stringify({ state, verifier, sub: sub ?? LOCAL_SUB }), 600));
+  return redirectTo(
+    url.href,
+    lardCookie(JSON.stringify({ state, verifier, sub: sub ?? LOCAL_SUB }), 600),
+  );
 }
 
 /** GET /lard/callback — verify state, exchange the code, store the token for this user. */
@@ -253,20 +383,32 @@ export async function handleLardCallback(req: Request, store: Store): Promise<Re
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
   let saved: { state?: string; verifier?: string; sub?: string } = {};
-  try { saved = JSON.parse(parseCookies(req)[LARD_COOKIE] ?? "{}"); } catch { /* malformed cookie */ }
+  try {
+    saved = JSON.parse(parseCookies(req)[LARD_COOKIE] ?? "{}");
+  } catch {
+    /* malformed cookie */
+  }
   const clear = lardCookie("", 0);
   const back = (ok: boolean) => redirectTo("/settings?lard=" + (ok ? "connected" : "error"), clear);
   if (!code || !state || !saved.state || state !== saved.state) return back(false);
   try {
     const res = await tokenRequest({
-      grant_type: "authorization_code", code,
-      redirect_uri: connectRedirectUri(), code_verifier: saved.verifier ?? "",
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: connectRedirectUri(),
+      code_verifier: saved.verifier ?? "",
     });
-    const j = (await res.json()) as { access_token?: string; refresh_token?: string; expires_in?: number };
+    const j = (await res.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+      expires_in?: number;
+    };
     if (!res.ok || !j.access_token) return back(false);
     store.setLardToken(saved.sub || LOCAL_SUB, tokenFrom(j as { access_token: string }));
     return back(true);
-  } catch { return back(false); }
+  } catch {
+    return back(false);
+  }
 }
 
 /** Disconnect this user's lard (drop their token). */
@@ -292,13 +434,32 @@ export async function lardDisconnect(store: Store, sub: string): Promise<void> {
   const tok = store.getLardToken(sub);
   store.deleteLardToken(sub);
   if (!tok) return;
-  try { await revokeToken(tok.refreshToken || tok.accessToken); }
-  catch { /* best-effort: the local token is already gone */ }
+  try {
+    await revokeToken(tok.refreshToken || tok.accessToken);
+  } catch {
+    /* best-effort: the local token is already gone */
+  }
 }
 
 // ---- ingest --------------------------------------------------------------
-export interface IngestTurn { index: number; role: string; content: string; ts: string; }
-export interface IngestSession { sessionId: string; source: string; startedAt: string; endedAt?: string; projectHints?: Record<string, unknown>; turns: IngestTurn[]; }
+export interface IngestTurn {
+  index: number;
+  role: string;
+  content: string;
+  ts: string;
+}
+export interface IngestSession {
+  sessionId: string;
+  source: string;
+  startedAt: string;
+  endedAt?: string;
+  projectHints?: Record<string, unknown>;
+  turns: IngestTurn[];
+}
 export function ingest(store: Store, sub: string, sessions: IngestSession[]): Promise<unknown> {
-  return api(store, sub, "/ingest", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ collector: cfg().collector, sessions }) });
+  return api(store, sub, "/ingest", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ collector: cfg().collector, sessions }),
+  });
 }

@@ -1,7 +1,7 @@
-import { test, expect, afterEach } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import type { ToolSet } from "ai";
-import { renderTemplate, buildSystemPrompt } from "../src/prompt";
-import { setConfig, loadConfig } from "../src/settings";
+import { buildSystemPrompt, renderTemplate } from "../src/prompt";
+import { loadConfig, setConfig } from "../src/settings";
 
 afterEach(() => setConfig(null)); // drop any test config override
 
@@ -13,7 +13,12 @@ test("renderTemplate substitutes fields and honors if/else", () => {
 
 test("renderTemplate ranges over a list binding the dot", () => {
   const tpl = "{{range .Files}}<{{.Path}}:{{.Content}}>{{end}}";
-  const out = renderTemplate(tpl, { Files: [{ Path: "a", Content: "1" }, { Path: "b", Content: "2" }] });
+  const out = renderTemplate(tpl, {
+    Files: [
+      { Path: "a", Content: "1" },
+      { Path: "b", Content: "2" },
+    ],
+  });
   expect(out).toBe("<a:1><b:2>");
 });
 

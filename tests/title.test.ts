@@ -1,11 +1,17 @@
-import { test, expect } from "bun:test";
+import { expect, test } from "bun:test";
 import { Store } from "../src/store";
 
 function seedUser(store: Store, id: string, content: string): void {
-  const db = (store as unknown as { db: { query: (s: string) => { run: (...a: unknown[]) => void } } }).db;
-  db.query("INSERT INTO conversations (id, created_at, last_seq) VALUES (?, ?, 0)").run(id, Date.now());
-  db.query("INSERT INTO events (id, conversation_id, seq, event, data, created_at) VALUES (?, ?, 0, 'user-message', ?, ?)")
-    .run(`${id}:0`, id, JSON.stringify({ content }), Date.now());
+  const db = (
+    store as unknown as { db: { query: (s: string) => { run: (...a: unknown[]) => void } } }
+  ).db;
+  db.query("INSERT INTO conversations (id, created_at, last_seq) VALUES (?, ?, 0)").run(
+    id,
+    Date.now(),
+  );
+  db.query(
+    "INSERT INTO events (id, conversation_id, seq, event, data, created_at) VALUES (?, ?, 0, 'user-message', ?, ?)",
+  ).run(`${id}:0`, id, JSON.stringify({ content }), Date.now());
 }
 
 test("firstUserMessage returns the first user prompt", () => {

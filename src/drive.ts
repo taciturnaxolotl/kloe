@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { ModelMessage } from "ai";
-import { Store, parseJobParams, type JobParams, type JobRow } from "./store";
-import { LOCAL_SUB, lardEnabled } from "./lard";
-import { ingestConversation } from "./ingest";
-import { generateTitle, resolveSmallModel } from "./title";
-import { getConfig } from "./settings";
-import { ConversationActor, type RunStep } from "./actor";
-import { run, modelSupportsImages, type RunProject } from "./inference";
+import type { ConversationActor, RunStep } from "./actor";
 import type { BlobStore } from "./blobs";
-import { LEASE_GRACE_MS, HEARTBEAT_INTERVAL_MS } from "./config";
+import { HEARTBEAT_INTERVAL_MS, LEASE_GRACE_MS } from "./config";
+import { modelSupportsImages, type RunProject, run } from "./inference";
+import { ingestConversation } from "./ingest";
+import { LOCAL_SUB, lardEnabled } from "./lard";
+import { getConfig } from "./settings";
+import { type JobParams, type JobRow, parseJobParams, type Store } from "./store";
+import { generateTitle, resolveSmallModel } from "./title";
 
 /** Per-run stage timings, filled as a run progresses; logged when KLOE_DEBUG is set. */
 const LOG_TIMING = process.env.KLOE_DEBUG === "1" || process.env.KLOE_DEBUG === "true";
@@ -123,20 +123,34 @@ export class JobDriver {
    * stale flush job — e.g. after a crash between promote and completion —
    * just completes).
    */
-  private async flushQueue(jobId: string, actor: ConversationActor, timing?: RunTiming): Promise<void> {
+  private async flushQueue(
+    jobId: string,
+    actor: ConversationActor,
+    timing?: RunTiming,
+  ): Promise<void> {
     const msgs = this.store.pendingQueue(actor.conversationId);
     if (msgs.length === 0) return;
 
     for (const m of msgs) actor.appendUser(m.content, m.runId, m.attachments);
-    await this.runSpec(jobId, actor, {
-      runId: msgs[0]!.runId,
-      messageId: randomUUID(),
-      model: msgs[msgs.length - 1]!.model,
-    }, timing);
+    await this.runSpec(
+      jobId,
+      actor,
+      {
+        runId: msgs[0]!.runId,
+        messageId: randomUUID(),
+        model: msgs[msgs.length - 1]!.model,
+      },
+      timing,
+    );
   }
 
   /** Streams one generation through the actor, checkpointing as it goes. */
-  private async runSpec(jobId: string, actor: ConversationActor, spec: RunSpec, timing?: RunTiming): Promise<void> {
+  private async runSpec(
+    jobId: string,
+    actor: ConversationActor,
+    spec: RunSpec,
+    timing?: RunTiming,
+  ): Promise<void> {
     // Snapshot the conversation (the promoted user messages are already in the
     // log) so the generation carries full context, not just the last message.
     // Attachments are resolved to model parts here (image / inline text / note),
@@ -154,7 +168,8 @@ export class JobDriver {
     await actor.runText(
       spec.runId,
       spec.messageId,
-      (signal) => this.streamTimed(messages, spec, signal, owner, actor.conversationId, project, timing),
+      (signal) =>
+        this.streamTimed(messages, spec, signal, owner, actor.conversationId, project, timing),
       (seq) => {
         // Advance the job's durable checkpoint + lease on each flush so a
         // crash mid-run is re-claimed from the last flushed seq.
@@ -209,7 +224,8 @@ export class JobDriver {
     const projectId = this.store.getConversationProject(conversationId);
     if (!projectId) return undefined;
     const proj = this.store.getProject(projectId);
-    const files = this.store.projectContextFiles(projectId)
+    const files = this.store
+      .projectContextFiles(projectId)
       .map((f) => ({ filename: f.filename, body: f.body }));
     if (!proj?.lardProject && !files.length) return undefined;
     return { lardProject: proj?.lardProject, contextFiles: files };
@@ -224,7 +240,15 @@ export class JobDriver {
     project: RunProject | undefined,
     timing?: RunTiming,
   ): AsyncGenerator<RunStep> {
-    for await (const step of run(messages, { runId: spec.runId, model: spec.model, abortSignal: signal, store: this.store, owner, conversationId, project })) {
+    for await (const step of run(messages, {
+      runId: spec.runId,
+      model: spec.model,
+      abortSignal: signal,
+      store: this.store,
+      owner,
+      conversationId,
+      project,
+    })) {
       if (timing && step.kind === "text") {
         if (!timing.firstTokenAt) timing.firstTokenAt = Date.now();
         timing.chunks++;

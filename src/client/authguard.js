@@ -7,7 +7,8 @@ export async function requireAuth() {
   try {
     var res = await fetch("/api/me");
     if (res.status === 401) {
-      location.href = "/auth/login?returnTo=" + encodeURIComponent(location.pathname + location.search);
+      location.href =
+        "/auth/login?returnTo=" + encodeURIComponent(location.pathname + location.search);
       return null; // caller should stop; we're navigating away
     }
     return await res.json(); // the user, or {authenticated:false}
@@ -22,13 +23,18 @@ export function setPfp(user) {
   if (!user) return;
   if (user.name) {
     var greet = document.getElementById("railgreet");
-    if (greet) { greet.textContent = "Hi " + user.name.split(/\s+/)[0] + "!"; greet.hidden = false; }
+    if (greet) {
+      greet.textContent = "Hi " + user.name.split(/\s+/)[0] + "!";
+      greet.hidden = false;
+    }
   }
   if (!user.picture) return;
   var img = document.getElementById("railpfp");
   if (!img) return;
   img.src = user.picture;
   img.hidden = false;
-  img.onerror = function () { img.hidden = true; };
+  img.onerror = function () {
+    img.hidden = true;
+  };
   if (user.name) img.alt = user.name;
 }

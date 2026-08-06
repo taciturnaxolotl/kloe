@@ -87,10 +87,7 @@ export class RateLimiter {
   private maybeDecay(): void {
     if (this.minIntervalMs > this.baseIntervalMs) {
       if (Date.now() - this.lastBackoff > RateLimiter.DECAY_MS) {
-        this.minIntervalMs = Math.max(
-          this.baseIntervalMs,
-          Math.floor(this.minIntervalMs / 2),
-        );
+        this.minIntervalMs = Math.max(this.baseIntervalMs, Math.floor(this.minIntervalMs / 2));
       }
     }
   }
@@ -179,8 +176,6 @@ export class RateLimiter {
 function isRateLimitError(err: unknown): boolean {
   const e = err as { statusCode?: number; status?: number; data?: { error?: { code?: string } } };
   return (
-    e?.statusCode === 429 ||
-    e?.status === 429 ||
-    e?.data?.error?.code === "rate_limit_exceeded"
+    e?.statusCode === 429 || e?.status === 429 || e?.data?.error?.code === "rate_limit_exceeded"
   );
 }

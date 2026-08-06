@@ -1,18 +1,37 @@
 import { randomUUID } from "node:crypto";
 import { brotliCompressSync, gzipSync, constants as zlibConstants } from "node:zlib";
-import { Store } from "./store";
 import { ConversationActor, type Subscriber, type WireEvent } from "./actor";
-import { getRegistry } from "./inference";
-import { sseBlock } from "./sse";
-import { parseEventId, Event } from "./events";
-import { withBody } from "./validate";
-import { PromptBody, SteerBody, ModelPatchBody, RenameBody, ProjectCreateBody, ProjectPatchBody, ProjectAssignBody } from "./schemas";
-import { ACTOR_IDLE_TTL_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
-import { getConfig } from "./settings";
-import { gateApi, getSession, sessionUser, authEnabled } from "./auth";
-import { lardEnabled, lardConnected, lardDisconnect, LOCAL_SUB, memoryList, memoryProjects, memoryRead, memoryWrite, memoryDelete, getContext } from "./lard";
+import { authEnabled, gateApi, getSession, sessionUser } from "./auth";
 import type { BlobStore } from "./blobs";
+import { ACTOR_IDLE_TTL_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
+import { Event, parseEventId } from "./events";
 import { getExecutor } from "./executor";
+import { getRegistry } from "./inference";
+import {
+  getContext,
+  LOCAL_SUB,
+  lardConnected,
+  lardDisconnect,
+  lardEnabled,
+  memoryDelete,
+  memoryList,
+  memoryProjects,
+  memoryRead,
+  memoryWrite,
+} from "./lard";
+import {
+  ModelPatchBody,
+  ProjectAssignBody,
+  ProjectCreateBody,
+  ProjectPatchBody,
+  PromptBody,
+  RenameBody,
+  SteerBody,
+} from "./schemas";
+import { getConfig } from "./settings";
+import { sseBlock } from "./sse";
+import type { Store } from "./store";
+import { withBody } from "./validate";
 
 /**
  * The web layer as a plain data structure: `apiRoutes(deps)` returns a Bun
@@ -46,12 +65,56 @@ function afterSeqFor(req: Request, conversationId: string): number {
 // extensions gives a clear early "no", and a content sniff catches the rest —
 // binary decoded as UTF-8 carries NUL and replacement (U+FFFD) chars.
 const BINARY_EXT = new Set([
-  "xls", "xlsx", "xlsm", "ods", "doc", "docx", "ppt", "pptx", "pdf",
-  "png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "ico", "svg", "heic",
-  "zip", "gz", "tar", "rar", "7z", "bz2", "xz",
-  "mp3", "wav", "flac", "ogg", "mp4", "mov", "avi", "mkv", "webm",
-  "exe", "dll", "so", "dylib", "bin", "wasm", "class", "o", "a",
-  "ttf", "otf", "woff", "woff2", "sqlite", "db",
+  "xls",
+  "xlsx",
+  "xlsm",
+  "ods",
+  "doc",
+  "docx",
+  "ppt",
+  "pptx",
+  "pdf",
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "bmp",
+  "tiff",
+  "ico",
+  "svg",
+  "heic",
+  "zip",
+  "gz",
+  "tar",
+  "rar",
+  "7z",
+  "bz2",
+  "xz",
+  "mp3",
+  "wav",
+  "flac",
+  "ogg",
+  "mp4",
+  "mov",
+  "avi",
+  "mkv",
+  "webm",
+  "exe",
+  "dll",
+  "so",
+  "dylib",
+  "bin",
+  "wasm",
+  "class",
+  "o",
+  "a",
+  "ttf",
+  "otf",
+  "woff",
+  "woff2",
+  "sqlite",
+  "db",
 ]);
 function isBinaryName(name: string): boolean {
   const i = name.lastIndexOf(".");
@@ -63,7 +126,7 @@ function looksBinary(s: string): boolean {
   let bad = 0;
   for (let i = 0; i < n; i++) {
     const c = s.charCodeAt(i);
-    if (c === 0xfffd || (c < 9) || (c > 13 && c < 32)) bad++; // U+FFFD or a control char
+    if (c === 0xfffd || c < 9 || (c > 13 && c < 32)) bad++; // U+FFFD or a control char
   }
   return n > 0 && bad / n > 0.02;
 }
@@ -153,17 +216,25 @@ function compressed(req: Request, body: string, contentType: string): Response {
   const accept = req.headers.get("accept-encoding") ?? "";
   if (/\bbr\b/.test(accept)) {
     const out = brotliCompressSync(body, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 } });
-    return new Response(out, { headers: { "Content-Type": contentType, "Content-Encoding": "br" } });
+    return new Response(out, {
+      headers: { "Content-Type": contentType, "Content-Encoding": "br" },
+    });
   }
   if (/\bgzip\b/.test(accept)) {
-    return new Response(gzipSync(body), { headers: { "Content-Type": contentType, "Content-Encoding": "gzip" } });
+    return new Response(gzipSync(body), {
+      headers: { "Content-Type": contentType, "Content-Encoding": "gzip" },
+    });
   }
   return new Response(body, { headers: { "Content-Type": contentType } });
 }
 
 /** Refs of every model this deployment can run (enabled providers + echo). */
 function knownModelRefs(): Set<string> {
-  return new Set(getRegistry().listModels().map((m) => m.ref));
+  return new Set(
+    getRegistry()
+      .listModels()
+      .map((m) => m.ref),
+  );
 }
 
 /** 422 for unknown model refs, null when known. The gate every model-taking endpoint starts with. */
@@ -202,14 +273,16 @@ function chatModels(store: Store) {
     .flatMap((m) => {
       const s = settings.get(m.ref);
       if (!s?.visible) return [];
-      return [{
-        ref: m.ref,
-        name: s.displayName ?? m.name,
-        contextWindow: m.contextWindow,
-        reasoningLevels: m.reasoningLevels,
-        supportsImages: m.supportsImages,
-        sortOrder: s.sortOrder,
-      }];
+      return [
+        {
+          ref: m.ref,
+          name: s.displayName ?? m.name,
+          contextWindow: m.contextWindow,
+          reasoningLevels: m.reasoningLevels,
+          supportsImages: m.supportsImages,
+          sortOrder: s.sortOrder,
+        },
+      ];
     })
     .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
 }
@@ -274,7 +347,12 @@ function requireKnownBlobs(attachments: PromptBody["attachments"], store: Store)
   return null;
 }
 
-function startRun(conversationId: string, data: PromptBody, store: Store, owner?: string): Response {
+function startRun(
+  conversationId: string,
+  data: PromptBody,
+  store: Store,
+  owner?: string,
+): Response {
   const rejected = requireKnownModel(data.model);
   if (rejected) return rejected;
   const badBlob = requireKnownBlobs(data.attachments, store);
@@ -289,7 +367,13 @@ function startRun(conversationId: string, data: PromptBody, store: Store, owner?
   store.setConversationOwner(conversationId, owner);
 
   const jobId = `${conversationId}:${randomUUID()}`;
-  store.enqueue(jobId, conversationId, { conversationId, runId, messageId, prompt: data.content, model: data.model });
+  store.enqueue(jobId, conversationId, {
+    conversationId,
+    runId,
+    messageId,
+    prompt: data.content,
+    model: data.model,
+  });
 
   // Enqueue decouples the response from the run: the client opens the stream
   // separately and receives message-start/text-deltas/message-end as the drive
@@ -451,7 +535,10 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     const sub = getSession(req, store)?.sub;
     if (!sub) return Response.json({ error: "unauthorized" }, { status: 401 });
     const owner = store.getConversationOwner(id);
-    if (owner === undefined) { store.setConversationOwner(id, sub); return null; }
+    if (owner === undefined) {
+      store.setConversationOwner(id, sub);
+      return null;
+    }
     if (owner !== sub) return Response.json({ error: "not found" }, { status: 404 });
     return null;
   };
@@ -461,7 +548,8 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     if (!authEnabled()) return null;
     const owner = store.getProjectOwner(id);
     const sub = getSession(req, store)?.sub;
-    if (owner !== undefined && owner !== sub) return Response.json({ error: "not found" }, { status: 404 });
+    if (owner !== undefined && owner !== sub)
+      return Response.json({ error: "not found" }, { status: 404 });
     return null;
   };
 
@@ -483,7 +571,10 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     "/api/lard": {
       GET: (req: Bun.BunRequest<"/api/lard">) => {
         const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
-        return Response.json({ enabled: lardEnabled(), connected: lardEnabled() && lardConnected(store, sub) });
+        return Response.json({
+          enabled: lardEnabled(),
+          connected: lardEnabled() && lardConnected(store, sub),
+        });
       },
       DELETE: async (req: Bun.BunRequest<"/api/lard">) => {
         await lardDisconnect(store, getSession(req, store)?.sub ?? LOCAL_SUB);
@@ -498,18 +589,26 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     "/api/lard/memory": {
       GET: async (req: Bun.BunRequest<"/api/lard/memory">) => {
         const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
-        if (!lardEnabled() || !lardConnected(store, sub)) return Response.json({ error: "not connected" }, { status: 409 });
-        try { return Response.json({ listing: await memoryList(store, sub) }); }
-        catch (e) { return Response.json({ error: (e as Error).message }, { status: 502 }); }
+        if (!lardEnabled() || !lardConnected(store, sub))
+          return Response.json({ error: "not connected" }, { status: 409 });
+        try {
+          return Response.json({ listing: await memoryList(store, sub) });
+        } catch (e) {
+          return Response.json({ error: (e as Error).message }, { status: 502 });
+        }
       },
     },
     // The lard project registry, for the project page's "pin memory" picker.
     "/api/lard/projects": {
       GET: async (req: Bun.BunRequest<"/api/lard/projects">) => {
         const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
-        if (!lardEnabled() || !lardConnected(store, sub)) return Response.json({ error: "not connected" }, { status: 409 });
-        try { return Response.json({ projects: await memoryProjects(store, sub) }); }
-        catch (e) { return Response.json({ error: (e as Error).message }, { status: 502 }); }
+        if (!lardEnabled() || !lardConnected(store, sub))
+          return Response.json({ error: "not connected" }, { status: 409 });
+        try {
+          return Response.json({ projects: await memoryProjects(store, sub) });
+        } catch (e) {
+          return Response.json({ error: (e as Error).message }, { status: 502 });
+        }
       },
     },
     // The context bundle for a project (profile + that project's area + listing),
@@ -517,10 +616,14 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     "/api/lard/context": {
       GET: async (req: Bun.BunRequest<"/api/lard/context">) => {
         const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
-        if (!lardEnabled() || !lardConnected(store, sub)) return Response.json({ error: "not connected" }, { status: 409 });
+        if (!lardEnabled() || !lardConnected(store, sub))
+          return Response.json({ error: "not connected" }, { status: 409 });
         const project = new URL(req.url).searchParams.get("project") || undefined;
-        try { return Response.json(await getContext(store, sub, project)); }
-        catch (e) { return Response.json({ error: (e as Error).message }, { status: 502 }); }
+        try {
+          return Response.json(await getContext(store, sub, project));
+        } catch (e) {
+          return Response.json({ error: (e as Error).message }, { status: 502 });
+        }
       },
     },
     "/api/lard/subject": {
@@ -528,25 +631,39 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
         const path = new URL(req.url).searchParams.get("path");
         if (!path) return Response.json({ error: "missing path" }, { status: 400 });
-        if (!lardEnabled() || !lardConnected(store, sub)) return Response.json({ error: "not connected" }, { status: 409 });
-        try { return Response.json({ path, body: await memoryRead(store, sub, path) }); }
-        catch (e) { return Response.json({ error: (e as Error).message }, { status: 502 }); }
+        if (!lardEnabled() || !lardConnected(store, sub))
+          return Response.json({ error: "not connected" }, { status: 409 });
+        try {
+          return Response.json({ path, body: await memoryRead(store, sub, path) });
+        } catch (e) {
+          return Response.json({ error: (e as Error).message }, { status: 502 });
+        }
       },
       PUT: async (req: Bun.BunRequest<"/api/lard/subject">) => {
         const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
         const path = new URL(req.url).searchParams.get("path");
         if (!path) return Response.json({ error: "missing path" }, { status: 400 });
-        if (!lardEnabled() || !lardConnected(store, sub)) return Response.json({ error: "not connected" }, { status: 409 });
-        try { await memoryWrite(store, sub, path, await req.text()); return Response.json({ ok: true }); }
-        catch (e) { return Response.json({ error: (e as Error).message }, { status: 502 }); }
+        if (!lardEnabled() || !lardConnected(store, sub))
+          return Response.json({ error: "not connected" }, { status: 409 });
+        try {
+          await memoryWrite(store, sub, path, await req.text());
+          return Response.json({ ok: true });
+        } catch (e) {
+          return Response.json({ error: (e as Error).message }, { status: 502 });
+        }
       },
       DELETE: async (req: Bun.BunRequest<"/api/lard/subject">) => {
         const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
         const path = new URL(req.url).searchParams.get("path");
         if (!path) return Response.json({ error: "missing path" }, { status: 400 });
-        if (!lardEnabled() || !lardConnected(store, sub)) return Response.json({ error: "not connected" }, { status: 409 });
-        try { await memoryDelete(store, sub, path); return Response.json({ ok: true }); }
-        catch (e) { return Response.json({ error: (e as Error).message }, { status: 502 }); }
+        if (!lardEnabled() || !lardConnected(store, sub))
+          return Response.json({ error: "not connected" }, { status: 409 });
+        try {
+          await memoryDelete(store, sub, path);
+          return Response.json({ ok: true });
+        } catch (e) {
+          return Response.json({ error: (e as Error).message }, { status: 502 });
+        }
       },
     },
 
@@ -571,7 +688,9 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         // Only list the caller's own conversations (undefined owner → no filter
         // when auth is off).
         const owner = authEnabled() ? getSession(req, store)?.sub : undefined;
-        const conversations = q ? store.searchConversations(q, owner) : store.listConversations(owner);
+        const conversations = q
+          ? store.searchConversations(q, owner)
+          : store.listConversations(owner);
         return Response.json({ conversations });
       },
     },
@@ -617,7 +736,8 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         return res;
       }),
       GET: (req: Bun.BunRequest<"/api/conversations/:id/steer">) =>
-        guardConv(req, req.params.id) ?? Response.json({ queued: store.pendingQueue(req.params.id) }),
+        guardConv(req, req.params.id) ??
+        Response.json({ queued: store.pendingQueue(req.params.id) }),
     },
     // Remove a still-pending steer from the queue (before it's promoted).
     "/api/conversations/:id/steer/:runId": {
@@ -645,7 +765,13 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         if (denied) return denied;
         const url = new URL(req.url);
         const all = getActor(req.params.id, store).replay(0);
-        const seqOf = (e: { id: string }) => { try { return parseEventId(e.id).seq; } catch { return 0; } };
+        const seqOf = (e: { id: string }) => {
+          try {
+            return parseEventId(e.id).seq;
+          } catch {
+            return 0;
+          }
+        };
         let events = all;
         const beforeParam = url.searchParams.get("before");
         const tailParam = url.searchParams.get("tailTurns");
@@ -661,7 +787,11 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
             events = all.filter((e) => seqOf(e) >= cut);
           }
         }
-        return compressed(req, events.map((e) => JSON.stringify(e)).join("\n"), "application/x-ndjson");
+        return compressed(
+          req,
+          events.map((e) => JSON.stringify(e)).join("\n"),
+          "application/x-ndjson",
+        );
       },
     },
     "/api/conversations/:id": {
@@ -689,14 +819,20 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
 
     // File (or unfile) a conversation into a project.
     "/api/conversations/:id/project": {
-      PUT: withBody(ProjectAssignBody, (data, req: Bun.BunRequest<"/api/conversations/:id/project">) => {
-        const denied = guardConv(req, req.params.id);
-        if (denied) return denied;
-        if (data.projectId) { const pd = guardProject(req, data.projectId); if (pd) return pd; }
-        store.setConversationProject(req.params.id, data.projectId);
-        if (data.projectId) store.touchProject(data.projectId);
-        return Response.json({ ok: true });
-      }),
+      PUT: withBody(
+        ProjectAssignBody,
+        (data, req: Bun.BunRequest<"/api/conversations/:id/project">) => {
+          const denied = guardConv(req, req.params.id);
+          if (denied) return denied;
+          if (data.projectId) {
+            const pd = guardProject(req, data.projectId);
+            if (pd) return pd;
+          }
+          store.setConversationProject(req.params.id, data.projectId);
+          if (data.projectId) store.touchProject(data.projectId);
+          return Response.json({ ok: true });
+        },
+      ),
     },
 
     // ---- projects ----
@@ -718,14 +854,22 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         const project = store.getProject(req.params.id);
         if (!project) return Response.json({ error: "not found" }, { status: 404 });
         const owner = authEnabled() ? getSession(req, store)?.sub : undefined;
-        return Response.json({ project, conversations: store.listConversations(owner, req.params.id) });
+        return Response.json({
+          project,
+          conversations: store.listConversations(owner, req.params.id),
+        });
       },
       PATCH: withBody(ProjectPatchBody, (data, req: Bun.BunRequest<"/api/projects/:id">) => {
         const denied = guardProject(req, req.params.id);
         if (denied) return denied;
-        if (!store.getProject(req.params.id)) return Response.json({ error: "not found" }, { status: 404 });
+        if (!store.getProject(req.params.id))
+          return Response.json({ error: "not found" }, { status: 404 });
         // An empty lardProject string clears the pin.
-        store.updateProject(req.params.id, { name: data.name, description: data.description, lardProject: data.lardProject === undefined ? undefined : data.lardProject || null });
+        store.updateProject(req.params.id, {
+          name: data.name,
+          description: data.description,
+          lardProject: data.lardProject === undefined ? undefined : data.lardProject || null,
+        });
         return Response.json({ ok: true });
       }),
       DELETE: (req: Bun.BunRequest<"/api/projects/:id">) => {
@@ -746,16 +890,24 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       POST: async (req: Bun.BunRequest<"/api/projects/:id/context">) => {
         const denied = guardProject(req, req.params.id);
         if (denied) return denied;
-        if (!store.getProject(req.params.id)) return Response.json({ error: "not found" }, { status: 404 });
+        if (!store.getProject(req.params.id))
+          return Response.json({ error: "not found" }, { status: 404 });
         const name = (new URL(req.url).searchParams.get("name") || "file.txt").slice(0, 200);
         const body = await req.text();
-        if (body.length > 512 * 1024) return Response.json({ error: "file too large (max 512KB text)" }, { status: 413 });
+        if (body.length > 512 * 1024)
+          return Response.json({ error: "file too large (max 512KB text)" }, { status: 413 });
         // Context files are injected verbatim into the prompt, so only text is
         // useful (and safe). A spreadsheet/image/PDF decodes to a UTF-8 string
         // riddled with NUL and replacement chars — reject those, and known
         // binary extensions, with a clear message.
         if (isBinaryName(name) || looksBinary(body)) {
-          return Response.json({ error: "only text files can be added as context (no spreadsheets, images, or other binary files)" }, { status: 415 });
+          return Response.json(
+            {
+              error:
+                "only text files can be added as context (no spreadsheets, images, or other binary files)",
+            },
+            { status: 415 },
+          );
         }
         const cid = randomUUID();
         store.addProjectContext(cid, req.params.id, name, body);

@@ -1,10 +1,10 @@
-import { test, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Store } from "../src/store";
+import { join } from "node:path";
 import { FsBlobStore } from "../src/blobs";
 import { sweepOrphanBlobs } from "../src/gc";
+import { Store } from "../src/store";
 
 let tmp: string;
 let store: Store;

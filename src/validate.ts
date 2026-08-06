@@ -51,7 +51,10 @@ export function withBody<S extends StandardSchemaV1, R extends JsonRequest>(
     }
     const result = await validate(schema, raw);
     if (!result.ok) {
-      return Response.json({ error: result.error, issues: result.issues }, { status: result.status });
+      return Response.json(
+        { error: result.error, issues: result.issues },
+        { status: result.status },
+      );
     }
     return handler(result.value, req);
   };

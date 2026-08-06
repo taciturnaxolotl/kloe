@@ -19,15 +19,20 @@
  * stays authoritative — optimism is a local projection reconciled by the echo.
  */
 import * as smd from "streaming-markdown";
-import { mountSidebar } from "./sidebar.js";
 import { requireAuth, setPfp } from "./authguard.js";
 import { mountDialogs } from "./confirm.js";
 import {
-  CHEV_ICON as CHEV, CLOCK_ICON as ICON_CLOCK, GLOBE_ICON as ICON_GLOBE,
-  TOOL_ICON as ICON_TOOL, PAGE_ICON as ICON_PAGE, EXT_ICON as ICON_EXT,
+  CHEV_ICON as CHEV,
+  FILE_ICON as FILE_SVG,
+  CLOCK_ICON as ICON_CLOCK,
+  EXT_ICON as ICON_EXT,
+  GLOBE_ICON as ICON_GLOBE,
+  PAGE_ICON as ICON_PAGE,
   TERMINAL_ICON as ICON_TERMINAL,
-  SEND_ICON as SEND, FILE_ICON as FILE_SVG,
+  TOOL_ICON as ICON_TOOL,
+  SEND_ICON as SEND,
 } from "./icons.js";
+import { mountSidebar } from "./sidebar.js";
 
 (function () {
   "use strict";
@@ -40,10 +45,16 @@ import {
   function enrich(el) {
     if (!_enrich) {
       _enrich = import(new URL("/assets/enrich.js", document.baseURI).href)
-        .then(function (m) { return m.enrich; })
-        .catch(function () { return function () {}; });
+        .then(function (m) {
+          return m.enrich;
+        })
+        .catch(function () {
+          return function () {};
+        });
     }
-    _enrich.then(function (fn) { fn(el); });
+    _enrich.then(function (fn) {
+      fn(el);
+    });
   }
 
   // Defer a completed block's enrichment until its turn scrolls into view. On a
@@ -55,60 +66,87 @@ import {
   var enrichPending = new WeakMap(); // turn element -> [blocks awaiting enrich]
   function ensureEnrichObserver() {
     if (enrichObserver || !window.IntersectionObserver) return enrichObserver;
-    enrichObserver = new IntersectionObserver(function (entries) {
-      for (var i = 0; i < entries.length; i++) {
-        if (!entries[i].isIntersecting) continue;
-        var turn = entries[i].target;
-        enrichObserver.unobserve(turn);
-        var list = enrichPending.get(turn);
-        enrichPending.delete(turn);
-        if (list) for (var j = 0; j < list.length; j++) enrich(list[j]);
-      }
-    }, { root: scroll, rootMargin: "800px 0px" }); // enrich a bit before it's visible
+    enrichObserver = new IntersectionObserver(
+      function (entries) {
+        for (var i = 0; i < entries.length; i++) {
+          if (!entries[i].isIntersecting) continue;
+          var turn = entries[i].target;
+          enrichObserver.unobserve(turn);
+          var list = enrichPending.get(turn);
+          enrichPending.delete(turn);
+          if (list) for (var j = 0; j < list.length; j++) enrich(list[j]);
+        }
+      },
+      { root: scroll, rootMargin: "800px 0px" },
+    ); // enrich a bit before it's visible
     return enrichObserver;
   }
   function queueEnrich(el) {
     var obs = ensureEnrichObserver();
     var turn = obs && el && el.closest ? el.closest(".turn") : null;
-    if (!turn) { enrich(el); return; }
+    if (!turn) {
+      enrich(el);
+      return;
+    }
     var list = enrichPending.get(turn);
-    if (!list) { list = []; enrichPending.set(turn, list); obs.observe(turn); }
+    if (!list) {
+      list = [];
+      enrichPending.set(turn, list);
+      obs.observe(turn);
+    }
     list.push(el);
   }
 
-
-  var $ = function (id) { return document.getElementById(id); };
-  var thread = $("thread"), scroll = $("scroll"), jump = $("jump");
-  var input = $("input"), send = $("send"), composer = $("composer");
-  var title = $("title"), status = $("status"), conn = $("conn");
-  var pill = $("pill"), pillModel = $("pillModel"), picker = $("picker");
-  var ctx = $("ctx"), ctxbar = $("ctxbar"), ctxpct = $("ctxpct");
-  var queueEl = $("queue"), queueCount = $("queueCount"), queueItems = $("queueItems");
-  var stagedEl = $("staged"), attachBtn = $("attach");
+  var $ = function (id) {
+    return document.getElementById(id);
+  };
+  var thread = $("thread"),
+    scroll = $("scroll"),
+    jump = $("jump");
+  var input = $("input"),
+    send = $("send"),
+    composer = $("composer");
+  var title = $("title"),
+    status = $("status"),
+    conn = $("conn");
+  var pill = $("pill"),
+    pillModel = $("pillModel"),
+    picker = $("picker");
+  var ctx = $("ctx"),
+    ctxbar = $("ctxbar"),
+    ctxpct = $("ctxpct");
+  var queueEl = $("queue"),
+    queueCount = $("queueCount"),
+    queueItems = $("queueItems");
+  var stagedEl = $("staged"),
+    attachBtn = $("attach");
 
   // ---- state -------------------------------------------------------------
-  var convId = null;          // current conversation id
+  var convId = null; // current conversation id
   // Opened from a project page (/?project=<id>): file the new chat into it once
   // its first message creates the conversation. We fetch the project's name up
   // front so the header breadcrumb can show it before the first message lands.
   var pendingProject = new URLSearchParams(location.search).get("project");
   var pendingProjectName = null;
-  var source = null;          // active EventSource
-  var streaming = false;      // a run is in flight for the current conversation
+  var source = null; // active EventSource
+  var streaming = false; // a run is in flight for the current conversation
   var atBottom = true;
-  var models = [], selected = null;
-  var msgs = Object.create(null);      // messageId -> assistant render record
-  var pending = Object.create(null);   // runId -> optimistic user turn awaiting echo
-  var queued = Object.create(null);    // runId -> { content, attachments } (staging panel)
+  var models = [],
+    selected = null;
+  var msgs = Object.create(null); // messageId -> assistant render record
+  var pending = Object.create(null); // runId -> optimistic user turn awaiting echo
+  var queued = Object.create(null); // runId -> { content, attachments } (staging panel)
   var flushHandle = null;
-  var lastUsage = null;                // real token usage from the last completed turn
-  var staged = [];                     // attachments uploaded and waiting on the next send
+  var lastUsage = null; // real token usage from the last completed turn
+  var staged = []; // attachments uploaded and waiting on the next send
 
   // ---- attachments -------------------------------------------------------
   // Uploads go to the content-addressed blob store first; the send/steer body
   // then carries lightweight refs ({sha256,name,mime,kind}), never bytes.
   var IMG = /^image\//;
-  function attKind(mime) { return IMG.test(mime) ? "image" : "file"; }
+  function attKind(mime) {
+    return IMG.test(mime) ? "image" : "file";
+  }
   // Serve URL for a stored blob, carrying the original name so a download keeps it.
   function blobUrl(a) {
     return "/api/blobs/" + encodeURIComponent(a.sha256) + "?name=" + encodeURIComponent(a.name);
@@ -120,58 +158,90 @@ import {
     return n;
   }
   // A ref suitable for the message body (drops local-only fields).
-  function attachmentRef(it) { return { sha256: it.sha256, name: it.name, mime: it.mime, kind: it.kind }; }
+  function attachmentRef(it) {
+    return { sha256: it.sha256, name: it.name, mime: it.mime, kind: it.kind };
+  }
 
   async function uploadOne(file) {
-    var it = { name: file.name || "file", mime: file.type || "application/octet-stream",
-               kind: attKind(file.type || ""), sha256: null, uploading: true,
-               url: IMG.test(file.type || "") ? URL.createObjectURL(file) : null };
+    var it = {
+      name: file.name || "file",
+      mime: file.type || "application/octet-stream",
+      kind: attKind(file.type || ""),
+      sha256: null,
+      uploading: true,
+      url: IMG.test(file.type || "") ? URL.createObjectURL(file) : null,
+    };
     staged.push(it);
-    renderStaged(); updateSend();
+    renderStaged();
+    updateSend();
     try {
-      var res = await fetch("/api/blobs", { method: "POST", headers: { "content-type": it.mime }, body: file });
+      var res = await fetch("/api/blobs", {
+        method: "POST",
+        headers: { "content-type": it.mime },
+        body: file,
+      });
       if (!res.ok) throw new Error("upload failed (" + res.status + ")");
       var j = await res.json();
-      it.sha256 = j.sha256; it.uploading = false;
+      it.sha256 = j.sha256;
+      it.uploading = false;
     } catch (e) {
       // Drop a failed upload from the tray; nothing was staged for send.
-      var i = staged.indexOf(it); if (i >= 0) staged.splice(i, 1);
+      var i = staged.indexOf(it);
+      if (i >= 0) staged.splice(i, 1);
       if (it.url) URL.revokeObjectURL(it.url);
       console.warn("attachment:", e && e.message);
     }
-    renderStaged(); updateSend();
+    renderStaged();
+    updateSend();
   }
   function stageFiles(list) {
     if (!list || !list.length) return;
     for (var i = 0; i < list.length; i++) uploadOne(list[i]);
   }
   function removeStaged(it) {
-    var i = staged.indexOf(it); if (i < 0) return;
+    var i = staged.indexOf(it);
+    if (i < 0) return;
     staged.splice(i, 1);
     if (it.url) URL.revokeObjectURL(it.url);
-    renderStaged(); updateSend();
+    renderStaged();
+    updateSend();
   }
   function clearStaged() {
     for (var i = 0; i < staged.length; i++) if (staged[i].url) URL.revokeObjectURL(staged[i].url);
     staged = [];
-    renderStaged(); updateSend();
+    renderStaged();
+    updateSend();
   }
   function renderStaged() {
     stagedEl.classList.toggle("hidden", staged.length === 0);
     stagedEl.innerHTML = "";
     staged.forEach(function (it) {
       var chip = document.createElement("div");
-      chip.className = "chip" + (it.uploading ? " uploading" : "") + (it.kind === "image" ? " img" : "");
+      chip.className =
+        "chip" + (it.uploading ? " uploading" : "") + (it.kind === "image" ? " img" : "");
       if (it.kind === "image" && it.url) {
         var img = document.createElement("img");
-        img.src = it.url; img.alt = it.name; chip.appendChild(img);
+        img.src = it.url;
+        img.alt = it.name;
+        chip.appendChild(img);
       } else {
-        var ic = document.createElement("span"); ic.className = "fi"; ic.innerHTML = FILE_SVG; chip.appendChild(ic);
+        var ic = document.createElement("span");
+        ic.className = "fi";
+        ic.innerHTML = FILE_SVG;
+        chip.appendChild(ic);
       }
-      var nm = document.createElement("span"); nm.className = "nm"; nm.textContent = it.name; chip.appendChild(nm);
+      var nm = document.createElement("span");
+      nm.className = "nm";
+      nm.textContent = it.name;
+      chip.appendChild(nm);
       var x = document.createElement("button");
-      x.type = "button"; x.className = "x"; x.setAttribute("aria-label", "Remove " + it.name); x.textContent = "×";
-      x.onclick = function () { removeStaged(it); };
+      x.type = "button";
+      x.className = "x";
+      x.setAttribute("aria-label", "Remove " + it.name);
+      x.textContent = "×";
+      x.onclick = function () {
+        removeStaged(it);
+      };
       chip.appendChild(x);
       stagedEl.appendChild(chip);
     });
@@ -183,15 +253,27 @@ import {
     wrap.className = "attachments";
     attachments.forEach(function (a) {
       var link = document.createElement("a");
-      link.href = blobUrl(a); link.target = "_blank"; link.rel = "noopener noreferrer";
+      link.href = blobUrl(a);
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
       if (a.kind === "image") {
         link.className = "att img";
-        var img = document.createElement("img"); img.src = blobUrl(a); img.alt = a.name; img.loading = "lazy";
+        var img = document.createElement("img");
+        img.src = blobUrl(a);
+        img.alt = a.name;
+        img.loading = "lazy";
         link.appendChild(img);
       } else {
-        link.className = "att file"; link.setAttribute("download", a.name);
-        var ic = document.createElement("span"); ic.className = "fi"; ic.innerHTML = FILE_SVG; link.appendChild(ic);
-        var nm = document.createElement("span"); nm.className = "nm"; nm.textContent = a.name; link.appendChild(nm);
+        link.className = "att file";
+        link.setAttribute("download", a.name);
+        var ic = document.createElement("span");
+        ic.className = "fi";
+        ic.innerHTML = FILE_SVG;
+        link.appendChild(ic);
+        var nm = document.createElement("span");
+        nm.className = "nm";
+        nm.textContent = a.name;
+        link.appendChild(nm);
       }
       wrap.appendChild(link);
     });
@@ -211,7 +293,7 @@ import {
   // the full text to scan) are masked to DOLLAR_MASK so smd's tokenizer never
   // fires; add_text restores those to a literal `$`. smdParserWrite is a raw
   // handle so smdWrite doesn't recurse.
-  var MATH_MARK = String.fromCharCode(0xe000);   // prefix inside a wrapped-math <code>
+  var MATH_MARK = String.fromCharCode(0xe000); // prefix inside a wrapped-math <code>
   var DOLLAR_MASK = String.fromCharCode(0xe001); // masked `$`, restored by add_text
   var smdParserWrite = smd.parser_write;
   function smdWrite(parser, text) {
@@ -223,14 +305,20 @@ import {
   function matchDollar(src, i) {
     if (src[i + 1] === "$") {
       var close = src.indexOf("$$", i + 2);
-      if (close > i + 1) { var d = src.slice(i + 2, close); if (d.trim() && d.indexOf("\n\n") < 0) return { tex: d, display: true, end: close + 2 }; }
+      if (close > i + 1) {
+        var d = src.slice(i + 2, close);
+        if (d.trim() && d.indexOf("\n\n") < 0) return { tex: d, display: true, end: close + 2 };
+      }
       return null;
     }
     var nx = src[i + 1];
     if (!nx || nx === " " || nx === "\n" || nx === "\t" || (nx >= "0" && nx <= "9")) return null;
     for (var j = i + 1; j < src.length; j++) {
       if (src[j] === "\n") return null;
-      if (src[j] === "$") { var t = src.slice(i + 1, j); return t ? { tex: t, display: false, end: j + 1 } : null; }
+      if (src[j] === "$") {
+        var t = src.slice(i + 1, j);
+        return t ? { tex: t, display: false, end: j + 1 } : null;
+      }
     }
     return null;
   }
@@ -242,29 +330,49 @@ import {
   var TICK_RE = /`+/y;
   function protectMath(src) {
     if (src.indexOf("$") < 0) return src;
-    var parts = [], i = 0, n = src.length, fence = null, plain = 0;
+    var parts = [],
+      i = 0,
+      n = src.length,
+      fence = null,
+      plain = 0;
     while (i < n) {
       if (i === 0 || src[i - 1] === "\n") {
         FENCE_RE.lastIndex = i;
         var fm = FENCE_RE.exec(src); // sticky → only matches at i
         if (fm) {
-          if (!fence) fence = fm[1][0]; else if (fm[1][0] === fence) fence = null;
-          var e = src.indexOf("\n", i); i = e < 0 ? n : e + 1; continue; // stays in `plain`
+          if (!fence) fence = fm[1][0];
+          else if (fm[1][0] === fence) fence = null;
+          var e = src.indexOf("\n", i);
+          i = e < 0 ? n : e + 1;
+          continue; // stays in `plain`
         }
       }
-      if (fence) { var e2 = src.indexOf("\n", i); i = e2 < 0 ? n : e2 + 1; continue; }
+      if (fence) {
+        var e2 = src.indexOf("\n", i);
+        i = e2 < 0 ? n : e2 + 1;
+        continue;
+      }
       var c = src[i];
-      if (c === "`") { // inline code span → copy verbatim (stays in `plain`)
-        TICK_RE.lastIndex = i; var run = TICK_RE.exec(src)[0];
+      if (c === "`") {
+        // inline code span → copy verbatim (stays in `plain`)
+        TICK_RE.lastIndex = i;
+        var run = TICK_RE.exec(src)[0];
         var cl = src.indexOf(run, i + run.length);
-        i = cl < 0 ? n : cl + run.length; continue;
+        i = cl < 0 ? n : cl + run.length;
+        continue;
       }
       if (c === "$") {
         var m = matchDollar(src, i);
         if (i > plain) parts.push(src.slice(plain, i));
-        if (m && m.tex.indexOf("`") < 0) { parts.push("`" + MATH_MARK + (m.display ? "D" : "") + m.tex + "`"); i = m.end; }
-        else { parts.push(DOLLAR_MASK); i++; } // stray/unwrappable `$` → literal
-        plain = i; continue;
+        if (m && m.tex.indexOf("`") < 0) {
+          parts.push("`" + MATH_MARK + (m.display ? "D" : "") + m.tex + "`");
+          i = m.end;
+        } else {
+          parts.push(DOLLAR_MASK);
+          i++;
+        } // stray/unwrappable `$` → literal
+        plain = i;
+        continue;
       }
       i++;
     }
@@ -283,8 +391,8 @@ import {
       var out = value;
       if (type === smd.HREF || type === smd.SRC) {
         if (/^\s*(javascript|vbscript|file):/i.test(value)) out = "#";
-        else if (/^\s*data:/i.test(value) &&
-                 !(type === smd.SRC && /^\s*data:image\//i.test(value))) out = "#";
+        else if (/^\s*data:/i.test(value) && !(type === smd.SRC && /^\s*data:image\//i.test(value)))
+          out = "#";
         if (out !== value) r._stripped = true;
       }
       base(data, type, out);
@@ -307,7 +415,9 @@ import {
   // sanitizer needed: smd builds the DOM node-by-node and never emits raw tags,
   // so there's no untrusted HTML string to purify — only the href/src the
   // wrapped renderer already guarded.
-  function finalize(renderer) { return !!(renderer && renderer._stripped); }
+  function finalize(renderer) {
+    return !!(renderer && renderer._stripped);
+  }
   // A turn body is an ordered container of blocks; markdown (user text, or a
   // streamed assistant turn) lives in a `.block.prose`. Tool/thinking blocks
   // (later) append as their own block types alongside it.
@@ -329,16 +439,28 @@ import {
   }
 
   // rAF-batched delta flush: models emit faster than the eye needs (spec).
-  function scheduleFlush() { if (!flushHandle) flushHandle = requestAnimationFrame(flush); }
+  function scheduleFlush() {
+    if (!flushHandle) flushHandle = requestAnimationFrame(flush);
+  }
   function flush() {
     flushHandle = null;
     var painted = false;
     for (var id in msgs) {
       var r = msgs[id];
       var or = r.activity && r.activity.openReasoning;
-      if (or && or.buf) { smdWrite(or.parser, or.buf); or.buf = ""; painted = true; updateReasoningPreview(or); }
+      if (or && or.buf) {
+        smdWrite(or.parser, or.buf);
+        or.buf = "";
+        painted = true;
+        updateReasoningPreview(or);
+      }
       var ts = r.textSink;
-      if (ts && ts.buf) { smdWrite(ts.parser, ts.buf); ts.buf = ""; painted = true; liveMeta(r); }
+      if (ts && ts.buf) {
+        smdWrite(ts.parser, ts.buf);
+        ts.buf = "";
+        painted = true;
+        liveMeta(r);
+      }
     }
     if (painted) autoScroll();
   }
@@ -348,7 +470,9 @@ import {
   // a bulk history load thrashes layout. `bulkLoading` suppresses it while a
   // conversation is applied in one pass; the caller scrolls once at the end.
   var bulkLoading = false;
-  function autoScroll() { if (!bulkLoading && atBottom) scroll.scrollTop = scroll.scrollHeight; }
+  function autoScroll() {
+    if (!bulkLoading && atBottom) scroll.scrollTop = scroll.scrollHeight;
+  }
   // Compact context-window label: 1000000 -> "1M", 1048576 -> "1M", 1500000 -> "1.5M", else "Nk".
   function fmtCtx(n) {
     if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
@@ -358,20 +482,33 @@ import {
   // what the provider actually counted, and the baseline the next turn sends).
   function usedTokens(u) {
     if (!u) return null;
-    if (u.inputTokens != null || u.outputTokens != null) return (u.inputTokens || 0) + (u.outputTokens || 0);
+    if (u.inputTokens != null || u.outputTokens != null)
+      return (u.inputTokens || 0) + (u.outputTokens || 0);
     if (u.totalTokens != null) return u.totalTokens;
     return null;
   }
   function updateCtx() {
     var used = usedTokens(lastUsage);
-    if (!selected || !selected.contextWindow || used == null) { ctx.classList.add("hidden"); return; }
+    if (!selected || !selected.contextWindow || used == null) {
+      ctx.classList.add("hidden");
+      return;
+    }
     // The real shade glyphs, with a ▒ boundary cell for partial fill — same look
     // as the old ▓░ bar, quarter-block precision instead of full-blocks-only.
-    var n = 12, exact = Math.max(0, Math.min(n, (used / selected.contextWindow) * n));
-    var full = Math.floor(exact), rem = exact - full, cells = full, s = "▓".repeat(full);
+    var n = 12,
+      exact = Math.max(0, Math.min(n, (used / selected.contextWindow) * n));
+    var full = Math.floor(exact),
+      rem = exact - full,
+      cells = full,
+      s = "▓".repeat(full);
     if (full < n) {
-      if (rem >= 0.75) { s += "▓"; cells++; }
-      else if (rem >= 0.25) { s += "▒"; cells++; }
+      if (rem >= 0.75) {
+        s += "▓";
+        cells++;
+      } else if (rem >= 0.25) {
+        s += "▒";
+        cells++;
+      }
     }
     ctxbar.textContent = s + "░".repeat(n - cells);
     ctxpct.textContent = Math.round((used / selected.contextWindow) * 100) + "%";
@@ -390,7 +527,8 @@ import {
     send.innerHTML = SEND;
     // Sendable with text OR staged attachments; blocked while an upload is still
     // in flight (its sha256 isn't known yet, so the ref would be incomplete).
-    var has = (input.value.trim().length > 0 || staged.length > 0) && selected && uploadingCount() === 0;
+    var has =
+      (input.value.trim().length > 0 || staged.length > 0) && selected && uploadingCount() === 0;
     send.className = "send" + (has ? " ready" : "");
     send.disabled = !has;
     send.setAttribute("aria-label", "Send");
@@ -400,7 +538,9 @@ import {
   // No estimated token rate — real counts land on message-end.
   function liveMeta(rec) {
     var elapsed = (Date.now() - rec.startedAt) / 1000;
-    var ttft = rec.firstDeltaAt ? ((rec.firstDeltaAt - rec.startedAt) / 1000).toFixed(1) + "s ttft · " : "";
+    var ttft = rec.firstDeltaAt
+      ? ((rec.firstDeltaAt - rec.startedAt) / 1000).toFixed(1) + "s ttft · "
+      : "";
     rec.meta.textContent = ttft + elapsed.toFixed(1) + "s";
   }
 
@@ -414,7 +554,10 @@ import {
     clearStaged();
     streaming = false;
     lastUsage = null;
-    if (flushHandle) { cancelAnimationFrame(flushHandle); flushHandle = null; }
+    if (flushHandle) {
+      cancelAnimationFrame(flushHandle);
+      flushHandle = null;
+    }
     // Drop pending enrichment for the turns we just removed (new turns re-observe).
     if (enrichObserver) enrichObserver.disconnect();
     enrichPending = new WeakMap();
@@ -427,10 +570,13 @@ import {
     var t = document.createElement("article");
     t.className = "turn" + (cls ? " " + cls : "");
     t.innerHTML =
-      '<div class="label"><span class="who' + (who === "You" ? " user" : "") + '"></span><span class="meta"></span></div>' +
+      '<div class="label"><span class="who' +
+      (who === "You" ? " user" : "") +
+      '"></span><span class="meta"></span></div>' +
       '<div class="body" aria-live="polite"></div>';
     t.querySelector(".who").textContent = who;
-    if (renderAnchor) thread.insertBefore(t, renderAnchor); else thread.appendChild(t);
+    if (renderAnchor) thread.insertBefore(t, renderAnchor);
+    else thread.appendChild(t);
     return t;
   }
 
@@ -446,9 +592,16 @@ import {
     // A queued steer being promoted by the flush: drop it from the staging
     // panel — it now enters the thread as a real turn (rendered fresh below,
     // the first time it appears there).
-    if (queued[runId] !== undefined) { delete queued[runId]; renderQueue(); }
+    if (queued[runId] !== undefined) {
+      delete queued[runId];
+      renderQueue();
+    }
     var p = pending[runId];
-    if (p) { p.turn.classList.remove("pending", "failed"); delete pending[runId]; return; }
+    if (p) {
+      p.turn.classList.remove("pending", "failed");
+      delete pending[runId];
+      return;
+    }
     // Not ours (history, another device, or a promoted steer): render fresh.
     var t = makeTurn("You");
     var body = t.querySelector(".body");
@@ -477,9 +630,11 @@ import {
     fb.className = "failbar";
     fb.textContent = "not sent — ";
     var btn = document.createElement("button");
-    btn.type = "button"; btn.textContent = "Retry";
+    btn.type = "button";
+    btn.textContent = "Retry";
     btn.onclick = function () {
-      p.turn.remove(); delete pending[runId];
+      p.turn.remove();
+      delete pending[runId];
       doSend(p.content, runId, p.attachments);
     };
     fb.appendChild(btn);
@@ -490,18 +645,21 @@ import {
     if (msgs[messageId]) return msgs[messageId];
     var t = makeTurn("Assistant", "generating");
     var rec = {
-      turn: t, body: t.querySelector(".body"), meta: t.querySelector(".meta"),
+      turn: t,
+      body: t.querySelector(".body"),
+      meta: t.querySelector(".meta"),
       // The turn body is an ordered run of segments: answer prose blocks and
       // activity blocks (each a self-contained stepper of thinking + tools).
       // They interleave in arrival order — a run of thinking/tools between two
       // chunks of answer text becomes its own stepper, sitting between them.
-      activity: null,           // the currently open activity block (see newActivityBlock)
-      proses: [],               // every answer prose block (for the final flush)
-      textSink: null,           // the currently open prose { el, parser, renderer, buf }
-      toolSteps: null,          // toolCallId -> tool step (carries its block)
-      firstReasoning: null,     // first reasoning step of the whole turn (gets the duration)
+      activity: null, // the currently open activity block (see newActivityBlock)
+      proses: [], // every answer prose block (for the final flush)
+      textSink: null, // the currently open prose { el, parser, renderer, buf }
+      toolSteps: null, // toolCallId -> tool step (carries its block)
+      firstReasoning: null, // first reasoning step of the whole turn (gets the duration)
       firstReasoningBlock: null,
-      startedAt: Date.now(), firstDeltaAt: 0,
+      startedAt: Date.now(),
+      firstDeltaAt: 0,
     };
     msgs[messageId] = rec;
     autoScroll();
@@ -518,23 +676,34 @@ import {
     d.className = "block activity";
     var sum = document.createElement("summary");
     sum.className = "activity-head";
-    sum.innerHTML = '<span class="stepicon"></span><span class="steplabel activity-label"></span>' + CHEV;
+    sum.innerHTML =
+      '<span class="stepicon"></span><span class="steplabel activity-label"></span>' + CHEV;
     var stepper = document.createElement("div");
     stepper.className = "stepper";
-    d.appendChild(sum); d.appendChild(stepper);
+    d.appendChild(sum);
+    d.appendChild(stepper);
     rec.body.appendChild(d); // in arrival order, below whatever preceded it
     return {
-      details: d, stepper: stepper,
-      headIcon: sum.querySelector(".stepicon"), headLabel: sum.querySelector(".activity-label"),
-      openReasoning: null, firstReasoning: null, thoughtLabel: "", stepCount: 0,
-      tools: [], activeTool: null, // tools: ordered {name, input}; activeTool: the in-flight one
+      details: d,
+      stepper: stepper,
+      headIcon: sum.querySelector(".stepicon"),
+      headLabel: sum.querySelector(".activity-label"),
+      openReasoning: null,
+      firstReasoning: null,
+      thoughtLabel: "",
+      stepCount: 0,
+      tools: [],
+      activeTool: null, // tools: ordered {name, input}; activeTool: the in-flight one
     };
   }
   // The current open activity block. Opening one closes the current prose block
   // (flushing it), so a later text delta starts a fresh prose block below.
   function openActivity(rec) {
     if (rec.textSink) {
-      if (rec.textSink.buf) { smdWrite(rec.textSink.parser, rec.textSink.buf); rec.textSink.buf = ""; }
+      if (rec.textSink.buf) {
+        smdWrite(rec.textSink.parser, rec.textSink.buf);
+        rec.textSink.buf = "";
+      }
       rec.textSink = null;
     }
     if (rec.activity) return rec.activity;
@@ -559,7 +728,9 @@ import {
   // pure-thinking block reads "Thought for Ns". No "Done".
   // Steps in this block that used a given tool (for per-tool counts/summaries).
   function stepsOfTool(a, name) {
-    return a.tools.filter(function (e) { return e.name === name; });
+    return a.tools.filter(function (e) {
+      return e.name === name;
+    });
   }
   // The collapsed header. While a step is live it reflects that step; once the
   // block settles it summarizes the LATEST tool used (last-tool-wins for a mixed
@@ -568,19 +739,32 @@ import {
     if (a.openReasoning) return { icon: ICON_CLOCK, label: "Thinking", working: true };
     if (a.activeTool) {
       var ui = toolUI(a.activeTool.name);
-      return { icon: ui.icon, label: ui.summary(stepsOfTool(a, a.activeTool.name), true, a.activeTool.name), working: true };
+      return {
+        icon: ui.icon,
+        label: ui.summary(stepsOfTool(a, a.activeTool.name), true, a.activeTool.name),
+        working: true,
+      };
     }
     if (a.tools.length) {
       // Distinct tool types in first-seen order → overlapping icons + a summary
       // per type joined ("Ran 5 commands · Read 2 pages"). One type collapses to
       // the familiar single icon + summary.
       var names = [];
-      a.tools.forEach(function (e) { if (names.indexOf(e.name) < 0) names.push(e.name); });
-      var icons = names.map(function (n) { return toolUI(n).icon; });
-      var label = names.map(function (n) { return toolUI(n).summary(stepsOfTool(a, n), false, n); }).join(" · ");
+      a.tools.forEach(function (e) {
+        if (names.indexOf(e.name) < 0) names.push(e.name);
+      });
+      var icons = names.map(function (n) {
+        return toolUI(n).icon;
+      });
+      var label = names
+        .map(function (n) {
+          return toolUI(n).summary(stepsOfTool(a, n), false, n);
+        })
+        .join(" · ");
       return { icons: icons, label: label, working: false };
     }
-    if (a.firstReasoning) return { icon: ICON_CLOCK, label: a.thoughtLabel || "Thought", working: false };
+    if (a.firstReasoning)
+      return { icon: ICON_CLOCK, label: a.thoughtLabel || "Thought", working: false };
     return null;
   }
   function blockUpdateHead(a) {
@@ -589,7 +773,11 @@ import {
     var icons = s.icons || [s.icon];
     if (icons.length > 1) {
       a.headIcon.classList.add("iconstack");
-      a.headIcon.innerHTML = icons.map(function (ic) { return '<span class="ic">' + ic + "</span>"; }).join("");
+      a.headIcon.innerHTML = icons
+        .map(function (ic) {
+          return '<span class="ic">' + ic + "</span>";
+        })
+        .join("");
     } else {
       a.headIcon.classList.remove("iconstack");
       a.headIcon.innerHTML = icons[0];
@@ -600,14 +788,19 @@ import {
   // A stepper row in block `a`. `expandable` rows are <details> (reasoning,
   // tools). Returns the row, its label span, and (if any) its body.
   function makeStepIn(a, cls, icon, expandable) {
-    var row, label, body = null;
+    var row,
+      label,
+      body = null;
     if (expandable) {
       row = document.createElement("details");
       row.className = "step " + cls;
       var sum = document.createElement("summary");
-      sum.innerHTML = '<span class="stepicon">' + icon + '</span><span class="steplabel"></span>' + CHEV;
-      body = document.createElement("div"); body.className = "stepbody";
-      row.appendChild(sum); row.appendChild(body);
+      sum.innerHTML =
+        '<span class="stepicon">' + icon + '</span><span class="steplabel"></span>' + CHEV;
+      body = document.createElement("div");
+      body.className = "stepbody";
+      row.appendChild(sum);
+      row.appendChild(body);
       label = sum.querySelector(".steplabel");
     } else {
       row = document.createElement("div");
@@ -633,10 +826,20 @@ import {
     var step = makeStepIn(a, "reasoning thinking", ICON_CLOCK, true);
     step.label.textContent = "Thinking";
     var np = newParser(step.body);
-    var rr = { row: step.row, label: step.label, body: step.body,
-               parser: np.parser, renderer: np.renderer, buf: "", ended: false };
+    var rr = {
+      row: step.row,
+      label: step.label,
+      body: step.body,
+      parser: np.parser,
+      renderer: np.renderer,
+      buf: "",
+      ended: false,
+    };
     if (!a.firstReasoning) a.firstReasoning = rr;
-    if (!rec.firstReasoning) { rec.firstReasoning = rr; rec.firstReasoningBlock = a; }
+    if (!rec.firstReasoning) {
+      rec.firstReasoning = rr;
+      rec.firstReasoningBlock = a;
+    }
     a.openReasoning = rr;
     rr.row.open = true; // stream the chain-of-thought open so it can be watched
     blockUpdateHead(a);
@@ -654,8 +857,12 @@ import {
     if (!rr) return;
     a.openReasoning = null;
     if (!rr.ended) {
-      if (rr.buf) { smdWrite(rr.parser, rr.buf); rr.buf = ""; }
-      smd.parser_end(rr.parser); rr.ended = true;
+      if (rr.buf) {
+        smdWrite(rr.parser, rr.buf);
+        rr.buf = "";
+      }
+      smd.parser_end(rr.parser);
+      rr.ended = true;
       queueEnrich(rr.body);
     }
     rr.row.classList.remove("thinking");
@@ -667,9 +874,10 @@ import {
   function labelThought(rr, reasoningMs) {
     if (!rr) return;
     rr.row.classList.remove("thinking");
-    rr.label.textContent = reasoningMs != null
-      ? "Thought for " + Math.max(0, Math.round(reasoningMs / 1000)) + "s"
-      : "Thought";
+    rr.label.textContent =
+      reasoningMs != null
+        ? "Thought for " + Math.max(0, Math.round(reasoningMs / 1000)) + "s"
+        : "Thought";
   }
   // An answer prose block. Creating it closes the current activity block
   // (collapsing it) — we've exited the work section into the answer.
@@ -688,7 +896,11 @@ import {
   function toolValue(v) {
     if (v == null) return "";
     if (typeof v === "string") return v;
-    try { return JSON.stringify(v, null, 2); } catch (_) { return String(v); }
+    try {
+      return JSON.stringify(v, null, 2);
+    } catch (_) {
+      return String(v);
+    }
   }
   // A tool call: a stepper row in the open block, iconed by kind (globe for
   // web_search, else a generic tool icon), labelled by the query (search) or the
@@ -699,7 +911,12 @@ import {
     var a = openActivity(rec);
     blockEndReasoning(a); // the thinking that led to this call is done
     var ui = toolUI(data.toolName);
-    var step = makeStepIn(a, "tool thinking" + (ui.summaryDom ? " " + data.toolName : ""), ui.icon, true);
+    var step = makeStepIn(
+      a,
+      "tool thinking" + (ui.summaryDom ? " " + data.toolName : ""),
+      ui.icon,
+      true,
+    );
     if (ui.summaryDom) {
       // The tool fully owns its summary (custom icon / label / right-side link).
       step.label = ui.summaryDom(step.row.querySelector("summary"), data.input).label;
@@ -711,11 +928,20 @@ import {
     if (ui === DEFAULT_TOOL) {
       var args = toolValue(data.input);
       if (args && args !== "{}") {
-        var el = document.createElement("div"); el.className = "targs"; el.textContent = args;
+        var el = document.createElement("div");
+        el.className = "targs";
+        el.textContent = args;
         step.body.appendChild(el);
       }
     }
-    var t = { row: step.row, label: step.label, body: step.body, toolName: data.toolName, input: data.input, block: a };
+    var t = {
+      row: step.row,
+      label: step.label,
+      body: step.body,
+      toolName: data.toolName,
+      input: data.input,
+      block: a,
+    };
     rec.toolSteps[data.toolCallId] = t;
     var entry = { name: data.toolName, input: data.input };
     a.tools.push(entry);
@@ -739,7 +965,11 @@ import {
     autoScroll();
   }
   function domainOf(url) {
-    try { return new URL(url).hostname.replace(/^www\./, ""); } catch (_) { return ""; }
+    try {
+      return new URL(url).hostname.replace(/^www\./, "");
+    } catch (_) {
+      return "";
+    }
   }
   // Search results as a card: each row a favicon + title + domain, linking out.
   // Puts the result count in the step summary. Favicons load from a public
@@ -747,22 +977,37 @@ import {
   function renderSearchResults(t, results) {
     var sum = t.row.querySelector("summary");
     if (sum && !sum.querySelector(".count")) {
-      var c = document.createElement("span"); c.className = "count";
+      var c = document.createElement("span");
+      c.className = "count";
       c.textContent = results.length + (results.length === 1 ? " result" : " results");
       sum.insertBefore(c, sum.querySelector(".chev"));
     }
-    var card = document.createElement("div"); card.className = "results";
+    var card = document.createElement("div");
+    card.className = "results";
     results.forEach(function (r) {
       var a = document.createElement("a");
-      a.className = "result"; a.href = r.url; a.target = "_blank"; a.rel = "noopener noreferrer nofollow";
+      a.className = "result";
+      a.href = r.url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer nofollow";
       var domain = domainOf(r.url);
       var img = document.createElement("img");
-      img.className = "favicon"; img.alt = ""; img.loading = "lazy";
+      img.className = "favicon";
+      img.alt = "";
+      img.loading = "lazy";
       img.src = "https://icons.duckduckgo.com/ip3/" + domain + ".ico";
-      img.onerror = function () { img.style.visibility = "hidden"; };
-      var title = document.createElement("span"); title.className = "rtitle"; title.textContent = r.title || domain || r.url;
-      var dom = document.createElement("span"); dom.className = "rdomain"; dom.textContent = domain;
-      a.appendChild(img); a.appendChild(title); a.appendChild(dom);
+      img.onerror = function () {
+        img.style.visibility = "hidden";
+      };
+      var title = document.createElement("span");
+      title.className = "rtitle";
+      title.textContent = r.title || domain || r.url;
+      var dom = document.createElement("span");
+      dom.className = "rdomain";
+      dom.textContent = domain;
+      a.appendChild(img);
+      a.appendChild(title);
+      a.appendChild(dom);
       card.appendChild(a);
     });
     t.body.appendChild(card);
@@ -775,34 +1020,54 @@ import {
       // Only markdown gets prose-rendered; raw text/JSON/XML stays verbatim in a
       // preformatted block, so non-HTML content doesn't get mangled by the parser.
       if (output.format === "text") {
-        var pre = document.createElement("div"); pre.className = "tout"; pre.textContent = output.content;
+        var pre = document.createElement("div");
+        pre.className = "tout";
+        pre.textContent = output.content;
         t.body.appendChild(pre);
       } else {
         renderStaticMd(t.body, output.content);
       }
     }
-    if (output.truncated) { var n = document.createElement("div"); n.className = "tnote"; n.textContent = "(truncated)"; t.body.appendChild(n); }
+    if (output.truncated) {
+      var n = document.createElement("div");
+      n.className = "tnote";
+      n.textContent = "(truncated)";
+      t.body.appendChild(n);
+    }
   }
   // Generic result body: the value as text/JSON. `errorResult` is the same, in red.
   function defaultResult(t, output) {
-    var out = document.createElement("div"); out.className = "tout"; out.textContent = toolValue(output);
+    var out = document.createElement("div");
+    out.className = "tout";
+    out.textContent = toolValue(output);
     t.body.appendChild(out);
   }
   // A shell run as a terminal card: the command on a `$` prompt line, its output
   // below. The result string is already `exit code:…\n\nstdout:…` — shown verbatim.
-  function firstLine(s) { s = String(s || ""); var i = s.indexOf("\n"); return i < 0 ? s : s.slice(0, i) + " …"; }
+  function firstLine(s) {
+    s = String(s || "");
+    var i = s.indexOf("\n");
+    return i < 0 ? s : s.slice(0, i) + " …";
+  }
   function renderShellResult(t, output) {
-    var term = document.createElement("div"); term.className = "term";
+    var term = document.createElement("div");
+    term.className = "term";
     if (t.input && t.input.command) {
-      var cmd = document.createElement("div"); cmd.className = "termcmd"; cmd.textContent = t.input.command;
+      var cmd = document.createElement("div");
+      cmd.className = "termcmd";
+      cmd.textContent = t.input.command;
       term.appendChild(cmd);
     }
-    var out = document.createElement("div"); out.className = "termout"; out.textContent = toolValue(output);
+    var out = document.createElement("div");
+    out.className = "termout";
+    out.textContent = toolValue(output);
     term.appendChild(out);
     t.body.appendChild(term);
   }
   function errorResult(t, output) {
-    var out = document.createElement("div"); out.className = "tout err"; out.textContent = toolValue(output);
+    var out = document.createElement("div");
+    out.className = "tout err";
+    out.textContent = toolValue(output);
     t.body.appendChild(out);
   }
   // ---- per-tool UI registry ----------------------------------------------
@@ -811,11 +1076,15 @@ import {
   // it's live), and the success result body. Unknown tools fall back to
   // DEFAULT_TOOL — so a new tool renders sensibly with zero UI code, and gets a
   // nicer treatment by adding one entry here.
-  function lastInput(steps) { return steps.length ? steps[steps.length - 1].input || {} : {}; }
+  function lastInput(steps) {
+    return steps.length ? steps[steps.length - 1].input || {} : {};
+  }
   var TOOL_UI = {
     web_search: {
       icon: ICON_GLOBE,
-      row: function (input) { return (input && input.query) || "web_search"; },
+      row: function (input) {
+        return (input && input.query) || "web_search";
+      },
       summary: function (steps, active) {
         var verb = active ? "Searching the web" : "Searched the web";
         if (steps.length > 1) return verb + " · " + steps.length + " searches";
@@ -836,18 +1105,35 @@ import {
         var url = (input && input.url) || "";
         var hostName = domainOf(url) || "link";
         sum.innerHTML = "";
-        var icon = document.createElement("span"); icon.className = "stepicon";
-        var img = document.createElement("img"); img.className = "favicon"; img.alt = ""; img.loading = "lazy";
+        var icon = document.createElement("span");
+        icon.className = "stepicon";
+        var img = document.createElement("img");
+        img.className = "favicon";
+        img.alt = "";
+        img.loading = "lazy";
         img.src = "https://icons.duckduckgo.com/ip3/" + hostName + ".ico";
-        img.onerror = function () { icon.innerHTML = ICON_PAGE; }; // no favicon → page icon
+        img.onerror = function () {
+          icon.innerHTML = ICON_PAGE;
+        }; // no favicon → page icon
         icon.appendChild(img);
-        var label = document.createElement("span"); label.className = "steplabel"; label.textContent = hostName;
-        var link = document.createElement("a"); link.className = "stephost";
-        link.href = url; link.target = "_blank"; link.rel = "noopener noreferrer nofollow";
-        var hspan = document.createElement("span"); hspan.textContent = hostName;
-        link.appendChild(hspan); link.insertAdjacentHTML("beforeend", ICON_EXT);
-        link.addEventListener("click", function (e) { e.stopPropagation(); }); // open the link, don't toggle
-        sum.appendChild(icon); sum.appendChild(label); sum.appendChild(link);
+        var label = document.createElement("span");
+        label.className = "steplabel";
+        label.textContent = hostName;
+        var link = document.createElement("a");
+        link.className = "stephost";
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer nofollow";
+        var hspan = document.createElement("span");
+        hspan.textContent = hostName;
+        link.appendChild(hspan);
+        link.insertAdjacentHTML("beforeend", ICON_EXT);
+        link.addEventListener("click", function (e) {
+          e.stopPropagation();
+        }); // open the link, don't toggle
+        sum.appendChild(icon);
+        sum.appendChild(label);
+        sum.appendChild(link);
         return { label: label };
       },
       summary: function (steps, active) {
@@ -864,7 +1150,9 @@ import {
       icon: ICON_TERMINAL,
       // The command as the row label (first line; the full command shows in the
       // expanded terminal card).
-      row: function (input) { return input && input.command ? firstLine(input.command) : "run_shell"; },
+      row: function (input) {
+        return input && input.command ? firstLine(input.command) : "run_shell";
+      },
       summary: function (steps, active) {
         var verb = active ? "Running" : "Ran";
         return steps.length > 1 ? verb + " " + steps.length + " commands" : verb + " a command";
@@ -874,13 +1162,17 @@ import {
   };
   var DEFAULT_TOOL = {
     icon: ICON_TOOL,
-    row: function (_input, name) { return name; },
+    row: function (_input, name) {
+      return name;
+    },
     summary: function (steps, active, name) {
       return (active ? "Running " : "Ran ") + name + (steps.length > 1 ? " ×" + steps.length : "");
     },
     result: defaultResult,
   };
-  function toolUI(name) { return TOOL_UI[name] || DEFAULT_TOOL; }
+  function toolUI(name) {
+    return TOOL_UI[name] || DEFAULT_TOOL;
+  }
   function endAssistant(rec, finishReason, usage, reasoningMs) {
     closeActivity(rec); // finish + collapse any open activity block
     // The server reports one reasoning duration for the turn (start → first
@@ -889,8 +1181,10 @@ import {
     if (rec.firstReasoning) {
       labelThought(rec.firstReasoning, reasoningMs);
       if (rec.firstReasoningBlock) {
-        rec.firstReasoningBlock.thoughtLabel = reasoningMs != null
-          ? "Thought for " + Math.max(0, Math.round(reasoningMs / 1000)) + "s" : "Thought";
+        rec.firstReasoningBlock.thoughtLabel =
+          reasoningMs != null
+            ? "Thought for " + Math.max(0, Math.round(reasoningMs / 1000)) + "s"
+            : "Thought";
         blockUpdateHead(rec.firstReasoningBlock);
       }
     }
@@ -900,7 +1194,10 @@ import {
     var stripped = false;
     for (var i = 0; i < rec.proses.length; i++) {
       var p = rec.proses[i];
-      if (p.buf) { smdWrite(p.parser, p.buf); p.buf = ""; }
+      if (p.buf) {
+        smdWrite(p.parser, p.buf);
+        p.buf = "";
+      }
       smd.parser_end(p.parser);
       if (finalize(p.renderer)) stripped = true;
       // The live stream masks `$` (no full text to scan), so math content was
@@ -920,14 +1217,19 @@ import {
       rec.meta.textContent = "";
       canceledMark(rec.body);
     } else if (finishReason === "error") {
-      rec.turn.classList.add("failed"); failbar(rec.body, "generation failed"); rec.meta.textContent = "error";
+      rec.turn.classList.add("failed");
+      failbar(rec.body, "generation failed");
+      rec.meta.textContent = "error";
     } else {
       var elapsed = (Date.now() - rec.startedAt) / 1000;
       var live = elapsed >= 0.3; // actually streamed in this session vs replayed from the log
       var out = usage && usage.outputTokens != null ? usage.outputTokens : null;
       if (out != null && live) {
-        var ttft = rec.firstDeltaAt ? ((rec.firstDeltaAt - rec.startedAt) / 1000).toFixed(1) + "s ttft · " : "";
-        rec.meta.textContent = ttft + out.toLocaleString() + " tok · " + Math.round(out / elapsed) + " tok/s";
+        var ttft = rec.firstDeltaAt
+          ? ((rec.firstDeltaAt - rec.startedAt) / 1000).toFixed(1) + "s ttft · "
+          : "";
+        rec.meta.textContent =
+          ttft + out.toLocaleString() + " tok · " + Math.round(out / elapsed) + " tok/s";
       } else if (out != null) {
         rec.meta.textContent = out.toLocaleString() + " tok"; // replayed: real count, no synthetic rate
       } else if (!live) {
@@ -936,13 +1238,17 @@ import {
         liveMeta(rec); // provider reported no usage: fall back to wall-clock
       }
     }
-    if (usage) { lastUsage = usage; updateCtx(); }
+    if (usage) {
+      lastUsage = usage;
+      updateCtx();
+    }
     if (stripped) failbar(rec.body, "some content was removed by the sanitizer");
   }
   function failbar(bodyEl, msg) {
     if (bodyEl.querySelector(".failbar")) return;
     var fb = document.createElement("div");
-    fb.className = "failbar"; fb.textContent = msg;
+    fb.className = "failbar";
+    fb.textContent = msg;
     bodyEl.appendChild(fb);
   }
   // Italic "canceled" under a stopped turn. As a block it sits on its own line
@@ -951,7 +1257,8 @@ import {
   function canceledMark(bodyEl) {
     if (bodyEl.querySelector(".canceled")) return; // idempotent across replays
     var el = document.createElement("div");
-    el.className = "canceled"; el.textContent = "canceled";
+    el.className = "canceled";
+    el.textContent = "canceled";
     bodyEl.appendChild(el);
   }
   function lastAssistant() {
@@ -1015,7 +1322,11 @@ import {
       case "run-error": {
         streaming = false;
         var la = lastAssistant();
-        if (la) { la.turn.classList.add("failed"); failbar(la.body, String(data.error || "run error")); la.meta.textContent = "error"; }
+        if (la) {
+          la.turn.classList.add("failed");
+          failbar(la.body, String(data.error || "run error"));
+          la.meta.textContent = "error";
+        }
         updateSend();
         break;
       }
@@ -1030,9 +1341,21 @@ import {
 
   // ---- SSE stream --------------------------------------------------------
   var connTimer = null;
-  var SSE_EVENTS = ["user-message", "queued-message", "queued-cancelled", "run-started",
-    "message-start", "reasoning-delta", "tool-call", "tool-result", "text-delta",
-    "message-end", "run-error", "cancelled", "conversation-title"];
+  var SSE_EVENTS = [
+    "user-message",
+    "queued-message",
+    "queued-cancelled",
+    "run-started",
+    "message-start",
+    "reasoning-delta",
+    "tool-call",
+    "tool-result",
+    "text-delta",
+    "message-end",
+    "run-error",
+    "cancelled",
+    "conversation-title",
+  ];
 
   // Open a conversation: batch-load the whole history in ONE request and render
   // it in a single pass (far faster than streaming the entire log back over SSE,
@@ -1048,7 +1371,9 @@ import {
   function eventsUrl(id, query) {
     return "/api/conversations/" + encodeURIComponent(id) + "/events" + (query ? "?" + query : "");
   }
-  function seqOfId(eid) { return Number(eid.slice(eid.lastIndexOf(":") + 1)); }
+  function seqOfId(eid) {
+    return Number(eid.slice(eid.lastIndexOf(":") + 1));
+  }
 
   // Optimistic prefetch: the most-recently-opened conversation (localStorage) is
   // usually the one we open next, so start fetching its TAIL (the bottom turns)
@@ -1056,17 +1381,29 @@ import {
   var prefetch = null;
   function prefetchEvents(id) {
     if (!id) return;
-    prefetch = { id: id, promise: fetch(eventsUrl(id, "tailTurns=" + TAIL_TURNS)).catch(function () { return null; }) };
+    prefetch = {
+      id: id,
+      promise: fetch(eventsUrl(id, "tailTurns=" + TAIL_TURNS)).catch(function () {
+        return null;
+      }),
+    };
   }
 
   function openStream(id) {
-    if (source) { source.close(); source = null; }
-    if (connTimer) { clearTimeout(connTimer); connTimer = null; }
+    if (source) {
+      source.close();
+      source = null;
+    }
+    if (connTimer) {
+      clearTimeout(connTimer);
+      connTimer = null;
+    }
     convId = id;
     // Reset the context-window gauge for the conversation we're switching to;
     // replay of an existing chat's last turn repopulates it, a new chat leaves
     // it hidden (no usage yet) instead of showing the previous chat's number.
-    lastUsage = null; updateCtx();
+    lastUsage = null;
+    updateCtx();
     atBottom = true; // a freshly opened conversation should land at the end
     void loadHistoryThenStream(id);
   }
@@ -1077,8 +1414,11 @@ import {
     var pre = prefetch && prefetch.id === id ? prefetch.promise : null; // single-use
     prefetch = null;
     var res = null;
-    try { res = pre ? await pre : await fetch(eventsUrl(id, "tailTurns=" + TAIL_TURNS)); }
-    catch (_) { res = null; }
+    try {
+      res = pre ? await pre : await fetch(eventsUrl(id, "tailTurns=" + TAIL_TURNS));
+    } catch (_) {
+      res = null;
+    }
     if (convId !== id) return; // switched conversations while loading
     var tail = await streamInto(res, id, null, true); // phase 1: newest turns at the bottom
     if (convId !== id) return;
@@ -1091,7 +1431,11 @@ import {
   // is invisible unless the user scrolls up into it.
   async function backfill(id, beforeSeq) {
     var res = null;
-    try { res = await fetch(eventsUrl(id, "before=" + beforeSeq)); } catch (_) { return; }
+    try {
+      res = await fetch(eventsUrl(id, "before=" + beforeSeq));
+    } catch (_) {
+      return;
+    }
     if (convId !== id || !res) return;
     // Backfill replays OLD, complete turns — don't let their message-start/end
     // clobber the live streaming state (e.g. when the conversation opened mid-run).
@@ -1108,33 +1452,62 @@ import {
   // between awaits) are never misplaced by the prepend anchor.
   async function streamInto(res, id, prepend, scrollBottom) {
     var out = { lastId: null, firstSeq: Infinity, rendered: false };
-    if (!res || !res.ok || !res.body || !res.body.getReader) { if (!prepend) clearThread(); return out; }
-    var reader = res.body.getReader(), decoder = new TextDecoder(), buf = "";
+    if (!res || !res.ok || !res.body || !res.body.getReader) {
+      if (!prepend) clearThread();
+      return out;
+    }
+    var reader = res.body.getReader(),
+      decoder = new TextDecoder(),
+      buf = "";
     var cleared = !!prepend; // backfill prepends onto existing content; never clears
     function applyLine(line) {
       if (!line) return;
-      var ev; try { ev = JSON.parse(line); } catch (_) { return; }
-      if (!cleared) { clearThread(); cleared = true; } // swap on first event → no empty flash
+      var ev;
+      try {
+        ev = JSON.parse(line);
+      } catch (_) {
+        return;
+      }
+      if (!cleared) {
+        clearThread();
+        cleared = true;
+      } // swap on first event → no empty flash
       applyEvent(ev.event, ev.data);
-      out.lastId = ev.id; out.rendered = true;
-      var s = seqOfId(ev.id); if (s < out.firstSeq) out.firstSeq = s;
+      out.lastId = ev.id;
+      out.rendered = true;
+      var s = seqOfId(ev.id);
+      if (s < out.firstSeq) out.firstSeq = s;
     }
     bulkLoading = true;
     try {
       for (;;) {
         var chunk = await reader.read();
-        if (convId !== id) { try { reader.cancel(); } catch (_) {} bulkLoading = false; return out; }
+        if (convId !== id) {
+          try {
+            reader.cancel();
+          } catch (_) {}
+          bulkLoading = false;
+          return out;
+        }
         if (chunk.done) break;
         buf += decoder.decode(chunk.value, { stream: true });
         renderAnchor = prepend; // scoped to this synchronous burst
         var nl;
-        while ((nl = buf.indexOf("\n")) >= 0) { applyLine(buf.slice(0, nl)); buf = buf.slice(nl + 1); }
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          applyLine(buf.slice(0, nl));
+          buf = buf.slice(nl + 1);
+        }
         renderAnchor = null;
         flush();
         if (scrollBottom) scroll.scrollTop = scroll.scrollHeight; // follow the bottom as it fills
       }
-      renderAnchor = prepend; buf += decoder.decode(); applyLine(buf); renderAnchor = null;
-    } catch (_) { /* stream dropped — keep what rendered; the SSE tail fills any gap */ }
+      renderAnchor = prepend;
+      buf += decoder.decode();
+      applyLine(buf);
+      renderAnchor = null;
+    } catch (_) {
+      /* stream dropped — keep what rendered; the SSE tail fills any gap */
+    }
     bulkLoading = false;
     if (!cleared) clearThread(); // empty conversation
     flush();
@@ -1148,23 +1521,40 @@ import {
     source = es;
     SSE_EVENTS.forEach(function (nm) {
       es.addEventListener(nm, function (ev) {
-        var data; try { data = JSON.parse(ev.data); } catch (_) { return; }
+        var data;
+        try {
+          data = JSON.parse(ev.data);
+        } catch (_) {
+          return;
+        }
         applyEvent(nm, data);
       });
     });
-    es.onopen = function () { setConn("connected"); };
+    es.onopen = function () {
+      setConn("connected");
+    };
     es.onerror = function () {
       // readyState 2 (CLOSED) is terminal; 0 (CONNECTING) is the browser already
       // auto-reconnecting — usually done within a second. Only surface
       // "reconnecting" if the gap actually lingers, so a quick reconnect doesn't
       // flash the header. (On reconnect the browser sends Last-Event-ID, which
       // the server prefers over the initial ?after cursor.)
-      if (es.readyState === 2) { setConn("offline"); return; }
-      if (!connTimer) connTimer = setTimeout(function () { connTimer = null; setConn("reconnecting"); }, 1500);
+      if (es.readyState === 2) {
+        setConn("offline");
+        return;
+      }
+      if (!connTimer)
+        connTimer = setTimeout(function () {
+          connTimer = null;
+          setConn("reconnecting");
+        }, 1500);
     };
   }
   function setConn(s) {
-    if (s === "connected" && connTimer) { clearTimeout(connTimer); connTimer = null; }
+    if (s === "connected" && connTimer) {
+      clearTimeout(connTimer);
+      connTimer = null;
+    }
     status.dataset.state = s;
     conn.textContent = s === "reconnecting" ? "reconnecting…" : s;
   }
@@ -1179,11 +1569,16 @@ import {
     // Sendable with text or attachments; nothing to send if both are empty.
     if ((!content && staged.length === 0) || !selected || uploadingCount() > 0) return;
     var attachments = staged.map(attachmentRef);
-    input.value = ""; autosize(); clearStaged();
-    var runId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
+    input.value = "";
+    autosize();
+    clearStaged();
+    var runId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random();
     // While a run is in flight the message joins the steer queue; otherwise it
     // starts a run.
-    if (streaming) { doSteer(content, runId, attachments); return; }
+    if (streaming) {
+      doSteer(content, runId, attachments);
+      return;
+    }
     doSend(content, runId, attachments);
   }
   // Only send `attachments` in the body when there are some, so a plain text
@@ -1198,7 +1593,8 @@ import {
   async function doSend(content, runId, attachments) {
     var wasNew = !hasConversation(convId);
     optimisticUser(content, runId, attachments);
-    streaming = true; updateSend(); // job is queued + cancellable even pre-first-token
+    streaming = true;
+    updateSend(); // job is queued + cancellable even pre-first-token
     try {
       var res = await fetch("/api/conversations/" + encodeURIComponent(convId) + "/prompt", {
         method: "POST",
@@ -1206,26 +1602,34 @@ import {
         body: bodyFor(content, runId, attachments),
       });
       if (!res.ok) {
-        streaming = false; updateSend();
-        var err = await res.json().catch(function () { return {}; });
+        streaming = false;
+        updateSend();
+        var err = await res.json().catch(function () {
+          return {};
+        });
         failUser(runId);
         if (err.error) console.warn("prompt rejected:", err.error);
         return;
       }
       if (wasNew && content) {
-        setHeader(content.slice(0, 80), pendingProject ? { id: pendingProject, name: pendingProjectName } : null);
+        setHeader(
+          content.slice(0, 80),
+          pendingProject ? { id: pendingProject, name: pendingProjectName } : null,
+        );
         setUrl("/c/" + encodeURIComponent(convId), true); // a new chat is now saved — reflect it in the URL
         if (pendingProject) {
           fetch("/api/conversations/" + encodeURIComponent(convId) + "/project", {
-            method: "PUT", headers: { "content-type": "application/json" },
+            method: "PUT",
+            headers: { "content-type": "application/json" },
             body: JSON.stringify({ projectId: pendingProject }),
           }).catch(function () {});
           pendingProject = null;
         }
         setTimeout(loadConversations, 400);
       }
-    } catch (e) {
-      streaming = false; updateSend();
+    } catch (_e) {
+      streaming = false;
+      updateSend();
       failUser(runId);
     }
   }
@@ -1242,35 +1646,51 @@ import {
         body: bodyFor(content, runId, attachments),
       });
       if (!res.ok) {
-        var err = await res.json().catch(function () { return {}; });
-        if (queued[runId] !== undefined) { delete queued[runId]; renderQueue(); }
+        var err = await res.json().catch(function () {
+          return {};
+        });
+        if (queued[runId] !== undefined) {
+          delete queued[runId];
+          renderQueue();
+        }
         if (err.error) console.warn("steer rejected:", err.error);
       }
-    } catch (e) {
-      if (queued[runId] !== undefined) { delete queued[runId]; renderQueue(); }
+    } catch (_e) {
+      if (queued[runId] !== undefined) {
+        delete queued[runId];
+        renderQueue();
+      }
     }
   }
   // Remove a still-pending steer. Optimistic: drop it locally now, then DELETE;
   // the queued-cancelled echo keeps other devices in sync (idempotent here).
   async function cancelSteer(runId) {
-    delete queued[runId]; renderQueue();
+    delete queued[runId];
+    renderQueue();
     try {
-      await fetch("/api/conversations/" + encodeURIComponent(convId) + "/steer/" + encodeURIComponent(runId),
-        { method: "DELETE" });
-    } catch (e) { /* the panel already reflects the removal */ }
+      await fetch(
+        "/api/conversations/" + encodeURIComponent(convId) + "/steer/" + encodeURIComponent(runId),
+        { method: "DELETE" },
+      );
+    } catch (_e) {
+      /* the panel already reflects the removal */
+    }
   }
   function stop() {
     if (!streaming) return;
     // Acknowledge the click immediately: leave the streaming state and mark the
     // live turn "stopping…" rather than waiting for the aborted message-end to
     // round-trip. endAssistant reconciles to the final "stopped" when it lands.
-    streaming = false; updateSend();
+    streaming = false;
+    updateSend();
     var rec = lastAssistant();
     if (rec && rec.turn.classList.contains("generating")) {
       rec.turn.classList.remove("generating");
       rec.meta.textContent = "stopping…";
     }
-    fetch("/api/conversations/" + encodeURIComponent(convId) + "/cancel", { method: "POST" }).catch(function () {});
+    fetch("/api/conversations/" + encodeURIComponent(convId) + "/cancel", { method: "POST" }).catch(
+      function () {},
+    );
   }
 
   // ---- steer queue -------------------------------------------------------
@@ -1296,8 +1716,13 @@ import {
       if (item.attachments && item.attachments.length) renderAttachments(main, item.attachments);
       li.appendChild(main);
       var x = document.createElement("button");
-      x.type = "button"; x.className = "qx"; x.setAttribute("aria-label", "Remove from queue"); x.textContent = "×";
-      x.onclick = function () { cancelSteer(runId); };
+      x.type = "button";
+      x.className = "qx";
+      x.setAttribute("aria-label", "Remove from queue");
+      x.textContent = "×";
+      x.onclick = function () {
+        cancelSteer(runId);
+      };
       li.appendChild(x);
       queueItems.appendChild(li);
     });
@@ -1309,18 +1734,32 @@ import {
   var conversations = [];
   var dialogs = mountDialogs();
   var sidebar = mountSidebar({
-    onSelect: function (id, t) { selectConversation(id, t); },
-    onNew: function () { newConversation(); },
-    activeId: function () { return convId; },
+    onSelect: function (id, t) {
+      selectConversation(id, t);
+    },
+    onNew: function () {
+      newConversation();
+    },
+    activeId: function () {
+      return convId;
+    },
     dialogs: dialogs,
-    reload: function () { loadConversations(); },
+    reload: function () {
+      loadConversations();
+    },
   });
-  function hasConversation(id) { return conversations.some(function (c) { return c.id === id; }); }
+  function hasConversation(id) {
+    return conversations.some(function (c) {
+      return c.id === id;
+    });
+  }
   async function loadConversations() {
     try {
       var res = await fetch("/api/conversations");
       conversations = (await res.json()).conversations || [];
-    } catch (_) { conversations = []; }
+    } catch (_) {
+      conversations = [];
+    }
     sidebar.render(conversations);
   }
   // Browser tab: "<conversation> - Kloe" once a conversation has a title, else
@@ -1339,8 +1778,13 @@ import {
     var ct = title.querySelector(".crumbtitle");
     if (ct) ct.textContent = t;
     setDocTitle(t);
-    var c = conversations.find(function (x) { return x.id === convId; });
-    if (c) { c.title = t; sidebar.render(conversations); }
+    var c = conversations.find(function (x) {
+      return x.id === convId;
+    });
+    if (c) {
+      c.title = t;
+      sidebar.render(conversations);
+    }
   }
   // The header shows the chat title, and — when the chat is filed under a
   // project — a `Project / title` breadcrumb whose project name links back to
@@ -1349,19 +1793,26 @@ import {
     title.innerHTML = "";
     if (project && project.id) {
       var a = document.createElement("a");
-      a.className = "crumblink"; a.href = "/p/" + encodeURIComponent(project.id);
+      a.className = "crumblink";
+      a.href = "/p/" + encodeURIComponent(project.id);
       a.textContent = project.name || "Project";
-      var sep = document.createElement("span"); sep.className = "crumbsep"; sep.textContent = "/";
-      title.appendChild(a); title.appendChild(sep);
+      var sep = document.createElement("span");
+      sep.className = "crumbsep";
+      sep.textContent = "/";
+      title.appendChild(a);
+      title.appendChild(sep);
     }
-    var tt = document.createElement("span"); tt.className = "crumbtitle";
+    var tt = document.createElement("span");
+    tt.className = "crumbtitle";
     tt.textContent = t || "Conversation";
     title.appendChild(tt);
     setDocTitle(t);
   }
   // The project (if any) for a conversation id, from the sidebar list data.
   function projectOf(id) {
-    var c = conversations.find(function (x) { return x.id === id; });
+    var c = conversations.find(function (x) {
+      return x.id === id;
+    });
     return c && c.projectId ? { id: c.projectId, name: c.projectName } : null;
   }
   // URL ⇄ conversation. `/c/<id>` deep-links a conversation (reload/bookmark/back
@@ -1375,24 +1826,35 @@ import {
   }
   function setUrl(path, replace) {
     if (location.pathname + location.search === path) return;
-    if (replace) history.replaceState({}, "", path); else history.pushState({}, "", path);
+    if (replace) history.replaceState({}, "", path);
+    else history.pushState({}, "", path);
   }
   function selectConversation(id, t, nav) {
-    setHeader(t, projectOf(id)); openStream(id); sidebar.render(conversations);
+    setHeader(t, projectOf(id));
+    openStream(id);
+    sidebar.render(conversations);
     if (nav !== "none") setUrl("/c/" + encodeURIComponent(id), nav === "replace");
   }
   function newConversation(nav) {
-    var id = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
+    var id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random();
     // A brand-new chat opened from a project already knows its project (pending);
     // otherwise it's unfiled until its first message optionally files it.
-    setHeader("New conversation", pendingProject ? { id: pendingProject, name: pendingProjectName } : null);
-    openStream(id); sidebar.render(conversations); sidebar.closeRail(); input.focus();
+    setHeader(
+      "New conversation",
+      pendingProject ? { id: pendingProject, name: pendingProjectName } : null,
+    );
+    openStream(id);
+    sidebar.render(conversations);
+    sidebar.closeRail();
+    input.focus();
     if (nav !== "none") setUrl("/", nav === "replace");
   }
   window.addEventListener("popstate", function () {
     var id = convIdFromPath();
     if (id) {
-      var c = conversations.find(function (x) { return x.id === id; });
+      var c = conversations.find(function (x) {
+        return x.id === id;
+      });
       selectConversation(id, c ? c.title : null, "none");
     } else {
       newConversation("none");
@@ -1401,15 +1863,26 @@ import {
 
   // ---- model picker ------------------------------------------------------
   async function loadModels() {
-    try { models = (await (await fetch("/api/models/chat")).json()).models || []; }
-    catch (_) { models = []; }
+    try {
+      models = (await (await fetch("/api/models/chat")).json()).models || [];
+    } catch (_) {
+      models = [];
+    }
     var saved = localStorage.getItem("kloe.model");
-    selected = models.find(function (m) { return m.ref === saved; }) || models[0] || null;
-    renderPicker(); renderPill(); updateSend(); updateCtx();
+    selected =
+      models.find(function (m) {
+        return m.ref === saved;
+      }) ||
+      models[0] ||
+      null;
+    renderPicker();
+    renderPill();
+    updateSend();
+    updateCtx();
   }
   function renderPill() {
     pill.disabled = models.length === 0;
-    pillModel.textContent = selected ? selected.name : (models.length ? "Select model" : "No models");
+    pillModel.textContent = selected ? selected.name : models.length ? "Select model" : "No models";
   }
   function renderPicker() {
     picker.innerHTML = "";
@@ -1422,67 +1895,125 @@ import {
     }
     models.forEach(function (m) {
       var b = document.createElement("button");
-      b.className = "opt"; b.type = "button"; b.setAttribute("role", "option");
+      b.className = "opt";
+      b.type = "button";
+      b.setAttribute("role", "option");
       if (selected && m.ref === selected.ref) b.setAttribute("aria-selected", "true");
       var sub = [];
       if (m.contextWindow) sub.push(fmtCtx(m.contextWindow) + " ctx");
       if (m.reasoningLevels && m.reasoningLevels.length) sub.push("reasoning");
       if (m.supportsImages) sub.push("images");
-      b.innerHTML = '<div class="name"></div>' + (sub.length ? '<div class="sub">' + sub.join(" · ") + "</div>" : "");
+      b.innerHTML =
+        '<div class="name"></div>' +
+        (sub.length ? '<div class="sub">' + sub.join(" · ") + "</div>" : "");
       b.querySelector(".name").textContent = m.name;
       b.onclick = function () {
-        selected = m; localStorage.setItem("kloe.model", m.ref);
-        renderPill(); renderPicker(); updateSend(); updateCtx(); closePicker();
+        selected = m;
+        localStorage.setItem("kloe.model", m.ref);
+        renderPill();
+        renderPicker();
+        updateSend();
+        updateCtx();
+        closePicker();
       };
       picker.appendChild(b);
     });
   }
-  function openPicker() { picker.hidden = false; pill.setAttribute("aria-expanded", "true"); }
-  function closePicker() { picker.hidden = true; pill.setAttribute("aria-expanded", "false"); }
+  function openPicker() {
+    picker.hidden = false;
+    pill.setAttribute("aria-expanded", "true");
+  }
+  function closePicker() {
+    picker.hidden = true;
+    pill.setAttribute("aria-expanded", "false");
+  }
 
   // ---- wiring ------------------------------------------------------------
-  composer.addEventListener("submit", function (e) { e.preventDefault(); submit(); });
-  input.addEventListener("input", function () { autosize(); updateSend(); });
-  input.addEventListener("keydown", function (e) {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+  composer.addEventListener("submit", function (e) {
+    e.preventDefault();
+    submit();
   });
-  $("stop").addEventListener("click", function () { if (streaming) stop(); });
+  input.addEventListener("input", function () {
+    autosize();
+    updateSend();
+  });
+  input.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submit();
+    }
+  });
+  $("stop").addEventListener("click", function () {
+    if (streaming) stop();
+  });
 
   // Attachments: a hidden file input behind the paperclip, plus drag-drop onto
   // the composer and image paste from the clipboard. All routes funnel to
   // stageFiles → upload → staged tray.
   var fileInput = document.createElement("input");
-  fileInput.type = "file"; fileInput.multiple = true; fileInput.style.display = "none";
+  fileInput.type = "file";
+  fileInput.multiple = true;
+  fileInput.style.display = "none";
   document.body.appendChild(fileInput);
-  attachBtn.addEventListener("click", function () { fileInput.click(); });
-  fileInput.addEventListener("change", function () { stageFiles(fileInput.files); fileInput.value = ""; });
-  composer.addEventListener("dragover", function (e) { e.preventDefault(); composer.classList.add("drop"); });
+  attachBtn.addEventListener("click", function () {
+    fileInput.click();
+  });
+  fileInput.addEventListener("change", function () {
+    stageFiles(fileInput.files);
+    fileInput.value = "";
+  });
+  composer.addEventListener("dragover", function (e) {
+    e.preventDefault();
+    composer.classList.add("drop");
+  });
   composer.addEventListener("dragleave", function (e) {
-    if (e.target === composer || !composer.contains(e.relatedTarget)) composer.classList.remove("drop");
+    if (e.target === composer || !composer.contains(e.relatedTarget))
+      composer.classList.remove("drop");
   });
   composer.addEventListener("drop", function (e) {
-    e.preventDefault(); composer.classList.remove("drop");
+    e.preventDefault();
+    composer.classList.remove("drop");
     if (e.dataTransfer && e.dataTransfer.files) stageFiles(e.dataTransfer.files);
   });
   input.addEventListener("paste", function (e) {
     var items = e.clipboardData && e.clipboardData.files;
-    if (items && items.length) { e.preventDefault(); stageFiles(items); }
+    if (items && items.length) {
+      e.preventDefault();
+      stageFiles(items);
+    }
   });
-  pill.addEventListener("click", function () { if (picker.hidden) openPicker(); else closePicker(); });
+  pill.addEventListener("click", function () {
+    if (picker.hidden) openPicker();
+    else closePicker();
+  });
   document.addEventListener("click", function (e) {
-    if (!picker.hidden && !picker.contains(e.target) && e.target !== pill && !pill.contains(e.target)) closePicker();
+    if (
+      !picker.hidden &&
+      !picker.contains(e.target) &&
+      e.target !== pill &&
+      !pill.contains(e.target)
+    )
+      closePicker();
   });
-  document.addEventListener("keydown", function (e) { if (e.key === "Escape") closePicker(); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") closePicker();
+  });
   scroll.addEventListener("scroll", function () {
     atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;
     jump.style.display = atBottom ? "none" : "flex";
   });
-  jump.addEventListener("click", function () { atBottom = true; jump.style.display = "none"; scroll.scrollTop = scroll.scrollHeight; });
+  jump.addEventListener("click", function () {
+    atBottom = true;
+    jump.style.display = "none";
+    scroll.scrollTop = scroll.scrollHeight;
+  });
   // Keep the view pinned to the bottom while `atBottom` as the thread grows —
   // opening a large conversation, async enrich (code/math), and images all add
   // height AFTER the last scroll, which otherwise leaves us short of the end.
   if (window.ResizeObserver) {
-    new ResizeObserver(function () { if (atBottom) scroll.scrollTop = scroll.scrollHeight; }).observe(thread);
+    new ResizeObserver(function () {
+      if (atBottom) scroll.scrollTop = scroll.scrollHeight;
+    }).observe(thread);
   }
 
   // ---- boot --------------------------------------------------------------
@@ -1513,14 +2044,19 @@ import {
     // so the header breadcrumb reads "Project / …" rather than a bare caret.
     if (pendingProject) {
       fetch("/api/projects/" + encodeURIComponent(pendingProject))
-        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (r) {
+          return r.ok ? r.json() : null;
+        })
         .then(function (d) {
           // `pendingProject` is still set only while the new chat is unfiled; if
           // it's been cleared (first message filed it), leave the header alone.
           if (!d || !d.project || !pendingProject) return;
           pendingProjectName = d.project.name;
           var cur = title.querySelector(".crumbtitle");
-          setHeader(cur ? cur.textContent : "New conversation", { id: pendingProject, name: pendingProjectName });
+          setHeader(cur ? cur.textContent : "New conversation", {
+            id: pendingProject,
+            name: pendingProjectName,
+          });
         })
         .catch(function () {});
     }
@@ -1528,7 +2064,9 @@ import {
     if (params.has("new")) {
       newConversation("replace");
     } else if (wantId) {
-      var c = conversations.find(function (x) { return x.id === wantId; });
+      var c = conversations.find(function (x) {
+        return x.id === wantId;
+      });
       selectConversation(wantId, c ? c.title : null, "replace");
     } else {
       newConversation("replace"); // land on a fresh chat, not the last conversation

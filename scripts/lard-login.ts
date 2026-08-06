@@ -6,13 +6,17 @@
  *
  *   bun run lard-login [--sub <sub>]
  */
+
+import { deviceLogin, LOCAL_SUB, lardEnabled } from "../src/lard";
 import { Store } from "../src/store";
-import { deviceLogin, lardEnabled, LOCAL_SUB } from "../src/lard";
 
 const args = process.argv.slice(2);
 const i = args.indexOf("--sub");
 const sub = i >= 0 ? args[i + 1] : LOCAL_SUB;
-if (!sub) { console.error("--sub needs a value"); process.exit(1); }
+if (!sub) {
+  console.error("--sub needs a value");
+  process.exit(1);
+}
 
 if (!lardEnabled()) {
   console.error("lard is not enabled — set lard.enabled and lard.baseUrl in kloe.json first.");

@@ -1,23 +1,28 @@
 import { randomUUID } from "node:crypto";
 import type { ModelMessage } from "ai";
-import { Store } from "./store";
+import type { BlobStore } from "./blobs";
 import {
+  ATTACHMENT_INLINE_TEXT_MAX,
+  BATCH_FLUSH_MS,
+  BATCH_MAX_DELTAS,
+  TOOL_OUTPUT_MAX,
+} from "./config";
+import {
+  type AttachmentRef,
   Event,
-  makeId,
   type EventData,
   type EventName,
-  type TokenUsage,
-  type AttachmentRef,
-  type UserMessageData,
-  type TextDeltaData,
+  makeId,
   type ReasoningDeltaData,
   type ReasoningSignatureData,
+  type TextDeltaData,
+  type TokenUsage,
   type ToolCallData,
   type ToolResultData,
+  type UserMessageData,
 } from "./events";
 import { truncateUtf8 } from "./sse";
-import { BATCH_FLUSH_MS, BATCH_MAX_DELTAS, ATTACHMENT_INLINE_TEXT_MAX, TOOL_OUTPUT_MAX } from "./config";
-import type { BlobStore } from "./blobs";
+import type { Store } from "./store";
 
 /** A user-message content part while building model messages. */
 type UserPart =
@@ -45,7 +50,11 @@ function isTextLike(mime: string): boolean {
 /** A tool-call part in a reconstructed assistant message. */
 type ToolCallPart = { type: "tool-call"; toolCallId: string; toolName: string; input: unknown };
 /** A signed reasoning block echoed back on replay (Anthropic thinking). */
-type ReasoningPart = { type: "reasoning"; text: string; providerOptions: Record<string, Record<string, unknown>> };
+type ReasoningPart = {
+  type: "reasoning";
+  text: string;
+  providerOptions: Record<string, Record<string, unknown>>;
+};
 /** An assistant message's content while folding: reasoning + text + tool calls. */
 type AsstPart = ReasoningPart | { type: "text"; text: string } | ToolCallPart;
 
@@ -61,14 +70,19 @@ function capToolOutput(output: unknown): unknown {
     s.slice(0, TOOL_OUTPUT_MAX) + `\n…[truncated, ${s.length} chars total]`;
   if (typeof output === "string") return output.length > TOOL_OUTPUT_MAX ? note(output) : output;
   let json: string;
-  try { json = JSON.stringify(output); } catch { return output; }
+  try {
+    json = JSON.stringify(output);
+  } catch {
+    return output;
+  }
   return json.length > TOOL_OUTPUT_MAX ? note(json) : output;
 }
 
 /** Wraps a logged tool output in the AI SDK's typed tool-result output shape. */
 function toolOutput(output: unknown, isError?: boolean) {
   const text = typeof output === "string";
-  if (isError) return text ? { type: "error-text", value: output } : { type: "error-json", value: output };
+  if (isError)
+    return text ? { type: "error-text", value: output } : { type: "error-json", value: output };
   return text ? { type: "text", value: output } : { type: "json", value: output };
 }
 
@@ -304,7 +318,8 @@ export class ConversationActor {
     for (const e of this.store.replay(this.conversationId, 0)) {
       if (e.event === Event.ToolCall) callIds.add((e.data as ToolCallData).toolCallId);
       else if (e.event === Event.ToolResult) resultIds.add((e.data as ToolResultData).toolCallId);
-      else if (e.event === Event.ReasoningSig) signedMsgs.add((e.data as ReasoningSignatureData).messageId);
+      else if (e.event === Event.ReasoningSig)
+        signedMsgs.add((e.data as ReasoningSignatureData).messageId);
     }
     const paired = new Set([...callIds].filter((id) => resultIds.has(id)));
 
@@ -316,7 +331,12 @@ export class ConversationActor {
     // block's reasoning-signature event lands). Emitted as a part only if signed.
     let asstReasoning = "";
     let asstReasoningSig: Record<string, Record<string, unknown>> | null = null;
-    let toolResults: Array<{ type: "tool-result"; toolCallId: string; toolName: string; output: unknown }> = [];
+    let toolResults: Array<{
+      type: "tool-result";
+      toolCallId: string;
+      toolName: string;
+      output: unknown;
+    }> = [];
 
     const flushUser = (): void => {
       const parts = userParts;
@@ -334,21 +354,31 @@ export class ConversationActor {
     // each block is considered once.
     const flushReasoningPart = (): void => {
       if (asstReasoning.length > 0 && asstReasoningSig) {
-        asstParts.push({ type: "reasoning", text: asstReasoning, providerOptions: asstReasoningSig });
+        asstParts.push({
+          type: "reasoning",
+          text: asstReasoning,
+          providerOptions: asstReasoningSig,
+        });
       }
       asstReasoning = "";
       asstReasoningSig = null;
     };
     const pushAsstText = (): void => {
       flushReasoningPart(); // a signed thinking block sits before the answer text
-      if (asstText.length > 0) { asstParts.push({ type: "text", text: asstText }); asstText = ""; }
+      if (asstText.length > 0) {
+        asstParts.push({ type: "text", text: asstText });
+        asstText = "";
+      }
     };
     const flushAsst = (): void => {
       pushAsstText();
       if (asstParts.length === 0) return;
       // Text-only collapses to a string (the prior shape); a tool call makes it an array.
       if (asstParts.every((p) => p.type === "text")) {
-        out.push({ role: "assistant", content: (asstParts as Array<{ text: string }>).map((p) => p.text).join("\n\n") });
+        out.push({
+          role: "assistant",
+          content: (asstParts as Array<{ text: string }>).map((p) => p.text).join("\n\n"),
+        });
       } else {
         out.push({ role: "assistant", content: asstParts } as ModelMessage);
       }
@@ -386,7 +416,12 @@ export class ConversationActor {
         const d = e.data as ToolCallData;
         if (paired.has(d.toolCallId)) {
           pushAsstText();
-          asstParts.push({ type: "tool-call", toolCallId: d.toolCallId, toolName: d.toolName, input: d.input });
+          asstParts.push({
+            type: "tool-call",
+            toolCallId: d.toolCallId,
+            toolName: d.toolName,
+            input: d.input,
+          });
         }
       } else if (e.event === Event.ToolResult) {
         flushUser();
@@ -394,7 +429,9 @@ export class ConversationActor {
         if (paired.has(d.toolCallId)) {
           flushAsst(); // close the assistant step (text + calls) before its results
           toolResults.push({
-            type: "tool-result", toolCallId: d.toolCallId, toolName: d.toolName,
+            type: "tool-result",
+            toolCallId: d.toolCallId,
+            toolName: d.toolName,
             output: toolOutput(d.output, d.isError),
           });
         }
@@ -418,11 +455,20 @@ export class ConversationActor {
     const isImage = a.kind === "image" || a.mime.startsWith("image/");
     if (isImage && opts.supportsImages && opts.blobs) {
       const blob = await opts.blobs.get(a.sha256);
-      if (blob) return { type: "file", data: new Uint8Array(await blob.arrayBuffer()), mediaType: a.mime };
+      if (blob)
+        return { type: "file", data: new Uint8Array(await blob.arrayBuffer()), mediaType: a.mime };
     }
-    if (isTextLike(a.mime) && opts.blobs && (size === undefined || size <= ATTACHMENT_INLINE_TEXT_MAX)) {
+    if (
+      isTextLike(a.mime) &&
+      opts.blobs &&
+      (size === undefined || size <= ATTACHMENT_INLINE_TEXT_MAX)
+    ) {
       const blob = await opts.blobs.get(a.sha256);
-      if (blob) return { type: "text", text: `Attached file ${a.name}:\n\n\`\`\`\n${await blob.text()}\n\`\`\`` };
+      if (blob)
+        return {
+          type: "text",
+          text: `Attached file ${a.name}:\n\n\`\`\`\n${await blob.text()}\n\`\`\``,
+        };
     }
     const sz = size !== undefined ? `, ${size} bytes` : "";
     // TODO(sandbox): the `inputs/<name>` path is naive — two different files
@@ -580,7 +626,9 @@ export class ConversationActor {
           // signature (durable, so history() can echo it back on replay).
           flushReasoning();
           this.persist(Event.ReasoningSig, {
-            runId, threadId: this.conversationId, messageId,
+            runId,
+            threadId: this.conversationId,
+            messageId,
             providerOptions: step.providerOptions,
           });
         } else if (step.kind === "tool-call") {
@@ -595,14 +643,22 @@ export class ConversationActor {
           flushReasoning();
           flushDelta();
           this.persist(Event.ToolCall, {
-            runId, threadId: this.conversationId, messageId,
-            toolCallId: step.toolCallId, toolName: step.toolName, input: step.input,
+            runId,
+            threadId: this.conversationId,
+            messageId,
+            toolCallId: step.toolCallId,
+            toolName: step.toolName,
+            input: step.input,
           });
         } else if (step.kind === "tool-result") {
           this.persist(Event.ToolResult, {
-            runId, threadId: this.conversationId, messageId,
-            toolCallId: step.toolCallId, toolName: step.toolName,
-            output: capToolOutput(step.output), isError: step.isError,
+            runId,
+            threadId: this.conversationId,
+            messageId,
+            toolCallId: step.toolCallId,
+            toolName: step.toolName,
+            output: capToolOutput(step.output),
+            isError: step.isError,
           });
         } else if (step.kind === "usage") {
           usage = step.usage;
@@ -629,18 +685,21 @@ export class ConversationActor {
 
     flushReasoning();
     flushDelta();
-    const finish = errored
-      ? "error"
-      : this.isCancelled()
-        ? "aborted"
-        : "stop";
+    const finish = errored ? "error" : this.isCancelled() ? "aborted" : "stop";
     if (finish === "aborted") {
       this.persist(Event.Cancelled, { runId, threadId: this.conversationId });
     }
     // Reasoning time = start-of-generation → first answer token (or end, if the
     // model reasoned but never produced an answer). Only when it reasoned.
     const reasoningMs = sawReasoning ? (firstTextAt || Date.now()) - genStart : undefined;
-    this.persist(Event.MsgEnd, { runId, threadId: this.conversationId, messageId, finishReason: finish, usage, reasoningMs });
+    this.persist(Event.MsgEnd, {
+      runId,
+      threadId: this.conversationId,
+      messageId,
+      finishReason: finish,
+      usage,
+      reasoningMs,
+    });
     this.currentRunId = null;
   }
 }

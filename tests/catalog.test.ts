@@ -1,9 +1,9 @@
-import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Catalog, loadCatalog } from "../src/catalog";
-import { initInference, getRegistry } from "../src/inference";
+import { getRegistry, initInference } from "../src/inference";
 
 const RAW = [
   {

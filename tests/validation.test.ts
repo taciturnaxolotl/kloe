@@ -1,6 +1,6 @@
-import { test, expect } from "bun:test";
+import { expect, test } from "bun:test";
+import { ModelPatchBody, PromptBody } from "../src/schemas";
 import { validate, withBody } from "../src/validate";
-import { PromptBody, ModelPatchBody } from "../src/schemas";
 
 test("validate accepts a well-formed prompt body and infers the type", async () => {
   const r = await validate(PromptBody, { content: "hi", model: "openai/gpt-4" });
@@ -41,7 +41,12 @@ test("ModelPatchBody allows partial fields and an explicit null displayName", as
 
 // --- withBody: the Bun per-method route wrapper -------------------------------
 function fakeReq(body: unknown, badJson = false) {
-  return { json: async () => { if (badJson) throw new Error("bad json"); return body; } };
+  return {
+    json: async () => {
+      if (badJson) throw new Error("bad json");
+      return body;
+    },
+  };
 }
 
 test("withBody passes validated, typed data to the handler (200)", async () => {
@@ -59,7 +64,10 @@ test("withBody returns 400 on unparseable JSON", async () => {
 
 test("withBody returns 422 and does NOT call the handler on a schema failure", async () => {
   let called = false;
-  const handler = withBody(PromptBody, () => { called = true; return new Response("x"); });
+  const handler = withBody(PromptBody, () => {
+    called = true;
+    return new Response("x");
+  });
   const res = await handler(fakeReq({ content: "hi" })); // no model
   expect(res.status).toBe(422);
   expect(called).toBe(false);

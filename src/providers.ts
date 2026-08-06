@@ -1,6 +1,6 @@
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
+import { createOpenAI } from "@ai-sdk/openai";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModel } from "ai";
 import type { Catalog, CatalogModel, ProviderType } from "./catalog";
 import { parseModel } from "./catalog";
@@ -137,10 +137,7 @@ export class ProviderRegistry {
   private readonly inline = new Map<string, InlineProvider>();
   private readonly fetchImpl?: typeof fetch;
 
-  constructor(
-    catalog: Catalog,
-    opts: { config?: OpsFile; fetchImpl?: typeof fetch } = {},
-  ) {
+  constructor(catalog: Catalog, opts: { config?: OpsFile; fetchImpl?: typeof fetch } = {}) {
     this.catalog = catalog;
     this.fetchImpl = opts.fetchImpl;
     // Providers come pre-loaded and validated from settings (kloe.json); the
@@ -207,10 +204,7 @@ export class ProviderRegistry {
           inline.needsDiscovery = false;
           // Explicit inline entries win; discovered models append after.
           const known = new Set(inline.models.map((m) => m.id));
-          inline.models = [
-            ...inline.models,
-            ...discovered.filter((m) => !known.has(m.id)),
-          ];
+          inline.models = [...inline.models, ...discovered.filter((m) => !known.has(m.id))];
           if (inline.models.length === 0) {
             console.warn(
               `discover: provider "${id}" yielded no models; it stays enabled but resolves nothing`,
@@ -241,8 +235,7 @@ export class ProviderRegistry {
   listModels(): ModelInfo[] {
     const out: ModelInfo[] = [ECHO_MODEL];
     for (const id of this.configs.keys()) {
-      const models =
-        this.catalog.getProvider(id)?.models ?? this.inline.get(id)?.models ?? [];
+      const models = this.catalog.getProvider(id)?.models ?? this.inline.get(id)?.models ?? [];
       for (const m of models) {
         out.push({
           ref: `${id}/${m.id}`,
@@ -273,9 +266,7 @@ export class ProviderRegistry {
 
     const slash = modelRef.indexOf("/");
     if (slash <= 0 || slash === modelRef.length - 1) {
-      throw new Error(
-        `model ref must be "provider/model", got "${modelRef}"`,
-      );
+      throw new Error(`model ref must be "provider/model", got "${modelRef}"`);
     }
     const providerId = modelRef.slice(0, slash);
     const modelId = modelRef.slice(slash + 1);
@@ -317,8 +308,7 @@ export class ProviderRegistry {
     }
     // Inline providers are required (at construction) to have an apiEndpoint,
     // so it always wins here via config.apiEndpoint.
-    const baseURL =
-      resolveRef(config.apiEndpoint) ?? resolveRef(catProvider?.apiEndpoint);
+    const baseURL = resolveRef(config.apiEndpoint) ?? resolveRef(catProvider?.apiEndpoint);
 
     const cached = this.factories.get(providerId);
     if (cached && cached.apiKey === apiKey && cached.baseURL === baseURL) {

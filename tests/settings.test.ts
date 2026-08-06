@@ -1,8 +1,8 @@
-import { test, expect } from "bun:test";
+import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadConfig, resolveRef, interpolate } from "../src/settings";
+import { join } from "node:path";
+import { interpolate, loadConfig, resolveRef } from "../src/settings";
 
 /** Writes a kloe.json into a fresh tmp dir and returns its path. */
 function writeConfig(obj: unknown): string {

@@ -1,8 +1,8 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { getConfig } from "./settings";
 import type { AttachmentRef } from "./events";
+import { getConfig } from "./settings";
 
 export interface JobRow {
   id: string;
@@ -145,8 +145,7 @@ export interface ConversationSearchResult extends ConversationSummary {
 // as a WHERE by listConversations). `last_activity` is the newest event time,
 // falling back to createdAt; the LEFT JOIN carries the project name for the
 // header breadcrumb.
-const LIST_CONVERSATIONS_SELECT =
-  `SELECT c.id AS id, c.created_at AS created_at, c.last_seq AS last_seq, c.custom_title AS custom_title,
+const LIST_CONVERSATIONS_SELECT = `SELECT c.id AS id, c.created_at AS created_at, c.last_seq AS last_seq, c.custom_title AS custom_title,
           c.owner_sub AS owner_sub, c.project_id AS project_id, p.name AS project_name,
           (SELECT e.data FROM events e
            WHERE e.conversation_id = c.id AND e.event = 'user-message'
@@ -183,8 +182,13 @@ function rowToSummary(r: ConversationRow): ConversationSummary {
     }
   }
   return {
-    id: r.id, createdAt: r.created_at, updatedAt: r.last_activity, lastSeq: r.last_seq, title,
-    projectId: r.project_id ?? null, projectName: r.project_name ?? null,
+    id: r.id,
+    createdAt: r.created_at,
+    updatedAt: r.last_activity,
+    lastSeq: r.last_seq,
+    title,
+    projectId: r.project_id ?? null,
+    projectName: r.project_name ?? null,
   };
 }
 
@@ -370,7 +374,6 @@ export class Store {
   readonly db: Database;
   private readStmt: ReturnType<Database["prepare"]>;
   private insertEventStmt: ReturnType<Database["prepare"]>;
-  private insertConversationStmt: ReturnType<Database["prepare"]>;
   private upsertConversationStmt: ReturnType<Database["prepare"]>;
   private enqueueStmt: ReturnType<Database["prepare"]>;
   private claimExclusiveStmt: ReturnType<Database["prepare"]>;
@@ -431,7 +434,9 @@ export class Store {
     // Index the foreign key so the gallery's per-project chat COUNT, the
     // project-detail chat list, and unfiling on delete don't scan every
     // conversation. Created after the ALTER so the column exists.
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations (project_id)");
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations (project_id)",
+    );
 
     this.readStmt = this.db.prepare(
       `SELECT seq, event, data FROM events
@@ -440,9 +445,6 @@ export class Store {
     this.insertEventStmt = this.db.prepare(
       `INSERT INTO events (id, conversation_id, seq, event, data, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
-    );
-    this.insertConversationStmt = this.db.prepare(
-      `INSERT INTO conversations (id, created_at) VALUES (?, ?)`,
     );
     this.upsertConversationStmt = this.db.prepare(
       `INSERT INTO conversations (id, created_at, last_seq) VALUES (?, ?, ?)
@@ -488,9 +490,7 @@ export class Store {
     this.requeueStmt = this.db.prepare(
       `UPDATE jobs SET status = 'queued', lease_until = 0 WHERE id = ?`,
     );
-    this.finishStmt = this.db.prepare(
-      `UPDATE jobs SET status = ?, lease_until = 0 WHERE id = ?`,
-    );
+    this.finishStmt = this.db.prepare(`UPDATE jobs SET status = ?, lease_until = 0 WHERE id = ?`);
 
     // Full-text-ish search over titles AND message contents: a conversation
     // matches when any user-message content or assistant text-delta LIKEs the
@@ -593,9 +593,16 @@ export class Store {
     // and — for a project's chat list — its project) just to drop most of them.
     const where: string[] = [];
     const binds: string[] = [];
-    if (owner) { where.push("c.owner_sub = ?"); binds.push(owner); }
-    if (projectId !== undefined) { where.push("c.project_id = ?"); binds.push(projectId); }
-    const sql = LIST_CONVERSATIONS_SELECT +
+    if (owner) {
+      where.push("c.owner_sub = ?");
+      binds.push(owner);
+    }
+    if (projectId !== undefined) {
+      where.push("c.project_id = ?");
+      binds.push(projectId);
+    }
+    const sql =
+      LIST_CONVERSATIONS_SELECT +
       (where.length ? " WHERE " + where.join(" AND ") : "") +
       " ORDER BY last_activity DESC";
     return (this.db.query(sql).all(...binds) as ConversationRow[]).map(rowToSummary);
@@ -614,7 +621,10 @@ export class Store {
     >;
     return rows
       .filter((r) => !owner || r.owner_sub === owner)
-      .map((r) => ({ ...rowToSummary(r), snippet: r.match_text ? snippetAround(r.match_text, query) : null }));
+      .map((r) => ({
+        ...rowToSummary(r),
+        snippet: r.match_text ? snippetAround(r.match_text, query) : null,
+      }));
   }
 
   /** Sets a conversation's custom title (empty/whitespace clears it back to the derived one). */
@@ -627,17 +637,25 @@ export class Store {
 
   /** Whether the conversation has a title set (generated or user rename). */
   hasCustomTitle(id: string): boolean {
-    const r = this.db.prepare("SELECT custom_title FROM conversations WHERE id = ?").get(id) as { custom_title: string | null } | null;
+    const r = this.db.prepare("SELECT custom_title FROM conversations WHERE id = ?").get(id) as {
+      custom_title: string | null;
+    } | null;
     return !!(r && r.custom_title && r.custom_title.trim());
   }
 
   /** The first user message's text, for deriving a title. */
   firstUserMessage(id: string): string | null {
     const r = this.db
-      .prepare("SELECT data FROM events WHERE conversation_id = ? AND event = 'user-message' ORDER BY seq ASC LIMIT 1")
+      .prepare(
+        "SELECT data FROM events WHERE conversation_id = ? AND event = 'user-message' ORDER BY seq ASC LIMIT 1",
+      )
       .get(id) as { data: string } | null;
     if (!r) return null;
-    try { return (JSON.parse(r.data) as { content?: string }).content ?? null; } catch { return null; }
+    try {
+      return (JSON.parse(r.data) as { content?: string }).content ?? null;
+    } catch {
+      return null;
+    }
   }
 
   /** Set the title only if none is set yet (auto-title never clobbers a rename).
@@ -646,7 +664,9 @@ export class Store {
     const t = title.trim();
     if (!t) return false;
     const r = this.db
-      .prepare("UPDATE conversations SET custom_title = ? WHERE id = ? AND (custom_title IS NULL OR custom_title = '')")
+      .prepare(
+        "UPDATE conversations SET custom_title = ? WHERE id = ? AND (custom_title IS NULL OR custom_title = '')",
+      )
       .run(t, id);
     return r.changes > 0;
   }
@@ -687,12 +707,7 @@ export class Store {
   }
 
   setModelSetting(s: ModelSetting): void {
-    this.upsertSettingStmt.run(
-      s.ref,
-      s.visible ? 1 : 0,
-      s.displayName,
-      s.sortOrder,
-    );
+    this.upsertSettingStmt.run(s.ref, s.visible ? 1 : 0, s.displayName, s.sortOrder);
   }
 
   /**
@@ -739,15 +754,20 @@ export class Store {
 
   /** The session for a cookie id, or undefined if missing/expired (expired rows are dropped). */
   getSession(id: string): Session | undefined {
-    const row = this.db.query("SELECT sub, data, expires_at FROM sessions WHERE id = ?").get(id) as
-      | { sub: string; data: string; expires_at: number }
-      | null;
+    const row = this.db
+      .query("SELECT sub, data, expires_at FROM sessions WHERE id = ?")
+      .get(id) as { sub: string; data: string; expires_at: number } | null;
     if (!row) return undefined;
     if (row.expires_at <= Date.now()) {
       this.deleteSession(id);
       return undefined;
     }
-    return { id, sub: row.sub, expiresAt: row.expires_at, profile: JSON.parse(row.data) as SessionProfile };
+    return {
+      id,
+      sub: row.sub,
+      expiresAt: row.expires_at,
+      profile: JSON.parse(row.data) as SessionProfile,
+    };
   }
 
   deleteSession(id: string): void {
@@ -763,9 +783,17 @@ export class Store {
   getLardToken(sub: string): LardToken | undefined {
     const row = this.db
       .query("SELECT access_token, refresh_token, expires_at FROM lard_tokens WHERE sub = ?")
-      .get(sub) as { access_token: string; refresh_token: string | null; expires_at: number } | null;
+      .get(sub) as {
+      access_token: string;
+      refresh_token: string | null;
+      expires_at: number;
+    } | null;
     if (!row) return undefined;
-    return { accessToken: row.access_token, refreshToken: row.refresh_token ?? undefined, expiresAt: row.expires_at };
+    return {
+      accessToken: row.access_token,
+      refreshToken: row.refresh_token ?? undefined,
+      expiresAt: row.expires_at,
+    };
   }
 
   setLardToken(sub: string, tok: LardToken): void {
@@ -787,33 +815,62 @@ export class Store {
   /** Stamp who started a conversation, first writer wins (no-op without a sub). */
   setConversationOwner(id: string, sub: string | undefined): void {
     if (!sub) return;
-    this.db.query("UPDATE conversations SET owner_sub = ? WHERE id = ? AND owner_sub IS NULL").run(sub, id);
+    this.db
+      .query("UPDATE conversations SET owner_sub = ? WHERE id = ? AND owner_sub IS NULL")
+      .run(sub, id);
   }
 
   /** The kloe user `sub` that owns a conversation, or undefined (auth-off / legacy). */
   getConversationOwner(id: string): string | undefined {
-    const row = this.db.query("SELECT owner_sub FROM conversations WHERE id = ?").get(id) as { owner_sub: string | null } | null;
+    const row = this.db.query("SELECT owner_sub FROM conversations WHERE id = ?").get(id) as {
+      owner_sub: string | null;
+    } | null;
     return row?.owner_sub ?? undefined;
   }
 
   // ---- projects ----------------------------------------------------------
-  createProject(id: string, name: string, description: string | undefined, owner: string | undefined): void {
+  createProject(
+    id: string,
+    name: string,
+    description: string | undefined,
+    owner: string | undefined,
+  ): void {
     const now = Date.now();
     this.db
-      .query("INSERT INTO projects (id, name, description, owner_sub, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .query(
+        "INSERT INTO projects (id, name, description, owner_sub, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+      )
       .run(id, name, description ?? null, owner ?? null, now, now);
   }
 
   getProject(id: string): Project | undefined {
     const r = this.db
-      .query("SELECT id, name, description, lard_project, created_at, updated_at FROM projects WHERE id = ?")
-      .get(id) as { id: string; name: string; description: string | null; lard_project: string | null; created_at: number; updated_at: number } | null;
+      .query(
+        "SELECT id, name, description, lard_project, created_at, updated_at FROM projects WHERE id = ?",
+      )
+      .get(id) as {
+      id: string;
+      name: string;
+      description: string | null;
+      lard_project: string | null;
+      created_at: number;
+      updated_at: number;
+    } | null;
     if (!r) return undefined;
-    return { id: r.id, name: r.name, description: r.description ?? undefined, lardProject: r.lard_project ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at };
+    return {
+      id: r.id,
+      name: r.name,
+      description: r.description ?? undefined,
+      lardProject: r.lard_project ?? undefined,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    };
   }
 
   getProjectOwner(id: string): string | undefined {
-    const r = this.db.query("SELECT owner_sub FROM projects WHERE id = ?").get(id) as { owner_sub: string | null } | null;
+    const r = this.db.query("SELECT owner_sub FROM projects WHERE id = ?").get(id) as {
+      owner_sub: string | null;
+    } | null;
     return r?.owner_sub ?? undefined;
   }
 
@@ -825,21 +882,52 @@ export class Store {
                 (SELECT COUNT(*) FROM conversations c WHERE c.project_id = p.id) AS chat_count
          FROM projects p ORDER BY p.updated_at DESC`,
       )
-      .all() as Array<{ id: string; name: string; description: string | null; lard_project: string | null; owner_sub: string | null; created_at: number; updated_at: number; chat_count: number }>;
+      .all() as Array<{
+      id: string;
+      name: string;
+      description: string | null;
+      lard_project: string | null;
+      owner_sub: string | null;
+      created_at: number;
+      updated_at: number;
+      chat_count: number;
+    }>;
     return rows
       .filter((r) => !owner || r.owner_sub === owner)
-      .map((r) => ({ id: r.id, name: r.name, description: r.description ?? undefined, lardProject: r.lard_project ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at, chatCount: r.chat_count }));
+      .map((r) => ({
+        id: r.id,
+        name: r.name,
+        description: r.description ?? undefined,
+        lardProject: r.lard_project ?? undefined,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+        chatCount: r.chat_count,
+      }));
   }
 
-  updateProject(id: string, fields: { name?: string; description?: string | null; lardProject?: string | null }): void {
+  updateProject(
+    id: string,
+    fields: { name?: string; description?: string | null; lardProject?: string | null },
+  ): void {
     const sets: string[] = [];
     const vals: Array<string | null> = [];
-    if (fields.name !== undefined) { sets.push("name = ?"); vals.push(fields.name); }
-    if (fields.description !== undefined) { sets.push("description = ?"); vals.push(fields.description); }
-    if (fields.lardProject !== undefined) { sets.push("lard_project = ?"); vals.push(fields.lardProject); }
+    if (fields.name !== undefined) {
+      sets.push("name = ?");
+      vals.push(fields.name);
+    }
+    if (fields.description !== undefined) {
+      sets.push("description = ?");
+      vals.push(fields.description);
+    }
+    if (fields.lardProject !== undefined) {
+      sets.push("lard_project = ?");
+      vals.push(fields.lardProject);
+    }
     if (!sets.length) return;
     sets.push("updated_at = ?");
-    this.db.query(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`).run(...vals, Date.now(), id);
+    this.db
+      .query(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`)
+      .run(...vals, Date.now(), id);
   }
 
   /** Bump a project's updated_at (e.g. when one of its chats gets a new message). */
@@ -853,31 +941,50 @@ export class Store {
   }
 
   setConversationProject(conversationId: string, projectId: string | null): void {
-    this.db.query("UPDATE conversations SET project_id = ? WHERE id = ?").run(projectId, conversationId);
+    this.db
+      .query("UPDATE conversations SET project_id = ? WHERE id = ?")
+      .run(projectId, conversationId);
   }
 
   getConversationProject(conversationId: string): string | undefined {
-    const r = this.db.query("SELECT project_id FROM conversations WHERE id = ?").get(conversationId) as { project_id: string | null } | null;
+    const r = this.db
+      .query("SELECT project_id FROM conversations WHERE id = ?")
+      .get(conversationId) as { project_id: string | null } | null;
     return r?.project_id ?? undefined;
   }
 
   // ---- project context files ---------------------------------------------
   addProjectContext(id: string, projectId: string, filename: string, body: string): void {
-    this.db.query("INSERT INTO project_context (id, project_id, filename, body, created_at) VALUES (?, ?, ?, ?, ?)")
+    this.db
+      .query(
+        "INSERT INTO project_context (id, project_id, filename, body, created_at) VALUES (?, ?, ?, ?, ?)",
+      )
       .run(id, projectId, filename, body, Date.now());
     this.touchProject(projectId);
   }
 
   /** A project's context files (metadata only — line/char counts, no body). */
   listProjectContext(projectId: string): ContextFileMeta[] {
-    const rows = this.db.query("SELECT id, filename, body, created_at FROM project_context WHERE project_id = ? ORDER BY created_at DESC")
+    const rows = this.db
+      .query(
+        "SELECT id, filename, body, created_at FROM project_context WHERE project_id = ? ORDER BY created_at DESC",
+      )
       .all(projectId) as Array<{ id: string; filename: string; body: string; created_at: number }>;
-    return rows.map((r) => ({ id: r.id, filename: r.filename, lines: r.body.split("\n").length, chars: r.body.length, createdAt: r.created_at }));
+    return rows.map((r) => ({
+      id: r.id,
+      filename: r.filename,
+      lines: r.body.split("\n").length,
+      chars: r.body.length,
+      createdAt: r.created_at,
+    }));
   }
 
   /** Full context files (with body) — for viewing and for prompt injection. */
   projectContextFiles(projectId: string): Array<{ id: string; filename: string; body: string }> {
-    return this.db.query("SELECT id, filename, body FROM project_context WHERE project_id = ? ORDER BY created_at ASC")
+    return this.db
+      .query(
+        "SELECT id, filename, body FROM project_context WHERE project_id = ? ORDER BY created_at ASC",
+      )
       .all(projectId) as Array<{ id: string; filename: string; body: string }>;
   }
 
@@ -895,12 +1002,7 @@ export class Store {
   }
 
   /** Atomic append + seq advance in one transaction. */
-  appendAndBump(
-    conversationId: string,
-    seq: number,
-    eventName: string,
-    data: unknown,
-  ): void {
+  appendAndBump(conversationId: string, seq: number, eventName: string, data: unknown): void {
     this.db.transaction(() => {
       const id = `${conversationId}:${seq}`;
       this.insertEventStmt.run(
@@ -935,9 +1037,13 @@ export class Store {
 
   /** Every event of a conversation with its wall-clock time — for folding a
    * conversation into a lard ingest session (needs per-turn timestamps). */
-  allEventsTimed(conversationId: string): Array<{ event: string; data: unknown; createdAt: number }> {
+  allEventsTimed(
+    conversationId: string,
+  ): Array<{ event: string; data: unknown; createdAt: number }> {
     const rows = this.db
-      .query("SELECT event, data, created_at FROM events WHERE conversation_id = ? ORDER BY seq ASC")
+      .query(
+        "SELECT event, data, created_at FROM events WHERE conversation_id = ? ORDER BY seq ASC",
+      )
       .all(conversationId) as Array<{ event: string; data: string; created_at: number }>;
     return rows.map((r) => ({ event: r.event, data: JSON.parse(r.data), createdAt: r.created_at }));
   }
@@ -999,7 +1105,11 @@ export class Store {
     for (const r of rows) {
       try {
         const d = JSON.parse(r.data) as Record<string, unknown>;
-        if (typeof d.runId === "string" && typeof d.content === "string" && typeof d.model === "string") {
+        if (
+          typeof d.runId === "string" &&
+          typeof d.content === "string" &&
+          typeof d.model === "string"
+        ) {
           const msg: PendingMessage = { runId: d.runId, content: d.content, model: d.model };
           if (Array.isArray(d.attachments)) msg.attachments = d.attachments as AttachmentRef[];
           out.push(msg);

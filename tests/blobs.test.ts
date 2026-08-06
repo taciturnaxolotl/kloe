@@ -1,8 +1,8 @@
-import { test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, rmSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { afterAll, beforeAll, expect, test } from "bun:test";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { FsBlobStore, S3BlobStore, createBlobStore } from "../src/blobs";
+import { join } from "node:path";
+import { createBlobStore, FsBlobStore, S3BlobStore } from "../src/blobs";
 
 let root: string;
 let blobs: FsBlobStore;
@@ -74,7 +74,12 @@ test("a malformed sha256 never touches the filesystem", async () => {
 // The backend value is validated at config load (see settings.test.ts), so the
 // factory just dispatches; it takes an explicit blobs-config so it's pure.
 test("createBlobStore builds the fs backend from config", () => {
-  const store = createBlobStore({ backend: "fs", path: root, maxBytes: 1, s3: { prefix: "blobs/" } });
+  const store = createBlobStore({
+    backend: "fs",
+    path: root,
+    maxBytes: 1,
+    s3: { prefix: "blobs/" },
+  });
   expect(store).toBeInstanceOf(FsBlobStore);
 });
 

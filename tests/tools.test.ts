@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { expect, test } from "bun:test";
 import type { ToolSet } from "ai";
 import { harden } from "../src/tools";
 
@@ -13,10 +13,14 @@ function run(tools: ToolSet): Promise<unknown> {
 }
 
 test("harden turns a thrown execute into a recoverable message, not a throw", async () => {
-  const tools = harden(toolset(async () => { throw new Error("upstream 400"); }));
+  const tools = harden(
+    toolset(async () => {
+      throw new Error("upstream 400");
+    }),
+  );
   const out = (await run(tools)) as string;
   expect(typeof out).toBe("string");
-  expect(out).toContain("\"t\"");
+  expect(out).toContain('"t"');
   expect(out).toContain("upstream 400");
   expect(out).toContain("not fatal");
 });

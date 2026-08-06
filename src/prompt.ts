@@ -46,9 +46,16 @@ function parseNodes(toks: Tok[], start: number): { nodes: Node[]; end: number } 
   let i = start;
   while (i < toks.length) {
     const tok = toks[i]!;
-    if (tok.t === "text") { nodes.push({ k: "text", v: tok.v }); i++; continue; }
+    if (tok.t === "text") {
+      nodes.push({ k: "text", v: tok.v });
+      i++;
+      continue;
+    }
     const a = tok.v;
-    if (a.startsWith("/*") || a === "") { i++; continue; } // comment / empty
+    if (a.startsWith("/*") || a === "") {
+      i++;
+      continue;
+    } // comment / empty
     if (a === "else" || a === "end") return { nodes, end: i };
     if (a.startsWith("if ")) {
       const cond = a.slice(3).trim();
@@ -60,6 +67,7 @@ function parseNodes(toks: Tok[], start: number): { nodes: Node[]; end: number } 
         alt = elseP.nodes;
         j = elseP.end;
       }
+      // biome-ignore lint/suspicious/noThenProperty: `then` is this if-node's then-branch, not a thenable
       nodes.push({ k: "if", cond, then: thenP.nodes, alt });
       i = j + 1; // skip the matching `end`
       continue;
@@ -71,7 +79,11 @@ function parseNodes(toks: Tok[], start: number): { nodes: Node[]; end: number } 
       i = bodyP.end + 1; // skip `end`
       continue;
     }
-    if (a.startsWith(".")) { nodes.push({ k: "var", path: a }); i++; continue; }
+    if (a.startsWith(".")) {
+      nodes.push({ k: "var", path: a });
+      i++;
+      continue;
+    }
     i++; // unknown action: ignore
   }
   return { nodes, end: i };
@@ -97,8 +109,11 @@ function render(nodes: Node[], dot: unknown): string {
   let out = "";
   for (const n of nodes) {
     if (n.k === "text") out += n.v;
-    else if (n.k === "var") { const v = resolve(n.path, dot); out += v == null ? "" : String(v); }
-    else if (n.k === "if") out += truthy(resolve(n.cond, dot)) ? render(n.then, dot) : render(n.alt, dot);
+    else if (n.k === "var") {
+      const v = resolve(n.path, dot);
+      out += v == null ? "" : String(v);
+    } else if (n.k === "if")
+      out += truthy(resolve(n.cond, dot)) ? render(n.then, dot) : render(n.alt, dot);
     else if (n.k === "range") {
       const list = resolve(n.path, dot);
       if (Array.isArray(list)) for (const item of list) out += render(n.body, item);
@@ -131,7 +146,10 @@ function templateNodes(path?: string): Node[] {
 /** A friendly, unambiguous date for the prompt: "Monday, August 4, 2026". */
 function formatDate(d: Date): string {
   return d.toLocaleDateString("en-US", {
-    weekday: "long", year: "numeric", month: "long", day: "numeric",
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
   });
 }
 
@@ -151,8 +169,11 @@ function toolsBlock(tools: ToolSet): string {
 function contextFiles(paths: string[]): Array<{ Path: string; Content: string }> {
   const out: Array<{ Path: string; Content: string }> = [];
   for (const p of paths) {
-    try { out.push({ Path: p, Content: readFileSync(p, "utf8").trimEnd() }); }
-    catch { /* a missing context file is skipped, not fatal */ }
+    try {
+      out.push({ Path: p, Content: readFileSync(p, "utf8").trimEnd() });
+    } catch {
+      /* a missing context file is skipped, not fatal */
+    }
   }
   return out;
 }
@@ -163,12 +184,17 @@ function contextFiles(paths: string[]): Array<{ Path: string; Content: string }>
  * only when there are tools to reach for).
  */
 export function buildSystemPrompt(opts: {
-  tools: ToolSet; now?: Date; memory?: string;
+  tools: ToolSet;
+  now?: Date;
+  memory?: string;
   /** Per-project context files, injected alongside the globally configured ones. */
   contextFiles?: Array<{ filename: string; body: string }>;
 }): string {
   const p = getConfig().prompt;
-  const projectFiles = (opts.contextFiles ?? []).map((f) => ({ Path: f.filename, Content: f.body }));
+  const projectFiles = (opts.contextFiles ?? []).map((f) => ({
+    Path: f.filename,
+    Content: f.body,
+  }));
   const data: Record<string, unknown> = {
     Memory: opts.memory?.trim() ?? "",
     Name: p.name,
@@ -185,5 +211,7 @@ export function buildSystemPrompt(opts: {
   };
   // Collapse the blank-line runs Go-style block actions leave behind (an
   // `{{if}}…{{end}}` that renders nothing still leaves its surrounding newlines).
-  return render(templateNodes(p.templatePath), data).replace(/\n{3,}/g, "\n\n").trim();
+  return render(templateNodes(p.templatePath), data)
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }

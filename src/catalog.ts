@@ -24,12 +24,7 @@ const DEFAULT_TIMEOUT_MS = 10_000;
  * a widened string because catwalk lists ~9 types; unknown ones fall back to
  * the OpenAI-compatible adapter.
  */
-export type ProviderType =
-  | "anthropic"
-  | "openai"
-  | "openai-compat"
-  | "openrouter"
-  | (string & {});
+export type ProviderType = "anthropic" | "openai" | "openai-compat" | "openrouter" | (string & {});
 
 export interface CatalogModel {
   id: string;
@@ -217,7 +212,9 @@ export async function loadCatalog(opts: LoadCatalogOptions = {}): Promise<Catalo
     writeCache(cachePath, raw);
     return catalog;
   } catch (err) {
-    console.warn(`catalog: live fetch failed (${(err as Error).message}); falling back to cache/seed`);
+    console.warn(
+      `catalog: live fetch failed (${(err as Error).message}); falling back to cache/seed`,
+    );
   }
 
   // 2. Disk cache from a previous successful fetch.
@@ -237,7 +234,5 @@ export async function loadCatalog(opts: LoadCatalogOptions = {}): Promise<Catalo
     return Catalog.fromRaw(seed);
   }
 
-  throw new Error(
-    "catalog unavailable: live fetch failed and no usable cache or seed found",
-  );
+  throw new Error("catalog unavailable: live fetch failed and no usable cache or seed found");
 }

@@ -1,11 +1,11 @@
-import { test, expect, beforeAll, afterAll } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Store } from "../src/store";
-import { FsBlobStore } from "../src/blobs";
+import { join } from "node:path";
 import { ConversationActor, type Subscriber, type WireEvent } from "../src/actor";
+import { FsBlobStore } from "../src/blobs";
 import { Event } from "../src/events";
+import { Store } from "../src/store";
 
 let store: Store;
 let dbPath: string;
@@ -51,7 +51,10 @@ test("a usage step is stamped onto the message-end event", async () => {
 
   const end = events.find((e) => e.event === Event.MsgEnd);
   expect(end).toBeDefined();
-  const data = end!.data as { finishReason: string; usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number } };
+  const data = end!.data as {
+    finishReason: string;
+    usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+  };
   expect(data.finishReason).toBe("stop");
   expect(data.usage).toEqual({ inputTokens: 12, outputTokens: 5, totalTokens: 17 });
 });
@@ -202,7 +205,12 @@ test("history: an image attachment becomes an image part when the model supports
 
   const msgs = await a.history({ blobs, supportsImages: true });
   expect(msgs).toHaveLength(1);
-  const parts = msgs[0]!.content as Array<{ type: string; text?: string; data?: Uint8Array; mediaType?: string }>;
+  const parts = msgs[0]!.content as Array<{
+    type: string;
+    text?: string;
+    data?: Uint8Array;
+    mediaType?: string;
+  }>;
   expect(parts[0]).toEqual({ type: "text", text: "look" });
   expect(parts[1]!.type).toBe("file"); // AI SDK file part with an image mediaType
   expect(parts[1]!.mediaType).toBe("image/png");
@@ -292,7 +300,12 @@ test("tool-call and tool-result steps persist as durable, ordered events", async
   await a.runText("rt", "mt", async function* (_signal) {
     yield { kind: "text", chunk: "let me search" };
     yield { kind: "tool-call", toolCallId: "c1", toolName: "web_search", input: { query: "kloe" } };
-    yield { kind: "tool-result", toolCallId: "c1", toolName: "web_search", output: { results: [{ title: "T", url: "u" }] } };
+    yield {
+      kind: "tool-result",
+      toolCallId: "c1",
+      toolName: "web_search",
+      output: { results: [{ title: "T", url: "u" }] },
+    };
     yield { kind: "text", chunk: "here's what I found" };
   });
   const names = events.map((e) => e.event);
@@ -302,13 +315,19 @@ test("tool-call and tool-result steps persist as durable, ordered events", async
   expect(names.indexOf(Event.TextDelta)).toBeLessThan(names.indexOf(Event.ToolCall));
   expect(names.indexOf(Event.ToolCall)).toBeLessThan(names.indexOf(Event.ToolResult));
 
-  const call = events.find((e) => e.event === Event.ToolCall)!.data as
-    { toolName: string; toolCallId: string; messageId: string; input: { query: string } };
+  const call = events.find((e) => e.event === Event.ToolCall)!.data as {
+    toolName: string;
+    toolCallId: string;
+    messageId: string;
+    input: { query: string };
+  };
   expect(call.toolName).toBe("web_search");
   expect(call.toolCallId).toBe("c1");
   expect(call.messageId).toBe("mt");
   expect(call.input.query).toBe("kloe");
-  const res = events.find((e) => e.event === Event.ToolResult)!.data as { output: { results: unknown[] } };
+  const res = events.find((e) => e.event === Event.ToolResult)!.data as {
+    output: { results: unknown[] };
+  };
   expect(res.output.results.length).toBe(1);
 });
 
@@ -318,7 +337,12 @@ test("history folds a tool turn into paired assistant/tool messages", async () =
   await a.runText("r", "m", async function* (_signal) {
     yield { kind: "text", chunk: "let me search" };
     yield { kind: "tool-call", toolCallId: "c1", toolName: "web_search", input: { query: "news" } };
-    yield { kind: "tool-result", toolCallId: "c1", toolName: "web_search", output: { results: [1] } };
+    yield {
+      kind: "tool-result",
+      toolCallId: "c1",
+      toolName: "web_search",
+      output: { results: [1] },
+    };
     yield { kind: "text", chunk: "here's what I found" };
   });
   expect(await a.history()).toEqual([
@@ -333,7 +357,12 @@ test("history folds a tool turn into paired assistant/tool messages", async () =
     {
       role: "tool",
       content: [
-        { type: "tool-result", toolCallId: "c1", toolName: "web_search", output: { type: "json", value: { results: [1] } } },
+        {
+          type: "tool-result",
+          toolCallId: "c1",
+          toolName: "web_search",
+          output: { type: "json", value: { results: [1] } },
+        },
       ],
     },
     { role: "assistant", content: "here's what I found" },
@@ -360,7 +389,13 @@ test("history wraps an errored tool result as error output", async () => {
   a.appendUser("q");
   await a.runText("r", "m", async function* (_signal) {
     yield { kind: "tool-call", toolCallId: "c1", toolName: "web_search", input: {} };
-    yield { kind: "tool-result", toolCallId: "c1", toolName: "web_search", output: "boom", isError: true };
+    yield {
+      kind: "tool-result",
+      toolCallId: "c1",
+      toolName: "web_search",
+      output: "boom",
+      isError: true,
+    };
     yield { kind: "text", chunk: "sorry, that failed" };
   });
   const h = await a.history();
@@ -378,7 +413,9 @@ test("an oversized tool output is truncated in the durable log", async () => {
     yield { kind: "text", chunk: "done" };
   });
   const h = await a.history();
-  const toolMsg = h.find((m) => m.role === "tool") as { content: Array<{ output: { value: string } }> };
+  const toolMsg = h.find((m) => m.role === "tool") as {
+    content: Array<{ output: { value: string } }>;
+  };
   const value = toolMsg.content[0]!.output.value;
   expect(value.length).toBeLessThan(big.length);
   expect(value).toContain("truncated");
@@ -398,9 +435,14 @@ test("history echoes a signed reasoning block back as a reasoning part before it
     yield { kind: "text", chunk: "answer" };
   });
   const h = await a.history();
-  const asst = h.find((m) => m.role === "assistant" && Array.isArray(m.content)) as
-    { content: Array<{ type: string; text?: string; providerOptions?: unknown; toolCallId?: string }> };
-  expect(asst.content[0]).toEqual({ type: "reasoning", text: "let me think", providerOptions: opts });
+  const asst = h.find((m) => m.role === "assistant" && Array.isArray(m.content)) as {
+    content: Array<{ type: string; text?: string; providerOptions?: unknown; toolCallId?: string }>;
+  };
+  expect(asst.content[0]).toEqual({
+    type: "reasoning",
+    text: "let me think",
+    providerOptions: opts,
+  });
   expect(asst.content[1]).toMatchObject({ type: "tool-call", toolCallId: "c1" });
 });
 
@@ -424,9 +466,19 @@ test("reclaim: completed tools stay paired in history; an in-flight one is dropp
   const a = new ConversationActor("t-reclaim", store);
   a.appendUser("do two things");
   await a.runText("r", "m", async function* (_signal) {
-    yield { kind: "tool-call", toolCallId: "A", toolName: "run_shell", input: { command: "echo a" } };
+    yield {
+      kind: "tool-call",
+      toolCallId: "A",
+      toolName: "run_shell",
+      input: { command: "echo a" },
+    };
     yield { kind: "tool-result", toolCallId: "A", toolName: "run_shell", output: "a done" };
-    yield { kind: "tool-call", toolCallId: "B", toolName: "run_shell", input: { command: "echo b" } };
+    yield {
+      kind: "tool-call",
+      toolCallId: "B",
+      toolName: "run_shell",
+      input: { command: "echo b" },
+    };
     // no result for B — the crash point
   });
 

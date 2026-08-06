@@ -8,9 +8,17 @@
  * quiet (see the debounce in drive.ts) — a live thread isn't worth extracting
  * from yet, and re-ingesting on every turn would be wasteful.
  */
-import { Event } from "./events";
+
 import type { UserMessageData } from "./events";
-import { ingest, lardConnected, lardEnabled, LOCAL_SUB, type IngestSession, type IngestTurn } from "./lard";
+import { Event } from "./events";
+import {
+  type IngestSession,
+  type IngestTurn,
+  ingest,
+  LOCAL_SUB,
+  lardConnected,
+  lardEnabled,
+} from "./lard";
 import { getConfig } from "./settings";
 import type { Store } from "./store";
 
@@ -28,7 +36,8 @@ export function buildSession(store: Store, conversationId: string): IngestSessio
   for (const e of events) {
     if (e.event !== Event.User) continue;
     const content = (e.data as UserMessageData).content ?? "";
-    if (content.trim()) turns.push({ index: turns.length, role: "user", content, ts: iso(e.createdAt) });
+    if (content.trim())
+      turns.push({ index: turns.length, role: "user", content, ts: iso(e.createdAt) });
   }
   if (!turns.length) return null;
 

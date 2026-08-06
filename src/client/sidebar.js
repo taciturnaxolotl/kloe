@@ -9,8 +9,8 @@
  * opens the Rename/Delete menu.
  */
 import { openChatMenu } from "./chatmenu.js";
-import { installSpeculation } from "./prefetch.js";
 import { CONV_ICON } from "./icons.js";
+import { installSpeculation } from "./prefetch.js";
 
 // The rail's static chrome (brand, nav links, footer) lives in each page's HTML
 // as an app shell, so it paints before app.js even downloads. mountSidebar just
@@ -33,24 +33,42 @@ var RECENTS = 8;
 // (the fetch still runs and re-renders — stale-while-revalidate).
 var CACHE_KEY = "kloe:recents";
 function readRecents() {
-  try { return JSON.parse(sessionStorage.getItem(CACHE_KEY) || "null"); } catch (_) { return null; }
+  try {
+    return JSON.parse(sessionStorage.getItem(CACHE_KEY) || "null");
+  } catch (_) {
+    return null;
+  }
 }
 function writeRecents(list) {
-  try { sessionStorage.setItem(CACHE_KEY, JSON.stringify((list || []).slice(0, RECENTS))); } catch (_) {}
+  try {
+    sessionStorage.setItem(CACHE_KEY, JSON.stringify((list || []).slice(0, RECENTS)));
+  } catch (_) {}
 }
 
 export function mountSidebar(config) {
-  var $ = function (id) { return document.getElementById(id); };
-  var appEl = $("app"), scrim = $("scrim");
+  var $ = function (id) {
+    return document.getElementById(id);
+  };
+  var appEl = $("app"),
+    scrim = $("scrim");
   var railList = $("railList");
 
   var railMql = window.matchMedia("(max-width: 720px)");
-  function toggleRail() { appEl.classList.toggle(railMql.matches ? "rail-open" : "rail-collapsed"); }
-  function closeRail() { appEl.classList.remove("rail-open"); }
+  function toggleRail() {
+    appEl.classList.toggle(railMql.matches ? "rail-open" : "rail-collapsed");
+  }
+  function closeRail() {
+    appEl.classList.remove("rail-open");
+  }
   // The nav links now carry href="/conversations", so a plain click navigates
   // (and hover prerenders it). On the Conversations page itself, onOpenList just
   // focuses the search box, so cancel the redundant navigation there.
-  function openList(e) { if (config.onOpenList) { if (e) e.preventDefault(); config.onOpenList(); } }
+  function openList(e) {
+    if (config.onOpenList) {
+      if (e) e.preventDefault();
+      config.onOpenList();
+    }
+  }
 
   function render(conversations) {
     writeRecents(conversations);
@@ -58,23 +76,32 @@ export function mountSidebar(config) {
     var active = config.activeId ? config.activeId() : null;
     if (!conversations.length) {
       var e = document.createElement("div");
-      e.className = "empty"; e.textContent = "No conversations yet";
+      e.className = "empty";
+      e.textContent = "No conversations yet";
       railList.appendChild(e);
     } else {
       conversations.slice(0, RECENTS).forEach(function (c) {
         var b = document.createElement("button");
-        b.className = "conv"; b.type = "button";
+        b.className = "conv";
+        b.type = "button";
         b.innerHTML = CONV_ICON;
         var name = document.createElement("span");
-        name.className = "convname"; name.textContent = c.title || "Untitled";
+        name.className = "convname";
+        name.textContent = c.title || "Untitled";
         b.appendChild(name);
         if (c.id === active) b.setAttribute("aria-current", "true");
-        b.onclick = function () { closeRail(); config.onSelect(c.id, c.title); };
+        b.onclick = function () {
+          closeRail();
+          config.onSelect(c.id, c.title);
+        };
         if (config.dialogs) {
           b.oncontextmenu = function (e) {
             e.preventDefault();
             openChatMenu(e.clientX, e.clientY, {
-              id: c.id, title: c.title, dialogs: config.dialogs, reload: config.reload,
+              id: c.id,
+              title: c.title,
+              dialogs: config.dialogs,
+              reload: config.reload,
             });
           };
         }
@@ -84,15 +111,22 @@ export function mountSidebar(config) {
     // Highlight "New chat" while the open conversation is brand new — it has an
     // id but isn't in the saved list yet (nothing persisted). Not on the
     // Conversations page, which has its own active nav row.
-    var isNewChat = config.active !== "conversations" && !!active &&
-      !conversations.some(function (c) { return c.id === active; });
+    var isNewChat =
+      config.active !== "conversations" &&
+      !!active &&
+      !conversations.some(function (c) {
+        return c.id === active;
+      });
     $("new").classList.toggle("active", isNewChat);
   }
 
   $("menu").addEventListener("click", toggleRail);
   $("railClose").addEventListener("click", toggleRail);
   scrim.addEventListener("click", closeRail);
-  $("new").addEventListener("click", function () { closeRail(); config.onNew(); });
+  $("new").addEventListener("click", function () {
+    closeRail();
+    config.onNew();
+  });
   $("chatsBtn").addEventListener("click", openList);
   $("searchBtn").addEventListener("click", openList);
   if (config.active === "conversations") $("chatsBtn").classList.add("active");

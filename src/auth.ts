@@ -1,6 +1,6 @@
-import { randomBytes, createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { getConfig } from "./settings";
-import type { Store, Session, SessionProfile } from "./store";
+import type { Session, SessionProfile, Store } from "./store";
 
 /**
  * Auth against an indiko-style OAuth 2.0 / OIDC server, as a public client:
@@ -33,7 +33,8 @@ const trimSlash = (s: string): string => s.replace(/\/+$/, "");
 const isSecure = (): boolean => getConfig().auth.baseUrl.startsWith("https");
 // A pre-registered client_id wins; otherwise kloe's own Client ID Metadata
 // Document URL (the public/dynamic default).
-const clientId = (): string => getConfig().auth.clientId || trimSlash(getConfig().auth.baseUrl) + "/client-metadata.json";
+const clientId = (): string =>
+  getConfig().auth.clientId || trimSlash(getConfig().auth.baseUrl) + "/client-metadata.json";
 const redirectUri = (): string => trimSlash(getConfig().auth.baseUrl) + "/auth/callback";
 /** Only same-origin relative paths — never an open redirect off-site. */
 function safeReturn(rt: unknown): string {
@@ -101,11 +102,15 @@ export function gateApi<T extends Routes>(routes: T, store: Store): T {
   if (!authEnabled()) return routes;
   const out: Routes = {};
   for (const [path, methods] of Object.entries(routes)) {
-    if (path === "/health") { out[path] = methods; continue; }
+    if (path === "/health") {
+      out[path] = methods;
+      continue;
+    }
     const wrapped: Record<string, Handler> = {};
     for (const [method, fn] of Object.entries(methods)) {
       wrapped[method] = (req, ...rest) => {
-        if (!getSession(req, store)) return Response.json({ error: "unauthorized" }, { status: 401 });
+        if (!getSession(req, store))
+          return Response.json({ error: "unauthorized" }, { status: 401 });
         return fn(req, ...rest);
       };
     }
@@ -116,14 +121,22 @@ export function gateApi<T extends Routes>(routes: T, store: Store): T {
 
 // ---- route handlers -----------------------------------------------------
 
-const esc = (s: string): string => s.replace(/[<>&"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[c]!);
+const esc = (s: string): string =>
+  s.replace(/[<>&"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[c]!);
 
 /**
  * A standalone, theme-aware auth page (login lives on the IdP, so this is the
  * only kloe-served auth screen). Palette mirrors app.css so it looks like the app
  * in both light and dark. Self-contained — it's served before the SPA loads.
  */
-function authPage(opts: { title: string; message: string; actionHref?: string; actionLabel?: string; status?: number; clearCookie?: boolean }): Response {
+function authPage(opts: {
+  title: string;
+  message: string;
+  actionHref?: string;
+  actionLabel?: string;
+  status?: number;
+  clearCookie?: boolean;
+}): Response {
   const brand = esc(getConfig().auth.appName || "kloe");
   const action = opts.actionHref
     ? `<a class="btn" href="${esc(opts.actionHref)}">${esc(opts.actionLabel ?? "Continue")}</a>`
@@ -160,7 +173,14 @@ function authPage(opts: { title: string; message: string; actionHref?: string; a
 }
 
 function htmlError(message: string, status = 400): Response {
-  return authPage({ title: "Sign-in failed", message, actionHref: "/auth/login", actionLabel: "Try again", status, clearCookie: true });
+  return authPage({
+    title: "Sign-in failed",
+    message,
+    actionHref: "/auth/login",
+    actionLabel: "Try again",
+    status,
+    clearCookie: true,
+  });
 }
 
 /** /auth/login — start the flow: PKCE + state in a cookie, redirect to the IdP. */
@@ -178,7 +198,10 @@ export async function handleLogin(req: Request): Promise<Response> {
   authorize.searchParams.set("code_challenge", challenge);
   authorize.searchParams.set("code_challenge_method", "S256");
   const headers = new Headers({ Location: authorize.href });
-  headers.append("Set-Cookie", serializeCookie(OAUTH_COOKIE, JSON.stringify({ state, verifier, returnTo }), 600));
+  headers.append(
+    "Set-Cookie",
+    serializeCookie(OAUTH_COOKIE, JSON.stringify({ state, verifier, returnTo }), 600),
+  );
   return new Response(null, { status: 302, headers });
 }
 
@@ -197,10 +220,16 @@ export async function handleCallback(req: Request, store: Store): Promise<Respon
   const state = url.searchParams.get("state");
   const iss = url.searchParams.get("iss");
   let saved: { state?: string; verifier?: string; returnTo?: string } = {};
-  try { saved = JSON.parse(parseCookies(req)[OAUTH_COOKIE] ?? "{}"); } catch { /* malformed cookie */ }
+  try {
+    saved = JSON.parse(parseCookies(req)[OAUTH_COOKIE] ?? "{}");
+  } catch {
+    /* malformed cookie */
+  }
 
-  if (!code || !state || !saved.state || state !== saved.state) return htmlError("Invalid or missing state — please retry.");
-  if (iss && trimSlash(iss) !== trimSlash(cfg.issuer)) return htmlError("The response came from an unexpected issuer.");
+  if (!code || !state || !saved.state || state !== saved.state)
+    return htmlError("Invalid or missing state — please retry.");
+  if (iss && trimSlash(iss) !== trimSlash(cfg.issuer))
+    return htmlError("The response came from an unexpected issuer.");
 
   const d = await discover();
   const tokenBody = new URLSearchParams({
@@ -270,6 +299,12 @@ export function clientMetadata(): Response {
 }
 
 /** The public shape of the signed-in user, for `/api/me`. */
-export function sessionUser(session: Session): { sub: string; name?: string; picture?: string; url?: string; email?: string } {
+export function sessionUser(session: Session): {
+  sub: string;
+  name?: string;
+  picture?: string;
+  url?: string;
+  email?: string;
+} {
   return { sub: session.sub, ...session.profile };
 }

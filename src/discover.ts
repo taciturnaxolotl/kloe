@@ -27,11 +27,7 @@ export interface Enricher {
    * `raw` is the decoded `{base}/models` payload discovery produced. Enrichers
    * that need a *different* endpoint fetch it themselves via cfg.fetchImpl.
    */
-  enrichModels(
-    cfg: DiscoverConfig,
-    models: CatalogModel[],
-    raw: unknown,
-  ): Promise<CatalogModel[]>;
+  enrichModels(cfg: DiscoverConfig, models: CatalogModel[], raw: unknown): Promise<CatalogModel[]>;
 }
 
 const enrichers = new Map<string, Enricher>();
@@ -46,10 +42,7 @@ export function getEnricher(providerType: string): Enricher | undefined {
 }
 
 /** GET `{baseUrl}{path}` with bearer auth, decoded as JSON. Soft-fails. */
-async function fetchJson(
-  cfg: DiscoverConfig,
-  path: string,
-): Promise<unknown | undefined> {
+async function fetchJson(cfg: DiscoverConfig, path: string): Promise<unknown | undefined> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), cfg.timeoutMs ?? 10_000);
   try {
@@ -100,7 +93,7 @@ export async function discoverModels(cfg: DiscoverConfig): Promise<DiscoveryResu
   const raw = await fetchJson(cfg, "/models");
   const data =
     raw && typeof raw === "object" && Array.isArray((raw as { data?: unknown }).data)
-      ? ((raw as { data: unknown[] }).data)
+      ? (raw as { data: unknown[] }).data
       : [];
 
   const out: CatalogModel[] = [];
@@ -166,7 +159,7 @@ registerEnricher("hyper", {
   async enrichModels(_cfg, models, raw) {
     const data =
       raw && typeof raw === "object" && Array.isArray((raw as { data?: unknown }).data)
-        ? ((raw as { data: unknown[] }).data)
+        ? (raw as { data: unknown[] }).data
         : undefined;
     if (!data) return models;
 
@@ -194,8 +187,7 @@ registerEnricher("hyper", {
           m.reasoningLevels.length > 0
             ? m.reasoningLevels
             : (meta.reasoning?.effort_levels ?? []).map((l) => l.value),
-        defaultReasoningEffort:
-          m.defaultReasoningEffort ?? meta.reasoning?.default_effort_level,
+        defaultReasoningEffort: m.defaultReasoningEffort ?? meta.reasoning?.default_effort_level,
         supportsImages: m.supportsImages || meta.capabilities?.vision === true,
       };
     });

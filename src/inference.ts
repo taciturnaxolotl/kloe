@@ -1,14 +1,14 @@
-import { streamText, stepCountIs, type LanguageModel, type ModelMessage, type JSONValue } from "ai";
-import { toolSet } from "./tools";
+import { type JSONValue, type LanguageModel, type ModelMessage, stepCountIs, streamText } from "ai";
+import type { RunStep } from "./actor";
+import { type LoadCatalogOptions, loadCatalog } from "./catalog";
+import type { TokenUsage } from "./events";
+import { contextToText, getContext, lardConnected, lardEnabled } from "./lard";
 import { buildSystemPrompt } from "./prompt";
-import { lardEnabled, lardConnected, getContext, contextToText } from "./lard";
-import type { Store } from "./store";
 import { ProviderRegistry } from "./providers";
 import { RateLimiter } from "./ratelimit";
-import { loadCatalog, type LoadCatalogOptions } from "./catalog";
 import { getConfig } from "./settings";
-import type { RunStep } from "./actor";
-import type { TokenUsage } from "./events";
+import type { Store } from "./store";
+import { toolSet } from "./tools";
 
 /**
  * True when provider reasoning metadata carries a signature — the marker of a
@@ -18,7 +18,12 @@ import type { TokenUsage } from "./events";
  */
 function hasSignature(meta: Record<string, Record<string, unknown>>): boolean {
   for (const provider of Object.values(meta)) {
-    if (provider && typeof provider === "object" && typeof provider.signature === "string" && provider.signature.length > 0) {
+    if (
+      provider &&
+      typeof provider === "object" &&
+      typeof provider.signature === "string" &&
+      provider.signature.length > 0
+    ) {
       return true;
     }
   }
@@ -100,7 +105,9 @@ function limiterFor(providerName: string): RateLimiter | undefined {
 /** Catalog metadata for a model ref, or undefined if unknown/uninitialized. */
 function modelInfo(modelRef: string) {
   try {
-    return getRegistry().listModels().find((m) => m.ref === modelRef);
+    return getRegistry()
+      .listModels()
+      .find((m) => m.ref === modelRef);
   } catch {
     return undefined;
   }
@@ -140,10 +147,7 @@ export interface RunOptions {
   project?: RunProject;
 }
 
-export async function* run(
-  messages: ModelMessage[],
-  opts: RunOptions,
-): AsyncGenerator<RunStep> {
+export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGenerator<RunStep> {
   const model = resolveModel(opts.model);
   // Per-provider knobs from ops config: an output-token cap, and raw
   // provider-specific options (e.g. a reasoning/thinking toggle) sent under the
@@ -153,21 +157,29 @@ export async function* run(
   // Only send tools when some are configured (e.g. web_search needs a search
   // provider) — a toolless deployment sends no `tools`, so endpoints that reject
   // an unknown tools field are unaffected.
-  const tools = toolSet({ store: opts.store, owner: opts.owner, conversationId: opts.conversationId });
+  const tools = toolSet({
+    store: opts.store,
+    owner: opts.owner,
+    conversationId: opts.conversationId,
+  });
   const hasTools = Object.keys(tools).length > 0;
   // Output cap: an explicit provider override wins; otherwise fall back to the
   // model's own default/max from the catalog (e.g. Hyper reports 384K). Sending
   // it prevents the endpoint's low default from cutting a run off mid-reasoning
   // (which surfaced as finishReason=length with no answer text).
-  const maxOutputTokens = cfg?.maxOutputTokens || modelInfo(opts.model)?.defaultMaxTokens || undefined;
+  const maxOutputTokens =
+    cfg?.maxOutputTokens || modelInfo(opts.model)?.defaultMaxTokens || undefined;
   const maxToolSteps = getConfig().agent.maxToolSteps;
   // Per-user durable memory (lard): fold the owner's context bundle into the
   // prompt. Best-effort — a failed/absent fetch never blocks the run.
   let memory = "";
   if (opts.store && opts.owner && lardEnabled() && lardConnected(opts.store, opts.owner)) {
     // A project pins a lard project so its area is pulled alongside the profile.
-    try { memory = contextToText(await getContext(opts.store, opts.owner, opts.project?.lardProject)); }
-    catch (e) { console.error("lard context:", (e as Error).message); }
+    try {
+      memory = contextToText(await getContext(opts.store, opts.owner, opts.project?.lardProject));
+    } catch (e) {
+      console.error("lard context:", (e as Error).message);
+    }
   }
   // System prompt: grounds the turn in the current date, the durable memory, the
   // project's context files, and which tools it may reach for (built from the
@@ -187,7 +199,9 @@ export async function* run(
     // feed back), bounded so a runaway can't loop forever.
     // 0 → unlimited: never force-stop, so the loop runs until the model stops
     // calling tools or the user cancels (abortSignal). A positive cap bounds it.
-    ...(hasTools ? { tools, stopWhen: maxToolSteps > 0 ? stepCountIs(maxToolSteps) : () => false } : {}),
+    ...(hasTools
+      ? { tools, stopWhen: maxToolSteps > 0 ? stepCountIs(maxToolSteps) : () => false }
+      : {}),
   });
   // Consume the FULL stream (not just textStream) so reasoning models — whose
   // answer arrives as reasoning parts — come through instead of an empty turn.
@@ -203,18 +217,34 @@ export async function* run(
       textChunks++;
       yield { kind: "text", chunk: part.text };
     } else if (part.type === "reasoning-delta") {
-      if (part.providerMetadata) reasoningMeta.set(part.id, part.providerMetadata as Record<string, Record<string, unknown>>);
+      if (part.providerMetadata)
+        reasoningMeta.set(
+          part.id,
+          part.providerMetadata as Record<string, Record<string, unknown>>,
+        );
       yield { kind: "reasoning", chunk: part.text };
     } else if (part.type === "reasoning-end") {
       // A signed reasoning block (Anthropic thinking): preserve its metadata so
       // history() can echo it back. Only when a signature is actually present —
       // unsigned reasoning (most providers) is dropped from history as before.
-      const meta = (part.providerMetadata as Record<string, Record<string, unknown>>) ?? reasoningMeta.get(part.id);
+      const meta =
+        (part.providerMetadata as Record<string, Record<string, unknown>>) ??
+        reasoningMeta.get(part.id);
       if (meta && hasSignature(meta)) yield { kind: "reasoning-signature", providerOptions: meta };
     } else if (part.type === "tool-call") {
-      yield { kind: "tool-call", toolCallId: part.toolCallId, toolName: part.toolName, input: part.input };
+      yield {
+        kind: "tool-call",
+        toolCallId: part.toolCallId,
+        toolName: part.toolName,
+        input: part.input,
+      };
     } else if (part.type === "tool-result") {
-      yield { kind: "tool-result", toolCallId: part.toolCallId, toolName: part.toolName, output: part.output };
+      yield {
+        kind: "tool-result",
+        toolCallId: part.toolCallId,
+        toolName: part.toolName,
+        output: part.output,
+      };
     } else if (part.type === "tool-error") {
       // A tool's execute threw (e.g. the search backend errored). The SDK feeds
       // it back to the model as an error result; log it too so a flaky tool is

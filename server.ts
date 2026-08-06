@@ -1,19 +1,19 @@
-import indexHTML from "./src/client/index.html";
-import settingsHTML from "./src/client/settings.html";
-import conversationsHTML from "./src/client/conversations.html";
-import projectsHTML from "./src/client/projects.html";
-import projectHTML from "./src/client/project.html";
-import { Store } from "./src/store";
-import { initInference } from "./src/inference";
-import { apiRoutes, getActor, evictIdleActors } from "./src/http";
-import { handleLogin, handleCallback, handleLogout, clientMetadata } from "./src/auth";
-import { handleLardConnect, handleLardCallback } from "./src/lard";
-import { JobDriver } from "./src/drive";
-import { createBlobStore } from "./src/blobs";
-import { sweepOrphanBlobs } from "./src/gc";
-import { getConfig } from "./src/settings";
-import { REAP_INTERVAL_MS, BLOB_GC_GRACE_MS, BLOB_GC_INTERVAL_MS } from "./src/config";
 import { watch } from "node:fs";
+import { clientMetadata, handleCallback, handleLogin, handleLogout } from "./src/auth";
+import { createBlobStore } from "./src/blobs";
+import conversationsHTML from "./src/client/conversations.html";
+import indexHTML from "./src/client/index.html";
+import projectHTML from "./src/client/project.html";
+import projectsHTML from "./src/client/projects.html";
+import settingsHTML from "./src/client/settings.html";
+import { BLOB_GC_GRACE_MS, BLOB_GC_INTERVAL_MS, REAP_INTERVAL_MS } from "./src/config";
+import { JobDriver } from "./src/drive";
+import { sweepOrphanBlobs } from "./src/gc";
+import { apiRoutes, evictIdleActors, getActor } from "./src/http";
+import { initInference } from "./src/inference";
+import { handleLardCallback, handleLardConnect } from "./src/lard";
+import { getConfig } from "./src/settings";
+import { Store } from "./src/store";
 
 /**
  * Web entrypoint. Bun's native `routes` serve the HTML pages (transpiled,
@@ -75,7 +75,10 @@ if (import.meta.main) {
   const vendorRoutes = {
     "/vendor/katex.min.css": () =>
       new Response(Bun.file(new URL("katex.min.css", katexDir)), {
-        headers: { "Content-Type": "text/css", "Cache-Control": "public, max-age=31536000, immutable" },
+        headers: {
+          "Content-Type": "text/css",
+          "Cache-Control": "public, max-age=31536000, immutable",
+        },
       }),
     "/vendor/fonts/:name": (req: Bun.BunRequest<"/vendor/fonts/:name">) => {
       // Only a bare KaTeX font filename — never a path segment that could escape.
@@ -134,14 +137,16 @@ if (import.meta.main) {
       // hasn't changed, and only re-downloads the body when it actually did — so
       // rebuilds propagate without re-fetching the bundle on every page load.
       const etag = `"${a.hash}"`;
-      const cache = /^chunk-/.test(file)
-        ? "public, max-age=31536000, immutable"
-        : "no-cache";
+      const cache = /^chunk-/.test(file) ? "public, max-age=31536000, immutable" : "no-cache";
       if (req.headers.get("If-None-Match") === etag) {
         return new Response(null, { status: 304, headers: { ETag: etag, "Cache-Control": cache } });
       }
       return new Response(a, {
-        headers: { "Content-Type": a.type || "text/javascript", "Cache-Control": cache, ETag: etag },
+        headers: {
+          "Content-Type": a.type || "text/javascript",
+          "Cache-Control": cache,
+          ETag: etag,
+        },
       });
     },
   };

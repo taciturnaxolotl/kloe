@@ -1,10 +1,12 @@
-import { test, expect } from "bun:test";
-import { Store } from "../src/store";
+import { expect, test } from "bun:test";
 import { buildSession } from "../src/ingest";
+import { Store } from "../src/store";
 
 // Insert raw events (bypassing the actor) so the fold can be tested directly.
 function seed(store: Store, id: string, events: Array<[string, unknown]>): void {
-  const ins = (store as unknown as { db: { query: (s: string) => { run: (...a: unknown[]) => void } } }).db.query(
+  const ins = (
+    store as unknown as { db: { query: (s: string) => { run: (...a: unknown[]) => void } } }
+  ).db.query(
     "INSERT INTO events (id, conversation_id, seq, event, data, created_at) VALUES (?, ?, ?, ?, ?, ?)",
   );
   let seq = 0;

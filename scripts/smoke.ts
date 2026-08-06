@@ -63,7 +63,7 @@ async function readUntil(
       const { done, value } = await reader.read();
       if (done) break;
       buf += dec.decode(value, { stream: true });
-      let idx;
+      let idx: number;
       while ((idx = buf.indexOf("\n\n")) !== -1) {
         const block = buf.slice(0, idx);
         buf = buf.slice(idx + 2);

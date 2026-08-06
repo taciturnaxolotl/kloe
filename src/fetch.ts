@@ -1,11 +1,11 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { Readability } from "@mozilla/readability";
+import { XMLParser } from "fast-xml-parser";
 import { parseHTML } from "linkedom";
 import TurndownService from "turndown";
-import { XMLParser } from "fast-xml-parser";
-import { getConfig, type Config } from "./settings";
 import { FETCH_MAX_REDIRECTS } from "./config";
+import { type Config, getConfig } from "./settings";
 
 /**
  * The `fetch_url` tool's backing: fetch a web page and return its main content
@@ -82,7 +82,13 @@ export function isPrivateIp(ip: string): boolean {
     if (m) return isPrivateIPv4(m[1]!);
     const head = v6.split(":")[0] ?? "";
     const hi = parseInt(head || "0", 16);
-    if (v6.startsWith("fe8") || v6.startsWith("fe9") || v6.startsWith("fea") || v6.startsWith("feb")) return true; // link-local fe80::/10
+    if (
+      v6.startsWith("fe8") ||
+      v6.startsWith("fe9") ||
+      v6.startsWith("fea") ||
+      v6.startsWith("feb")
+    )
+      return true; // link-local fe80::/10
     if ((hi & 0xfe00) === 0xfc00) return true; // unique-local fc00::/7
     if (v6.startsWith("ff")) return true; // multicast
     return false;
@@ -97,16 +103,22 @@ export function isPrivateIp(ip: string): boolean {
  */
 export function rewriteForFetch(raw: string): string {
   let u: URL;
-  try { u = new URL(raw); } catch { return raw; }
+  try {
+    u = new URL(raw);
+  } catch {
+    return raw;
+  }
   const host = u.hostname.replace(/^www\./, "");
   if (host === "github.com") {
     const rawBase = "https://raw.githubusercontent.com";
     const p = u.pathname.replace(/\/+$/, "");
     let m: RegExpMatchArray | null;
     // A file: /owner/repo/blob/<ref>/<path> → the raw file.
-    if ((m = p.match(/^\/([^/]+)\/([^/]+)\/blob\/(.+)$/))) return `${rawBase}/${m[1]}/${m[2]}/${m[3]}`;
+    if ((m = p.match(/^\/([^/]+)\/([^/]+)\/blob\/(.+)$/)))
+      return `${rawBase}/${m[1]}/${m[2]}/${m[3]}`;
     // A directory or branch: /owner/repo/tree/<ref>(/<path>) → that dir's README.
-    if ((m = p.match(/^\/([^/]+)\/([^/]+)\/tree\/(.+)$/))) return `${rawBase}/${m[1]}/${m[2]}/${m[3]}/README.md`;
+    if ((m = p.match(/^\/([^/]+)\/([^/]+)\/tree\/(.+)$/)))
+      return `${rawBase}/${m[1]}/${m[2]}/${m[3]}/README.md`;
     // The repo root: /owner/repo → the default-branch README (HEAD resolves it).
     if ((m = p.match(/^\/([^/]+)\/([^/]+)$/))) return `${rawBase}/${m[1]}/${m[2]}/HEAD/README.md`;
   }
@@ -118,7 +130,11 @@ export function rewriteForFetch(raw: string): string {
  * resolved address public (unless `allowPrivate`). Returns the parsed URL or
  * throws with a caller-safe message.
  */
-export async function assertAllowedUrl(raw: string, allowPrivate: boolean, lookup: Lookup): Promise<URL> {
+export async function assertAllowedUrl(
+  raw: string,
+  allowPrivate: boolean,
+  lookup: Lookup,
+): Promise<URL> {
   let url: URL;
   try {
     url = new URL(raw);
@@ -137,7 +153,8 @@ export async function assertAllowedUrl(raw: string, allowPrivate: boolean, looku
   const literals = isIP(host) ? [host] : (await lookup(host)).map((r) => r.address);
   if (literals.length === 0) throw new Error(`could not resolve host: ${host}`);
   for (const ip of literals) {
-    if (isPrivateIp(ip)) throw new Error(`refusing to fetch a private/reserved address (${host} → ${ip})`);
+    if (isPrivateIp(ip))
+      throw new Error(`refusing to fetch a private/reserved address (${host} → ${ip})`);
   }
   return url;
 }
@@ -156,14 +173,18 @@ function isProbablyText(s: string): boolean {
   for (let i = 0; i < n; i++) {
     const c = s.charCodeAt(i);
     if (c === 0) return false; // NUL → binary
-    if (c === 0xfffd) bad++; // UTF-8 replacement char (invalid bytes)
+    if (c === 0xfffd)
+      bad++; // UTF-8 replacement char (invalid bytes)
     else if (c < 9 || (c > 13 && c < 32)) bad++; // control chars (allow \t \n \v \f \r)
   }
   return bad / n < 0.1;
 }
 
 /** Reads a response body as text, capped at `maxBytes`; marks if it was cut. */
-async function readCapped(res: Response, maxBytes: number): Promise<{ text: string; capped: boolean }> {
+async function readCapped(
+  res: Response,
+  maxBytes: number,
+): Promise<{ text: string; capped: boolean }> {
   const reader = res.body?.getReader();
   if (!reader) return { text: "", capped: false };
   const chunks: Uint8Array[] = [];
@@ -175,12 +196,19 @@ async function readCapped(res: Response, maxBytes: number): Promise<{ text: stri
     if (value) {
       chunks.push(value);
       total += value.length;
-      if (total >= maxBytes) { capped = true; await reader.cancel(); break; }
+      if (total >= maxBytes) {
+        capped = true;
+        await reader.cancel();
+        break;
+      }
     }
   }
   const buf = new Uint8Array(total);
   let off = 0;
-  for (const c of chunks) { buf.set(c, off); off += c.length; }
+  for (const c of chunks) {
+    buf.set(c, off);
+    off += c.length;
+  }
   return { text: new TextDecoder("utf-8").decode(buf.subarray(0, maxBytes)), capped };
 }
 
@@ -213,11 +241,22 @@ function xmlText(v: unknown): string {
 function stripTags(s: string): string {
   return s
     .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#39;/g, "'").replace(/&quot;/g, '"')
-    .replace(/\s+/g, " ").trim();
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-interface FeedItem { title: string; link: string; date: string; summary: string }
+interface FeedItem {
+  title: string;
+  link: string;
+  date: string;
+  summary: string;
+}
 function rssItem(it: Record<string, unknown>): FeedItem {
   return {
     title: xmlText(it.title),
@@ -230,7 +269,8 @@ function atomEntry(e: Record<string, unknown>): FeedItem {
   let link = "";
   const l = e.link as unknown;
   if (Array.isArray(l)) {
-    const alt = (l as Array<Record<string, unknown>>).find((x) => x["@_rel"] === "alternate") ?? l[0];
+    const alt =
+      (l as Array<Record<string, unknown>>).find((x) => x["@_rel"] === "alternate") ?? l[0];
     link = String(alt?.["@_href"] ?? "");
   } else if (l && typeof l === "object") {
     link = String((l as Record<string, unknown>)["@_href"] ?? "");
@@ -249,7 +289,9 @@ function atomEntry(e: Record<string, unknown>): FeedItem {
 function feedToMarkdown(xml: string): { title: string; markdown: string } | null {
   let doc: Record<string, unknown>;
   try {
-    doc = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" }).parse(xml) as Record<string, unknown>;
+    doc = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" }).parse(
+      xml,
+    ) as Record<string, unknown>;
   } catch {
     return null;
   }
@@ -257,7 +299,9 @@ function feedToMarkdown(xml: string): { title: string; markdown: string } | null
   let items: FeedItem[] = [];
   const rss = doc.rss as { channel?: Record<string, unknown> } | undefined;
   const feed = doc.feed as Record<string, unknown> | undefined;
-  const rdf = (doc["rdf:RDF"] ?? doc.RDF) as { channel?: Record<string, unknown>; item?: unknown } | undefined;
+  const rdf = (doc["rdf:RDF"] ?? doc.RDF) as
+    | { channel?: Record<string, unknown>; item?: unknown }
+    | undefined;
   if (rss?.channel) {
     title = xmlText(rss.channel.title);
     items = asArray(rss.channel.item as Record<string, unknown>[]).map(rssItem);
@@ -277,22 +321,44 @@ function feedToMarkdown(xml: string): { title: string; markdown: string } | null
     const snip = it.summary ? `\n  ${it.summary.slice(0, 240)}` : "";
     return `- ${head}${meta}${snip}`;
   });
-  const more = items.length > FEED_MAX_ITEMS ? `\n\n…and ${items.length - FEED_MAX_ITEMS} more items.` : "";
+  const more =
+    items.length > FEED_MAX_ITEMS ? `\n\n…and ${items.length - FEED_MAX_ITEMS} more items.` : "";
   const heading = title || "Feed";
   return { title: heading, markdown: `# ${heading}\n\n${lines.join("\n")}${more}` };
 }
 
 /** HTML → main-content markdown, with a whole-body fallback if extraction fails. */
 function htmlToMarkdown(html: string, baseUrl: string): { title: string; markdown: string } {
-  const td = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced", bulletListMarker: "-" });
+  const td = new TurndownService({
+    headingStyle: "atx",
+    codeBlockStyle: "fenced",
+    bulletListMarker: "-",
+  });
   // Drop boilerplate/noise in BOTH paths — Readability already isolates the
   // article, but the whole-body fallback needs these stripped too.
-  td.remove(["script", "style", "noscript", "iframe", "svg", "form", "nav", "header", "footer", "aside"]);
+  td.remove([
+    "script",
+    "style",
+    "noscript",
+    "iframe",
+    "svg",
+    "form",
+    "nav",
+    "header",
+    "footer",
+    "aside",
+  ]);
   const { document } = parseHTML(html);
   const title = document.querySelector("title")?.textContent?.trim() || baseUrl;
-  let article: { title?: string | null; content?: string | null; textContent?: string | null } | null = null;
+  let article: {
+    title?: string | null;
+    content?: string | null;
+    textContent?: string | null;
+  } | null = null;
   try {
-    article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse();
+    article = new Readability(
+      document as unknown as ConstructorParameters<typeof Readability>[0],
+    ).parse();
   } catch {
     article = null;
   }
@@ -302,7 +368,10 @@ function htmlToMarkdown(html: string, baseUrl: string): { title: string; markdow
     article && article.content && (article.textContent ?? "").trim().length > 40
       ? article.content
       : document.body?.innerHTML || html;
-  const markdown = td.turndown(source).replace(/\n{3,}/g, "\n\n").trim();
+  const markdown = td
+    .turndown(source)
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
   return { title: (article?.title || title).trim(), markdown };
 }
 
@@ -314,7 +383,8 @@ export class LocalFetchProvider implements FetchProvider {
 
   async fetch(rawUrl: string): Promise<FetchResult> {
     const doFetch = this.opts.fetchImpl ?? fetch;
-    const lookup = this.opts.lookupImpl ?? ((h: string) => dnsLookup(h, { all: true, verbatim: true }));
+    const lookup =
+      this.opts.lookupImpl ?? ((h: string) => dnsLookup(h, { all: true, verbatim: true }));
 
     // Follow redirects manually so every hop is re-validated against the SSRF
     // policy (an allowed URL can 30x into the private network).
@@ -331,7 +401,8 @@ export class LocalFetchProvider implements FetchProvider {
         // one that can't just ignores Accept and returns HTML as before.
         headers: {
           "User-Agent": this.opts.userAgent,
-          Accept: "text/markdown,text/x-markdown;q=0.9,text/html;q=0.8,application/xhtml+xml;q=0.8,text/plain;q=0.6,*/*;q=0.5",
+          Accept:
+            "text/markdown,text/x-markdown;q=0.9,text/html;q=0.8,application/xhtml+xml;q=0.8,text/plain;q=0.6,*/*;q=0.5",
         },
       });
       if (res.status >= 300 && res.status < 400) {
@@ -350,9 +421,16 @@ export class LocalFetchProvider implements FetchProvider {
       let detail = "";
       try {
         const { text } = await readCapped(res, 4096);
-        const t = isProbablyText(text) ? text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() : "";
+        const t = isProbablyText(text)
+          ? text
+              .replace(/<[^>]+>/g, " ")
+              .replace(/\s+/g, " ")
+              .trim()
+          : "";
         if (t) detail = " — " + t.slice(0, 200);
-      } catch { /* ignore a body we can't read */ }
+      } catch {
+        /* ignore a body we can't read */
+      }
       throw new Error(`fetch failed: ${res.status} ${res.statusText}${detail}`);
     }
 
@@ -370,16 +448,27 @@ export class LocalFetchProvider implements FetchProvider {
       format = "markdown";
     } else if (looksLikeFeed(contentType, text)) {
       const feed = feedToMarkdown(text);
-      if (feed) { title = feed.title; content = feed.markdown; format = "markdown"; }
-      else content = text.trim(); // malformed feed → hand back the raw XML (text)
+      if (feed) {
+        title = feed.title;
+        content = feed.markdown;
+        format = "markdown";
+      } else content = text.trim(); // malformed feed → hand back the raw XML (text)
     } else if (contentType.includes("xml")) {
       content = text.trim(); // generic XML: raw, don't force it through the HTML pipeline
-    } else if (contentType.includes("html") || /^\s*<(!doctype|html|head|body|div|p|article|main|section)\b/i.test(text)) {
+    } else if (
+      contentType.includes("html") ||
+      /^\s*<(!doctype|html|head|body|div|p|article|main|section)\b/i.test(text)
+    ) {
       const out = htmlToMarkdown(text, current);
       title = out.title;
       content = out.markdown;
       format = "markdown";
-    } else if (contentType.includes("text/") || contentType.includes("json") || contentType === "" || isProbablyText(text)) {
+    } else if (
+      contentType.includes("text/") ||
+      contentType.includes("json") ||
+      contentType === "" ||
+      isProbablyText(text)
+    ) {
       // Text by content-type OR by sniffing (code/config files with a generic or
       // odd type): pass it through verbatim. Size is already bounded by the byte
       // and char caps. A markdown file served as text (e.g. a raw README) is
@@ -396,13 +485,15 @@ export class LocalFetchProvider implements FetchProvider {
     // Extraction can come back empty — a JS-rendered SPA shell, or a page with no
     // article text. Return a clear note (not a blank row) so the model knows why.
     if (!content.trim()) {
-      content = "No readable content could be extracted — the page may be empty or render its content with JavaScript (which this fetcher does not execute).";
+      content =
+        "No readable content could be extracted — the page may be empty or render its content with JavaScript (which this fetcher does not execute).";
       format = "text";
     }
 
     let truncated = capped;
     if (content.length > this.opts.maxChars) {
-      content = content.slice(0, this.opts.maxChars) + `\n\n…[truncated to ${this.opts.maxChars} chars]`;
+      content =
+        content.slice(0, this.opts.maxChars) + `\n\n…[truncated to ${this.opts.maxChars} chars]`;
       truncated = true;
     }
     return { url: current, title, content, format, truncated };
@@ -410,7 +501,9 @@ export class LocalFetchProvider implements FetchProvider {
 }
 
 /** Builds the configured fetch provider, or null when disabled. */
-export function createFetchProvider(cfg: Config["fetch"] = getConfig().fetch): FetchProvider | null {
+export function createFetchProvider(
+  cfg: Config["fetch"] = getConfig().fetch,
+): FetchProvider | null {
   if (!cfg.enabled) return null;
   return new LocalFetchProvider({
     maxBytes: cfg.maxBytes,

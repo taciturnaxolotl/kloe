@@ -1,12 +1,14 @@
 import { generateText } from "ai";
-import { resolveModel, getRegistry } from "./inference";
+import { getRegistry, resolveModel } from "./inference";
 import { getConfig } from "./settings";
 import type { Store } from "./store";
 
 /** Models the deployment has enabled (visible in the picker). */
 function enabledModels(store: Store) {
   const settings = new Map(store.listModelSettings().map((s) => [s.ref, s]));
-  return getRegistry().listModels().filter((m) => settings.get(m.ref)?.visible);
+  return getRegistry()
+    .listModels()
+    .filter((m) => settings.get(m.ref)?.visible);
 }
 
 /**
@@ -44,7 +46,11 @@ function sanitize(raw: string): string {
   return t;
 }
 
-export async function generateTitle(store: Store, conversationId: string, modelRef: string): Promise<string | null> {
+export async function generateTitle(
+  store: Store,
+  conversationId: string,
+  modelRef: string,
+): Promise<string | null> {
   const first = store.firstUserMessage(conversationId);
   if (!first || !first.trim()) return null;
   try {

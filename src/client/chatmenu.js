@@ -22,7 +22,9 @@ async function renameChat(ctx) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ title: name }),
     });
-  } catch (_) { /* leave as-is on failure */ }
+  } catch (_) {
+    /* leave as-is on failure */
+  }
   if (ctx.reload) ctx.reload();
 }
 
@@ -36,13 +38,27 @@ async function deleteChat(ctx) {
   if (!ok) return;
   try {
     await fetch("/api/conversations/" + encodeURIComponent(ctx.id), { method: "DELETE" });
-  } catch (_) { /* ignore */ }
+  } catch (_) {
+    /* ignore */
+  }
   if (ctx.reload) ctx.reload();
 }
 
 export function openChatMenu(x, y, ctx) {
   var items = (ctx.extra || []).slice();
-  items.push({ label: "Rename", onClick: function () { renameChat(ctx); } });
-  items.push({ label: "Delete", icon: TRASH, danger: true, onClick: function () { deleteChat(ctx); } });
+  items.push({
+    label: "Rename",
+    onClick: function () {
+      renameChat(ctx);
+    },
+  });
+  items.push({
+    label: "Delete",
+    icon: TRASH,
+    danger: true,
+    onClick: function () {
+      deleteChat(ctx);
+    },
+  });
   showContextMenu(x, y, items, { align: ctx.align, trigger: ctx.trigger });
 }

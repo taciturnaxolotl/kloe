@@ -1,4 +1,4 @@
-import { getConfig, type Config } from "./settings";
+import { type Config, getConfig } from "./settings";
 
 /**
  * Web search, behind a swappable provider interface so the `web_search` tool
@@ -54,7 +54,12 @@ export class CeramicSearchProvider implements SearchProvider {
       // logs get the actual reason (e.g. "Query string cannot be empty").
       let detail = res.statusText;
       try {
-        const body = (await res.json()) as { detail?: string; title?: string; code?: string; requestId?: string };
+        const body = (await res.json()) as {
+          detail?: string;
+          title?: string;
+          code?: string;
+          requestId?: string;
+        };
         const msg = body.detail || body.title;
         if (msg) detail = msg;
         if (body.code) detail += ` (${body.code})`;
@@ -82,11 +87,17 @@ export class CeramicSearchProvider implements SearchProvider {
  * single place a search backend is selected — everything else takes a
  * `SearchProvider`.
  */
-export function createSearchProvider(cfg: Config["search"] = getConfig().search): SearchProvider | null {
+export function createSearchProvider(
+  cfg: Config["search"] = getConfig().search,
+): SearchProvider | null {
   switch (cfg.provider) {
     case "ceramic":
       return cfg.apiKey
-        ? new CeramicSearchProvider({ apiKey: cfg.apiKey, endpoint: cfg.endpoint, maxResults: cfg.maxResults })
+        ? new CeramicSearchProvider({
+            apiKey: cfg.apiKey,
+            endpoint: cfg.endpoint,
+            maxResults: cfg.maxResults,
+          })
         : null;
     default:
       return null; // "none"

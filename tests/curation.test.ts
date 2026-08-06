@@ -1,13 +1,13 @@
-import { test, expect, beforeEach, afterAll } from "bun:test";
+import { afterAll, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Store } from "../src/store";
-import { apiRoutes } from "../src/http";
+import { join } from "node:path";
 import { FsBlobStore } from "../src/blobs";
-import { ProviderRegistry } from "../src/providers";
-import { setRegistry } from "../src/inference";
 import { Catalog } from "../src/catalog";
+import { apiRoutes } from "../src/http";
+import { setRegistry } from "../src/inference";
+import { ProviderRegistry } from "../src/providers";
+import { Store } from "../src/store";
 
 function fixtureRegistry(): ProviderRegistry {
   const catalog = Catalog.fromRaw([

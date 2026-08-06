@@ -1,4 +1,4 @@
-import { getConfig, type Config } from "./settings";
+import { type Config, getConfig } from "./settings";
 
 /**
  * The sandbox executor: where a side-effecting tool's command actually runs.
@@ -61,10 +61,18 @@ async function dockerRun(argv: string[], signal?: AbortSignal): Promise<ExecResu
 }
 /** Fire-and-forget docker command whose output we don't need (rm, etc.). */
 function dockerQuiet(argv: string[]): void {
-  try { void Bun.spawn(["docker", ...argv], { stdout: "ignore", stderr: "ignore" }).exited; } catch { /* daemon down */ }
+  try {
+    void Bun.spawn(["docker", ...argv], { stdout: "ignore", stderr: "ignore" }).exited;
+  } catch {
+    /* daemon down */
+  }
 }
 
-interface Session { name: string; ready: Promise<void>; lastUsed: number; }
+interface Session {
+  name: string;
+  ready: Promise<void>;
+  lastUsed: number;
+}
 
 /**
  * Runs commands in docker with cpu/memory/pids caps and (by default) no network.
@@ -101,21 +109,39 @@ export class LocalDockerExecutor implements Executor {
 
   private limits(): string[] {
     return [
-      "--network", this.network ? "bridge" : "none",
-      "--cpus", "1", "--memory", "512m", "--pids-limit", "512",
-      "--workdir", "/workspace",
+      "--network",
+      this.network ? "bridge" : "none",
+      "--cpus",
+      "1",
+      "--memory",
+      "512m",
+      "--pids-limit",
+      "512",
+      "--workdir",
+      "/workspace",
     ];
   }
 
   private async startContainer(name: string): Promise<void> {
     dockerQuiet(["rm", "-f", name]); // clear a stale same-named container first
     const argv = [
-      "run", "-d", "--name", name, "--label", "kloe-sandbox=1",
+      "run",
+      "-d",
+      "--name",
+      name,
+      "--label",
+      "kloe-sandbox=1",
       ...this.limits(),
-      this.image, "sh", "-c", "mkdir -p /workspace && exec tail -f /dev/null",
+      this.image,
+      "sh",
+      "-c",
+      "mkdir -p /workspace && exec tail -f /dev/null",
     ];
     const r = await dockerRun(argv);
-    if (r.exitCode !== 0) throw new Error("sandbox container failed to start: " + (r.stderr.trim() || `exit ${r.exitCode}`));
+    if (r.exitCode !== 0)
+      throw new Error(
+        "sandbox container failed to start: " + (r.stderr.trim() || `exit ${r.exitCode}`),
+      );
   }
 
   private ensureSession(session: string): Session {
@@ -132,7 +158,10 @@ export class LocalDockerExecutor implements Executor {
   private evictIdle(): void {
     const cutoff = Date.now() - this.idleMs;
     for (const [key, s] of this.sessions) {
-      if (s.lastUsed < cutoff) { this.sessions.delete(key); dockerQuiet(["rm", "-f", s.name]); }
+      if (s.lastUsed < cutoff) {
+        this.sessions.delete(key);
+        dockerQuiet(["rm", "-f", s.name]);
+      }
     }
   }
 
@@ -148,8 +177,14 @@ export class LocalDockerExecutor implements Executor {
     const state = { timedOut: false };
     const onAbort = () => ctl.abort();
     signal?.addEventListener("abort", onAbort, { once: true });
-    const timer = setTimeout(() => { if (!signal?.aborted) state.timedOut = true; ctl.abort(); }, timeoutMs);
-    const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); };
+    const timer = setTimeout(() => {
+      if (!signal?.aborted) state.timedOut = true;
+      ctl.abort();
+    }, timeoutMs);
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    };
     return { signal: ctl.signal, state, cleanup };
   }
 
@@ -168,10 +203,26 @@ export class LocalDockerExecutor implements Executor {
         }
         argv = ["exec", "--workdir", "/workspace", s.name, "sh", "-c", spec.command];
       } else {
-        argv = ["run", "--rm", "--interactive", "--label", "kloe-sandbox=1", ...this.limits(), this.image, "sh", "-c", spec.command];
+        argv = [
+          "run",
+          "--rm",
+          "--interactive",
+          "--label",
+          "kloe-sandbox=1",
+          ...this.limits(),
+          this.image,
+          "sh",
+          "-c",
+          spec.command,
+        ];
       }
       const r = await dockerRun(argv, t.signal);
-      return { stdout: clamp(r.stdout), stderr: clamp(r.stderr), exitCode: t.state.timedOut ? -1 : r.exitCode, timedOut: t.state.timedOut };
+      return {
+        stdout: clamp(r.stdout),
+        stderr: clamp(r.stderr),
+        exitCode: t.state.timedOut ? -1 : r.exitCode,
+        timedOut: t.state.timedOut,
+      };
     } finally {
       t.cleanup();
     }
@@ -185,7 +236,9 @@ export function getExecutor(): Executor | null {
   if (cached === undefined) cached = createExecutor();
   return cached;
 }
-export function resetExecutor(): void { cached = undefined; }
+export function resetExecutor(): void {
+  cached = undefined;
+}
 
 /** The configured executor, or null when the sandbox is disabled/unimplemented. */
 export function createExecutor(cfg: Config["sandbox"] = getConfig().sandbox): Executor | null {

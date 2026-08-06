@@ -1,7 +1,7 @@
-import { test, expect } from "bun:test";
+import { expect, test } from "bun:test";
 import { Catalog } from "../src/catalog";
-import { ProviderRegistry } from "../src/providers";
 import { discoverModels, enrichModels } from "../src/discover";
+import { ProviderRegistry } from "../src/providers";
 
 /** One model in hyper.charm.land's extended OpenAI listing shape. */
 const HYPER_LISTING = {

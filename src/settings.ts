@@ -1,5 +1,5 @@
-import * as v from "valibot";
 import { existsSync, readFileSync } from "node:fs";
+import * as v from "valibot";
 
 /**
  * The single source of truth for kloe's deployment config. One `kloe.json`,

@@ -9,37 +9,57 @@
 var HTML =
   '<div class="confirm-back"></div>' +
   '<div class="confirm-card" role="dialog" aria-modal="true">' +
-    '<div class="confirm-title"></div>' +
-    '<div class="confirm-body"></div>' +
-    '<input class="confirm-input" type="text" autocomplete="off" spellcheck="false" hidden>' +
-    '<div class="confirm-actions">' +
-      '<button class="btn confirm-cancel" type="button">Cancel</button>' +
-      '<button class="btn confirm-ok" type="button">Confirm</button>' +
-    '</div>' +
-  '</div>';
+  '<div class="confirm-title"></div>' +
+  '<div class="confirm-body"></div>' +
+  '<input class="confirm-input" type="text" autocomplete="off" spellcheck="false" hidden>' +
+  '<div class="confirm-actions">' +
+  '<button class="btn confirm-cancel" type="button">Cancel</button>' +
+  '<button class="btn confirm-ok" type="button">Confirm</button>' +
+  "</div>" +
+  "</div>";
 
 export function mountDialogs() {
   var el = document.createElement("div");
-  el.className = "confirm"; el.hidden = true; el.innerHTML = HTML;
+  el.className = "confirm";
+  el.hidden = true;
+  el.innerHTML = HTML;
   document.body.appendChild(el);
 
-  var title = el.querySelector(".confirm-title"), body = el.querySelector(".confirm-body"),
-      input = el.querySelector(".confirm-input"), ok = el.querySelector(".confirm-ok"),
-      cancel = el.querySelector(".confirm-cancel"), back = el.querySelector(".confirm-back");
-  var resolve = null, isPrompt = false;
+  var title = el.querySelector(".confirm-title"),
+    body = el.querySelector(".confirm-body"),
+    input = el.querySelector(".confirm-input"),
+    ok = el.querySelector(".confirm-ok"),
+    cancel = el.querySelector(".confirm-cancel"),
+    back = el.querySelector(".confirm-back");
+  var resolve = null,
+    isPrompt = false;
 
   function done(committed) {
     if (el.hidden) return;
     el.hidden = true;
-    var r = resolve; resolve = null;
+    var r = resolve;
+    resolve = null;
     if (!r) return;
     r(isPrompt ? (committed ? input.value.trim() : null) : committed);
   }
-  ok.addEventListener("click", function () { done(true); });
-  cancel.addEventListener("click", function () { done(false); });
-  back.addEventListener("click", function () { done(false); });
-  input.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); done(true); } });
-  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && !el.hidden) done(false); });
+  ok.addEventListener("click", function () {
+    done(true);
+  });
+  cancel.addEventListener("click", function () {
+    done(false);
+  });
+  back.addEventListener("click", function () {
+    done(false);
+  });
+  input.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      done(true);
+    }
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !el.hidden) done(false);
+  });
 
   function open(opts, prompt) {
     opts = opts || {};
@@ -50,13 +70,27 @@ export function mountDialogs() {
     ok.textContent = opts.ok || (prompt ? "Save" : "Confirm");
     ok.className = "btn confirm-ok " + (opts.danger ? "danger" : "primary");
     input.hidden = !prompt;
-    if (prompt) { input.value = opts.value || ""; input.placeholder = opts.placeholder || ""; }
+    if (prompt) {
+      input.value = opts.value || "";
+      input.placeholder = opts.placeholder || "";
+    }
     el.hidden = false;
-    if (prompt) { input.focus(); input.select(); } else { ok.focus(); }
-    return new Promise(function (r) { resolve = r; });
+    if (prompt) {
+      input.focus();
+      input.select();
+    } else {
+      ok.focus();
+    }
+    return new Promise(function (r) {
+      resolve = r;
+    });
   }
   return {
-    confirm: function (opts) { return open(opts, false); },
-    prompt: function (opts) { return open(opts, true); },
+    confirm: function (opts) {
+      return open(opts, false);
+    },
+    prompt: function (opts) {
+      return open(opts, true);
+    },
   };
 }

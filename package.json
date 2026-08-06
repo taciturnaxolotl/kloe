@@ -7,6 +7,11 @@
     "dev": "bun --watch server.ts",
     "start": "NODE_ENV=production bun server.ts",
     "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint",
+    "format": "biome format --write",
+    "check": "biome check --write",
+    "ci": "biome ci . && tsc --noEmit && bun test",
     "schema": "bun scripts/gen-schema.ts",
     "lard-login": "bun scripts/lard-login.ts"
   },
@@ -27,8 +32,10 @@
     "valibot": "^1.4.2"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.7",
     "@types/bun": "^1.2.2",
     "@types/turndown": "^5.0.6",
-    "@valibot/to-json-schema": "^1.7.1"
+    "@valibot/to-json-schema": "^1.7.1",
+    "typescript": "^7.0.2"
   }
 }

@@ -1,11 +1,17 @@
-import { tool, jsonSchema, type Tool, type ToolSet } from "ai";
-import { createSearchProvider, type SearchProvider } from "./search";
+import { jsonSchema, type Tool, type ToolSet, tool } from "ai";
+import { type Executor, formatExecResult, getExecutor } from "./executor";
 import { createFetchProvider, type FetchProvider } from "./fetch";
-import { getExecutor, formatExecResult, type Executor } from "./executor";
 import {
-  lardEnabled, lardConnected, contextToText,
-  getContext, memoryList, memoryRead, memoryWrite, memoryAppend,
+  contextToText,
+  getContext,
+  lardConnected,
+  lardEnabled,
+  memoryAppend,
+  memoryList,
+  memoryRead,
+  memoryWrite,
 } from "./lard";
+import { createSearchProvider, type SearchProvider } from "./search";
 import type { Store } from "./store";
 
 /**
@@ -29,7 +35,7 @@ function webSearch(provider: SearchProvider) {
     description:
       "Search the web for current information, beyond your training data. Returns " +
       "results with title, URL, and snippet. Write a specific, keyword-focused " +
-      "query with the key entities and context (e.g. \"OpenAI GPT-5 release date\"), " +
+      'query with the key entities and context (e.g. "OpenAI GPT-5 release date"), ' +
       "not a conversational question. Search operators (site:, intitle:, inurl:, " +
       "define:, related:) are unsupported and make the search fail.",
     inputSchema: jsonSchema<{ query: string }>({
@@ -37,7 +43,8 @@ function webSearch(provider: SearchProvider) {
       properties: {
         query: {
           type: "string",
-          description: "Keyword-focused query: specific entities and context, not a full sentence. No operators.",
+          description:
+            "Keyword-focused query: specific entities and context, not a full sentence. No operators.",
         },
       },
       required: ["query"],
@@ -78,11 +85,17 @@ function runShell(executor: Executor, session?: string) {
       "filesystem or services, and it's torn down when the conversation ends.",
     inputSchema: jsonSchema<{ command: string }>({
       type: "object",
-      properties: { command: { type: "string", description: "The shell command line to run (via sh -c), starting in /workspace." } },
+      properties: {
+        command: {
+          type: "string",
+          description: "The shell command line to run (via sh -c), starting in /workspace.",
+        },
+      },
       required: ["command"],
       additionalProperties: false,
     }),
-    execute: async ({ command }, { abortSignal }) => formatExecResult(await executor.run({ command, session }, abortSignal)),
+    execute: async ({ command }, { abortSignal }) =>
+      formatExecResult(await executor.run({ command, session }, abortSignal)),
   });
 }
 
@@ -94,10 +107,35 @@ function runShell(executor: Executor, session?: string) {
  * nicer UI, one entry in the client's TOOL_UI registry — unknown tools still
  * render with a sensible default).
  */
-const REGISTRY: Array<{ name: string; executor: "in-proc" | "sandbox"; create: (ctx: ToolContext) => Tool | null }> = [
-  { name: "fetch_url", executor: "in-proc", create: () => { const p = createFetchProvider(); return p ? fetchUrl(p) : null; } },
-  { name: "web_search", executor: "in-proc", create: () => { const p = createSearchProvider(); return p ? webSearch(p) : null; } },
-  { name: "run_shell", executor: "sandbox", create: (ctx) => { const e = getExecutor(); return e ? runShell(e, ctx.conversationId) : null; } },
+const REGISTRY: Array<{
+  name: string;
+  executor: "in-proc" | "sandbox";
+  create: (ctx: ToolContext) => Tool | null;
+}> = [
+  {
+    name: "fetch_url",
+    executor: "in-proc",
+    create: () => {
+      const p = createFetchProvider();
+      return p ? fetchUrl(p) : null;
+    },
+  },
+  {
+    name: "web_search",
+    executor: "in-proc",
+    create: () => {
+      const p = createSearchProvider();
+      return p ? webSearch(p) : null;
+    },
+  },
+  {
+    name: "run_shell",
+    executor: "sandbox",
+    create: (ctx) => {
+      const e = getExecutor();
+      return e ? runShell(e, ctx.conversationId) : null;
+    },
+  },
 ];
 
 // lard memory tools, bound to ONE kloe user's token (store + sub). Only offered
@@ -105,18 +143,34 @@ const REGISTRY: Array<{ name: string; executor: "in-proc" | "sandbox"; create: (
 // Paths are lard's own: `profile`, `areas/<n>`, `topics/<n>`, `people/<n>`.
 function lardTools(store: Store, sub: string): ToolSet {
   const pathSchema = jsonSchema<{ path: string }>({
-    type: "object", additionalProperties: false, required: ["path"],
-    properties: { path: { type: "string", description: "Subject path, e.g. profile, areas/homelab, people/kieran." } },
+    type: "object",
+    additionalProperties: false,
+    required: ["path"],
+    properties: {
+      path: {
+        type: "string",
+        description: "Subject path, e.g. profile, areas/homelab, people/kieran.",
+      },
+    },
   });
   return {
     memory_get_context: tool({
-      description: "Get the durable memory context: the user profile plus a listing of every subject on record. Call this to ground yourself before answering.",
-      inputSchema: jsonSchema<Record<string, never>>({ type: "object", additionalProperties: false, properties: {} }),
+      description:
+        "Get the durable memory context: the user profile plus a listing of every subject on record. Call this to ground yourself before answering.",
+      inputSchema: jsonSchema<Record<string, never>>({
+        type: "object",
+        additionalProperties: false,
+        properties: {},
+      }),
       execute: async () => contextToText(await getContext(store, sub)),
     }),
     memory_list: tool({
       description: "List all memory subjects (path, kind, name, description).",
-      inputSchema: jsonSchema<Record<string, never>>({ type: "object", additionalProperties: false, properties: {} }),
+      inputSchema: jsonSchema<Record<string, never>>({
+        type: "object",
+        additionalProperties: false,
+        properties: {},
+      }),
       execute: async () => JSON.stringify(await memoryList(store, sub)),
     }),
     memory_read: tool({
@@ -125,26 +179,47 @@ function lardTools(store: Store, sub: string): ToolSet {
       execute: async ({ path }) => memoryRead(store, sub, path),
     }),
     memory_write: tool({
-      description: "Overwrite a memory subject with new markdown. Use to correct or rewrite a subject; prefer memory_append for adding a single fact.",
+      description:
+        "Overwrite a memory subject with new markdown. Use to correct or rewrite a subject; prefer memory_append for adding a single fact.",
       inputSchema: jsonSchema<{ path: string; body: string }>({
-        type: "object", additionalProperties: false, required: ["path", "body"],
-        properties: { path: { type: "string" }, body: { type: "string", description: "Full markdown body to store." } },
+        type: "object",
+        additionalProperties: false,
+        required: ["path", "body"],
+        properties: {
+          path: { type: "string" },
+          body: { type: "string", description: "Full markdown body to store." },
+        },
       }),
-      execute: async ({ path, body }) => { await memoryWrite(store, sub, path, body); return `wrote ${path}`; },
+      execute: async ({ path, body }) => {
+        await memoryWrite(store, sub, path, body);
+        return `wrote ${path}`;
+      },
     }),
     memory_append: tool({
       description: "Append one line/fact to a memory subject (created if absent).",
       inputSchema: jsonSchema<{ path: string; line: string }>({
-        type: "object", additionalProperties: false, required: ["path", "line"],
-        properties: { path: { type: "string" }, line: { type: "string", description: "A single line to append." } },
+        type: "object",
+        additionalProperties: false,
+        required: ["path", "line"],
+        properties: {
+          path: { type: "string" },
+          line: { type: "string", description: "A single line to append." },
+        },
       }),
-      execute: async ({ path, line }) => { await memoryAppend(store, sub, path, line); return `appended to ${path}`; },
+      execute: async ({ path, line }) => {
+        await memoryAppend(store, sub, path, line);
+        return `appended to ${path}`;
+      },
     }),
   };
 }
 
 /** Extra context a run passes in so per-user tools (lard) bind to the right token. */
-export interface ToolContext { store?: Store; owner?: string; conversationId?: string; }
+export interface ToolContext {
+  store?: Store;
+  owner?: string;
+  conversationId?: string;
+}
 
 /**
  * Wrap every tool's `execute` so a failure returns a clean, recoverable message

@@ -2,9 +2,10 @@
  * The Projects gallery: a grid of project cards (name, description, last-active),
  * a "New project" action, and click-through to /p/<id>. Shares the app sidebar.
  */
-import { mountSidebar } from "./sidebar.js";
-import { mountDialogs } from "./confirm.js";
+
 import { requireAuth, setPfp } from "./authguard.js";
+import { mountDialogs } from "./confirm.js";
+import { mountSidebar } from "./sidebar.js";
 
 (function () {
   "use strict";
@@ -12,8 +13,12 @@ import { requireAuth, setPfp } from "./authguard.js";
   var dialogs = mountDialogs();
 
   var sidebar = mountSidebar({
-    onSelect: function (id) { window.location.href = "/c/" + encodeURIComponent(id); },
-    onNew: function () { window.location.href = "/?new=1"; },
+    onSelect: function (id) {
+      window.location.href = "/c/" + encodeURIComponent(id);
+    },
+    onNew: function () {
+      window.location.href = "/?new=1";
+    },
     dialogs: dialogs,
     reload: loadSidebar,
   });
@@ -22,15 +27,24 @@ import { requireAuth, setPfp } from "./authguard.js";
   // instantly on the next visit; the fetch below revalidates.
   var LIST_CACHE = "kloe:projects";
   function readCache() {
-    try { return JSON.parse(sessionStorage.getItem(LIST_CACHE) || "null"); } catch (_) { return null; }
+    try {
+      return JSON.parse(sessionStorage.getItem(LIST_CACHE) || "null");
+    } catch (_) {
+      return null;
+    }
   }
   function writeCache(list) {
-    try { sessionStorage.setItem(LIST_CACHE, JSON.stringify(list || [])); } catch (_) {}
+    try {
+      sessionStorage.setItem(LIST_CACHE, JSON.stringify(list || []));
+    } catch (_) {}
   }
 
   function fmtDate(ms) {
-    var d = new Date(ms), now = new Date();
-    var startOfDay = function (x) { return new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime(); };
+    var d = new Date(ms),
+      now = new Date();
+    var startOfDay = function (x) {
+      return new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+    };
     var days = Math.round((startOfDay(now) - startOfDay(d)) / 86400000);
     if (days === 0) return "Today";
     if (days === 1) return "Yesterday";
@@ -42,7 +56,8 @@ import { requireAuth, setPfp } from "./authguard.js";
   function render(list) {
     grid.innerHTML = "";
     if (!list.length) {
-      grid.innerHTML = '<div class="chatsempty">No projects yet. Create one to group chats and pin shared memory.</div>';
+      grid.innerHTML =
+        '<div class="chatsempty">No projects yet. Create one to group chats and pin shared memory.</div>';
       return;
     }
     list.forEach(function (p) {
@@ -50,11 +65,13 @@ import { requireAuth, setPfp } from "./authguard.js";
       card.className = "projcard";
       card.href = "/p/" + encodeURIComponent(p.id);
       var name = document.createElement("div");
-      name.className = "projcardname"; name.textContent = p.name;
+      name.className = "projcardname";
+      name.textContent = p.name;
       card.appendChild(name);
       if (p.description) {
         var d = document.createElement("div");
-        d.className = "projcarddesc"; d.textContent = p.description;
+        d.className = "projcarddesc";
+        d.textContent = p.description;
         card.appendChild(d);
       }
       var meta = document.createElement("div");
@@ -69,21 +86,29 @@ import { requireAuth, setPfp } from "./authguard.js";
   async function load() {
     try {
       var list = (await (await fetch("/api/projects")).json()).projects || [];
-      render(list); writeCache(list);
+      render(list);
+      writeCache(list);
     } catch (_) {
-      if (!grid.children.length) grid.innerHTML = '<div class="chatsempty">Failed to load projects</div>';
+      if (!grid.children.length)
+        grid.innerHTML = '<div class="chatsempty">Failed to load projects</div>';
     }
   }
 
   async function loadSidebar() {
     try {
-      var conversations = ((await (await fetch("/api/conversations")).json()).conversations) || [];
+      var conversations = (await (await fetch("/api/conversations")).json()).conversations || [];
       sidebar.render(conversations);
-    } catch (_) { sidebar.render([]); }
+    } catch (_) {
+      sidebar.render([]);
+    }
   }
 
   document.getElementById("newProject").addEventListener("click", async function () {
-    var name = await dialogs.prompt({ title: "New project", placeholder: "Project name", ok: "Create" });
+    var name = await dialogs.prompt({
+      title: "New project",
+      placeholder: "Project name",
+      ok: "Create",
+    });
     if (!name || !name.trim()) return;
     try {
       var r = await fetch("/api/projects", {
@@ -93,7 +118,9 @@ import { requireAuth, setPfp } from "./authguard.js";
       });
       var j = await r.json();
       if (j.id) window.location.href = "/p/" + encodeURIComponent(j.id);
-    } catch (_) { /* stay put on failure */ }
+    } catch (_) {
+      /* stay put on failure */
+    }
   });
 
   (async function () {

@@ -1,9 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import { S3Client } from "bun";
-import { getConfig, type Config } from "./settings";
+import { type Config, getConfig } from "./settings";
 
 /**
  * Content-addressed blob storage — the byte layer behind attachments and agent
@@ -155,9 +155,7 @@ export class S3BlobStore implements BlobStore {
     const { client, prefix, ...creds } = opts;
     this.prefix = prefix ?? "blobs/";
     // Drop undefined so an unset option doesn't clobber Bun's env fallback.
-    const clean = Object.fromEntries(
-      Object.entries(creds).filter(([, v]) => v !== undefined),
-    );
+    const clean = Object.fromEntries(Object.entries(creds).filter(([, v]) => v !== undefined));
     this.client = client ?? new S3Client(clean);
   }
 

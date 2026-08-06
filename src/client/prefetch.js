@@ -16,19 +16,27 @@
  * progressive enhancement: browsers without the API ignore the <script>.
  */
 export function installSpeculation() {
-  if (typeof HTMLScriptElement === "undefined" ||
-      !HTMLScriptElement.supports || !HTMLScriptElement.supports("speculationrules")) return;
+  if (
+    typeof HTMLScriptElement === "undefined" ||
+    !HTMLScriptElement.supports ||
+    !HTMLScriptElement.supports("speculationrules")
+  )
+    return;
   if (document.getElementById("speculationrules")) return; // once per document
   var rules = {
-    prerender: [{
-      source: "document",
-      eagerness: "moderate",
-      where: { and: [
-        { href_matches: "/*" },
-        { not: { href_matches: "/c/*" } },
-        { not: { href_matches: "/auth/*" } },
-      ] },
-    }],
+    prerender: [
+      {
+        source: "document",
+        eagerness: "moderate",
+        where: {
+          and: [
+            { href_matches: "/*" },
+            { not: { href_matches: "/c/*" } },
+            { not: { href_matches: "/auth/*" } },
+          ],
+        },
+      },
+    ],
   };
   var s = document.createElement("script");
   s.type = "speculationrules";
