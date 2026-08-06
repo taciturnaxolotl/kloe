@@ -565,9 +565,14 @@ import {
       return { icon: ui.icon, label: ui.summary(stepsOfTool(a, a.activeTool.name), true, a.activeTool.name), working: true };
     }
     if (a.tools.length) {
-      var last = a.tools[a.tools.length - 1];
-      var lui = toolUI(last.name);
-      return { icon: lui.icon, label: lui.summary(stepsOfTool(a, last.name), false, last.name), working: false };
+      // Distinct tool types in first-seen order → overlapping icons + a summary
+      // per type joined ("Ran 5 commands · Read 2 pages"). One type collapses to
+      // the familiar single icon + summary.
+      var names = [];
+      a.tools.forEach(function (e) { if (names.indexOf(e.name) < 0) names.push(e.name); });
+      var icons = names.map(function (n) { return toolUI(n).icon; });
+      var label = names.map(function (n) { return toolUI(n).summary(stepsOfTool(a, n), false, n); }).join(" · ");
+      return { icons: icons, label: label, working: false };
     }
     if (a.firstReasoning) return { icon: ICON_CLOCK, label: a.thoughtLabel || "Thought", working: false };
     return null;
@@ -575,7 +580,14 @@ import {
   function blockUpdateHead(a) {
     var s = blockHeadState(a);
     if (!s) return;
-    a.headIcon.innerHTML = s.icon;
+    var icons = s.icons || [s.icon];
+    if (icons.length > 1) {
+      a.headIcon.classList.add("iconstack");
+      a.headIcon.innerHTML = icons.map(function (ic) { return '<span class="ic">' + ic + "</span>"; }).join("");
+    } else {
+      a.headIcon.classList.remove("iconstack");
+      a.headIcon.innerHTML = icons[0];
+    }
     a.headLabel.textContent = s.label;
     a.details.classList.toggle("working", s.working);
   }
@@ -970,12 +982,13 @@ import {
         toolResult(assistantTurn(data.messageId), data);
         break;
       case "text-delta": {
-        // Providers emit empty text chunks between tool rounds; opening a text
-        // sink for one would collapse the activity block and split consecutive
-        // tool calls into separate traces. Ignore empties so a run of tool calls
-        // with no real answer between them stays one collapsed trace.
-        if (!data.delta) break;
         var rec = assistantTurn(data.messageId);
+        // Providers emit whitespace-only text (e.g. "\n\n") between tool rounds;
+        // opening a text sink for it would close the activity block and split
+        // consecutive tool calls into separate traces. While a tool trace is
+        // open, skip blank deltas — real text (or anything once the answer has
+        // started, when rec.activity is null) flows through and ends the trace.
+        if (rec.activity && !data.delta.trim()) break;
         var sink = openText(rec); // ends any open thinking; collapses the stepper
         if (!rec.firstDeltaAt) rec.firstDeltaAt = Date.now();
         sink.buf += data.delta;
