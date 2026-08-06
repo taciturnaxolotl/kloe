@@ -3,7 +3,9 @@ when:
     branch: main
 
 engine: microvm
-image: nixos
+# No `image:` → the spindle's configured default (a NixOS image) is used, so
+# this doesn't depend on a specific image name being present on the host.
+# `dependencies` only take effect on a NixOS image.
 
 dependencies:
   - bun
