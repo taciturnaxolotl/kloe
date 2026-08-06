@@ -625,6 +625,32 @@ export class Store {
       .run(trimmed === "" ? null : trimmed, id);
   }
 
+  /** Whether the conversation has a title set (generated or user rename). */
+  hasCustomTitle(id: string): boolean {
+    const r = this.db.prepare("SELECT custom_title FROM conversations WHERE id = ?").get(id) as { custom_title: string | null } | null;
+    return !!(r && r.custom_title && r.custom_title.trim());
+  }
+
+  /** The first user message's text, for deriving a title. */
+  firstUserMessage(id: string): string | null {
+    const r = this.db
+      .prepare("SELECT data FROM events WHERE conversation_id = ? AND event = 'user-message' ORDER BY seq ASC LIMIT 1")
+      .get(id) as { data: string } | null;
+    if (!r) return null;
+    try { return (JSON.parse(r.data) as { content?: string }).content ?? null; } catch { return null; }
+  }
+
+  /** Set the title only if none is set yet (auto-title never clobbers a rename).
+   *  Returns whether it actually set one. */
+  setTitleIfEmpty(id: string, title: string): boolean {
+    const t = title.trim();
+    if (!t) return false;
+    const r = this.db
+      .prepare("UPDATE conversations SET custom_title = ? WHERE id = ? AND (custom_title IS NULL OR custom_title = '')")
+      .run(t, id);
+    return r.changes > 0;
+  }
+
   /**
    * Permanently removes a conversation and everything scoped to it, and returns
    * the sha256s of blobs left orphaned by the removal (referenced by this

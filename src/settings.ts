@@ -125,6 +125,12 @@ const AgentSchema = v.object({
    * to cap a runaway loop.
    */
   maxToolSteps: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0)), 0),
+  /**
+   * A small/cheap model ref (e.g. "hyper/…") for utility tasks. When set, it
+   * generates a short conversation title from the first user message; unset →
+   * the title stays the truncated first message.
+   */
+  smallModel: v.optional(v.string()),
 });
 
 /** Web-search backing for the `web_search` tool. Disabled by default. */

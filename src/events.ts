@@ -19,6 +19,7 @@ export const Event = {
   RunStart: "run-started",
   RunErr: "run-error",
   Cancelled: "cancelled",
+  Title: "conversation-title",
 } as const;
 export type EventName = (typeof Event)[keyof typeof Event];
 
@@ -147,6 +148,13 @@ export interface CancelledData {
   runId: string;
 }
 
+/** A generated (or renamed) conversation title, pushed live so open clients
+ *  update their header + tab without a reload. */
+export interface ConversationTitleData {
+  threadId: string;
+  title: string;
+}
+
 export type EventData =
   | UserMessageData
   | QueuedMessageData
@@ -160,7 +168,8 @@ export type EventData =
   | ToolResultData
   | MessageEndData
   | RunErrorData
-  | CancelledData;
+  | CancelledData
+  | ConversationTitleData;
 
 export interface ParsedEvent {
   id: string;

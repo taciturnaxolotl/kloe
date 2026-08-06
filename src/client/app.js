@@ -1013,6 +1013,9 @@ import {
         updateSend();
         break;
       }
+      case "conversation-title":
+        applyTitle(data.title);
+        break;
       case "run-started":
       case "cancelled":
         break;
@@ -1023,7 +1026,7 @@ import {
   var connTimer = null;
   var SSE_EVENTS = ["user-message", "queued-message", "queued-cancelled", "run-started",
     "message-start", "reasoning-delta", "tool-call", "tool-result", "text-delta",
-    "message-end", "run-error", "cancelled"];
+    "message-end", "run-error", "cancelled", "conversation-title"];
 
   // Open a conversation: batch-load the whole history in ONE request and render
   // it in a single pass (far faster than streaming the entire log back over SSE,
@@ -1313,7 +1316,23 @@ import {
   }
   // Browser tab: "<conversation> - Kloe" once a conversation has a title, else
   // just "Kloe".
-  function setDocTitle(t) { document.title = t ? t + " - Kloe" : "Kloe"; }
+  function setDocTitle(t) {
+    // Collapse whitespace and cap length — a raw first-message title (up to 80
+    // chars, possibly with newlines) makes a broken-looking browser tab.
+    var s = t ? String(t).replace(/\s+/g, " ").trim() : "";
+    if (s.length > 60) s = s.slice(0, 60).trimEnd() + "…";
+    document.title = s ? s + " - Kloe" : "Kloe";
+  }
+  // A live title update (generated server-side): reflect it in the header, the
+  // tab, and the sidebar entry without a reload.
+  function applyTitle(t) {
+    if (!t) return;
+    var ct = title.querySelector(".crumbtitle");
+    if (ct) ct.textContent = t;
+    setDocTitle(t);
+    var c = conversations.find(function (x) { return x.id === convId; });
+    if (c) { c.title = t; sidebar.render(conversations); }
+  }
   // The header shows the chat title, and — when the chat is filed under a
   // project — a `Project / title` breadcrumb whose project name links back to
   // the project page. `project` is {id, name} or null.

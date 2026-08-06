@@ -3,6 +3,7 @@ import type { ModelMessage } from "ai";
 import { Store, parseJobParams, type JobParams, type JobRow } from "./store";
 import { LOCAL_SUB, lardEnabled } from "./lard";
 import { ingestConversation } from "./ingest";
+import { generateTitle } from "./title";
 import { getConfig } from "./settings";
 import { ConversationActor, type RunStep } from "./actor";
 import { run, modelSupportsImages, type RunProject } from "./inference";
@@ -165,6 +166,19 @@ export class JobDriver {
     // quiet. A follow-up message cancels + rearms it, so a busy chat isn't pushed
     // mid-conversation.
     this.scheduleIngest(actor.conversationId);
+    // Auto-title from the first message once (best-effort, off the hot path).
+    void this.maybeTitle(actor);
+  }
+
+  /** Generate a short title from the first user message via the small model,
+   *  once per conversation. No-op without `agent.smallModel` or once titled. */
+  private async maybeTitle(actor: ConversationActor): Promise<void> {
+    const modelRef = getConfig().agent.smallModel;
+    if (!modelRef) return;
+    const id = actor.conversationId;
+    if (this.store.hasCustomTitle(id)) return; // already titled or user-renamed
+    const title = await generateTitle(this.store, id, modelRef);
+    if (title && this.store.setTitleIfEmpty(id, title)) actor.titled(title);
   }
 
   /** Debounced, idle-triggered lard ingest: reset a per-conversation timer on

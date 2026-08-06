@@ -183,6 +183,12 @@ export class ConversationActor {
    * attachments ride in the event and are registered in `blob_refs` so the GC
    * protects those blobs and deleting the conversation frees them.
    */
+  /** Record + broadcast a generated title so open clients update live (and it
+   *  replays on reconnect). The durable title itself lives in custom_title. */
+  titled(title: string): void {
+    this.persist(Event.Title, { threadId: this.conversationId, title });
+  }
+
   appendUser(content: string, runId: string = randomUUID(), attachments?: AttachmentRef[]): void {
     this.persist(Event.User, {
       runId,
