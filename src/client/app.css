@@ -488,12 +488,20 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
   border: 0; border-radius: var(--radius-md); padding: 6px 8px; cursor: default; display: inline-flex;
   align-items: center; gap: 7px; white-space: nowrap; }
 .ctx.hidden { display: none; }
-/* Continuous fill (precise), same two-tone look the ▓░ blocks had: a filled
-   run to `--f` over a faint track. */
-.ctx .bar { width: 80px; height: 9px; border-radius: 2px;
-  --barfill: color-mix(in srgb, var(--accent) 55%, var(--ink-muted));
-  --bartrack: color-mix(in srgb, var(--barfill) 26%, transparent);
-  background: linear-gradient(to right, var(--barfill) 0 var(--f, 0%), var(--bartrack) var(--f, 0%) 100%); }
+/* Continuous fill (precise) that keeps the ▓░ dither: a dense dot pattern for
+   the filled run (▓) and a sparse one for the track (░), each a dot grid masked
+   to its side of `--f`. */
+.ctx .bar { position: relative; width: 80px; height: 10px; border-radius: 2px; overflow: hidden;
+  --barfill: color-mix(in srgb, var(--accent) 55%, var(--ink-muted)); }
+.ctx .bar::before, .ctx .bar::after { content: ""; position: absolute; inset: 0; }
+.ctx .bar::before { /* ▓ dense fill, up to --f */
+  background: radial-gradient(circle, var(--barfill) 52%, transparent 55%) 0 0 / 2px 2px;
+  -webkit-mask: linear-gradient(to right, #000 0 var(--f, 0%), transparent var(--f, 0%));
+          mask: linear-gradient(to right, #000 0 var(--f, 0%), transparent var(--f, 0%)); }
+.ctx .bar::after { /* ░ sparse track, from --f on */
+  background: radial-gradient(circle, var(--barfill) 26%, transparent 30%) 0 0 / 3px 3px;
+  -webkit-mask: linear-gradient(to right, transparent var(--f, 0%), #000 var(--f, 0%));
+          mask: linear-gradient(to right, transparent var(--f, 0%), #000 var(--f, 0%)); }
 .ctx .pct { color: var(--ink-faint); }
 
 .pickwrap { position: relative; display: inline-flex; }
