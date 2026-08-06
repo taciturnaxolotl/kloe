@@ -3,12 +3,15 @@ when:
     branch: ["main"]
 
 # terebithia's spindle has no pre-built microVM images; the nixery engine builds
-# an image on demand from the nixpkgs packages listed under `dependencies`.
+# an image on demand from the nixpkgs packages below.
 engine: nixery
 
 dependencies:
   nixpkgs:
+    # biome comes from nixpkgs (nix-built), NOT the npm @biomejs/biome binary —
+    # that's a prebuilt glibc-FHS binary and won't execute in a pure-nix image.
     - bun
+    - biome
     - git
     - cacert
 
@@ -19,7 +22,7 @@ steps:
 
   - name: lint + format (biome)
     command: |
-      bunx biome ci .
+      biome ci .
 
   - name: typecheck
     command: |

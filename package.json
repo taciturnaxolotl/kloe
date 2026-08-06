@@ -36,6 +36,6 @@
     "@types/bun": "^1.2.2",
     "@types/turndown": "^5.0.6",
     "@valibot/to-json-schema": "^1.7.1",
-    "typescript": "^7.0.2"
+    "typescript": "5.9.3"
   }
 }
