@@ -1,14 +1,16 @@
 when:
   - event: ["push", "pull_request"]
-    branch: main
+    branch: ["main"]
 
-engine: microvm
-# No `image:` → the spindle's configured default (a NixOS image) is used, so
-# this doesn't depend on a specific image name being present on the host.
-# `dependencies` only take effect on a NixOS image.
+# terebithia's spindle has no pre-built microVM images; the nixery engine builds
+# an image on demand from the nixpkgs packages listed under `dependencies`.
+engine: nixery
 
 dependencies:
-  - bun
+  nixpkgs:
+    - bun
+    - git
+    - cacert
 
 steps:
   - name: install
