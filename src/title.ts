@@ -1,6 +1,29 @@
 import { generateText } from "ai";
-import { resolveModel } from "./inference";
+import { resolveModel, getRegistry } from "./inference";
+import { getConfig } from "./settings";
 import type { Store } from "./store";
+
+/** Models the deployment has enabled (visible in the picker). */
+function enabledModels(store: Store) {
+  const settings = new Map(store.listModelSettings().map((s) => [s.ref, s]));
+  return getRegistry().listModels().filter((m) => settings.get(m.ref)?.visible);
+}
+
+/**
+ * The model for utility work (titles): `agent.smallModel` when it's set AND
+ * enabled, otherwise the cheapest enabled model (least in+out cost per 1M) — so
+ * a configured ref that no longer exists gracefully falls back. Null only when
+ * no model is enabled at all.
+ */
+export function resolveSmallModel(store: Store): string | null {
+  const enabled = enabledModels(store);
+  if (!enabled.length) return null;
+  const configured = getConfig().agent.smallModel;
+  if (configured && enabled.some((m) => m.ref === configured)) return configured;
+  return enabled.reduce((a, b) =>
+    b.costPer1MIn + b.costPer1MOut < a.costPer1MIn + a.costPer1MOut ? b : a,
+  ).ref;
+}
 
 /**
  * A short conversation title from the first user message, via a small/cheap

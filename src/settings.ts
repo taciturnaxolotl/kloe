@@ -126,9 +126,10 @@ const AgentSchema = v.object({
    */
   maxToolSteps: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0)), 0),
   /**
-   * A small/cheap model ref (e.g. "hyper/…") for utility tasks. When set, it
-   * generates a short conversation title from the first user message; unset →
-   * the title stays the truncated first message.
+   * A small/cheap model ref (e.g. "hyper/…") for utility tasks like titling.
+   * Used when set AND enabled; otherwise (unset, or the ref no longer exists)
+   * the cheapest enabled model is used. Titles generate whenever any model is
+   * enabled — this just steers which one.
    */
   smallModel: v.optional(v.string()),
 });

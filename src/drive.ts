@@ -3,7 +3,7 @@ import type { ModelMessage } from "ai";
 import { Store, parseJobParams, type JobParams, type JobRow } from "./store";
 import { LOCAL_SUB, lardEnabled } from "./lard";
 import { ingestConversation } from "./ingest";
-import { generateTitle } from "./title";
+import { generateTitle, resolveSmallModel } from "./title";
 import { getConfig } from "./settings";
 import { ConversationActor, type RunStep } from "./actor";
 import { run, modelSupportsImages, type RunProject } from "./inference";
@@ -170,15 +170,20 @@ export class JobDriver {
     void this.maybeTitle(actor);
   }
 
-  /** Generate a short title from the first user message via the small model,
-   *  once per conversation. No-op without `agent.smallModel` or once titled. */
+  /** Generate a short title from the first user message via the small model
+   *  (configured or cheapest enabled), once per conversation. No-op once titled
+   *  or when no model is enabled. Fully defensive — never disturbs the run. */
   private async maybeTitle(actor: ConversationActor): Promise<void> {
-    const modelRef = getConfig().agent.smallModel;
-    if (!modelRef) return;
-    const id = actor.conversationId;
-    if (this.store.hasCustomTitle(id)) return; // already titled or user-renamed
-    const title = await generateTitle(this.store, id, modelRef);
-    if (title && this.store.setTitleIfEmpty(id, title)) actor.titled(title);
+    try {
+      const id = actor.conversationId;
+      if (this.store.hasCustomTitle(id)) return; // already titled or user-renamed
+      const modelRef = resolveSmallModel(this.store);
+      if (!modelRef) return;
+      const title = await generateTitle(this.store, id, modelRef);
+      if (title && this.store.setTitleIfEmpty(id, title)) actor.titled(title);
+    } catch (e) {
+      console.warn("[title]", (e as Error).message);
+    }
   }
 
   /** Debounced, idle-triggered lard ingest: reset a per-conversation timer on
