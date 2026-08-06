@@ -106,6 +106,8 @@ const SandboxSchema = v.object({
   image: v.optional(v.string(), "alpine:3.20"),
   /** Per-command wall-clock cap. */
   timeoutMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 30_000),
+  /** Idle time before a conversation's persistent sandbox is torn down. */
+  idleMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 10 * 60_000),
   /** docker: give the container network access (off = `--network none`). */
   network: v.optional(v.boolean(), false),
   /** spindle: the broker's base URL on the tailnet, e.g. http://terebithia:6161. */

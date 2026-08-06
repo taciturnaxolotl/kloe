@@ -1,7 +1,7 @@
 import { tool, jsonSchema, type Tool, type ToolSet } from "ai";
 import { createSearchProvider, type SearchProvider } from "./search";
 import { createFetchProvider, type FetchProvider } from "./fetch";
-import { createExecutor, formatExecResult, type Executor } from "./executor";
+import { getExecutor, formatExecResult, type Executor } from "./executor";
 import {
   lardEnabled, lardConnected, contextToText,
   getContext, memoryList, memoryRead, memoryWrite, memoryAppend,
@@ -67,20 +67,22 @@ function fetchUrl(provider: FetchProvider) {
 // the homelab later). Offered only when a sandbox is configured. Marked
 // `sandbox` so the (future) durable loop routes it to the executor rather than
 // running it in-process; today its `execute` calls the executor directly.
-function runShell(executor: Executor) {
+function runShell(executor: Executor, session?: string) {
   return tool({
     description:
-      "Run a shell command in an isolated, disposable sandbox (no network by default, " +
-      "ephemeral /workspace). Returns the exit code, stdout, and stderr. Use it to " +
-      "compute, manipulate files, and run code. It is NOT the user's machine — nothing " +
-      "persists between calls, and it can't reach their real filesystem or services.",
+      "Run a shell command in an isolated sandbox — a Linux container private to this " +
+      "conversation. `/workspace` (the working directory) and anything you install " +
+      "(e.g. `apk add git`) PERSIST across calls in this chat, so you can build up state " +
+      "step by step. Returns the exit code, stdout, and stderr. No network unless the " +
+      "deployment enables it. It is NOT the user's machine — it can't reach their real " +
+      "filesystem or services, and it's torn down when the conversation ends.",
     inputSchema: jsonSchema<{ command: string }>({
       type: "object",
-      properties: { command: { type: "string", description: "The shell command line to run (via sh -c)." } },
+      properties: { command: { type: "string", description: "The shell command line to run (via sh -c), starting in /workspace." } },
       required: ["command"],
       additionalProperties: false,
     }),
-    execute: async ({ command }, { abortSignal }) => formatExecResult(await executor.run({ command }, abortSignal)),
+    execute: async ({ command }, { abortSignal }) => formatExecResult(await executor.run({ command, session }, abortSignal)),
   });
 }
 
@@ -92,10 +94,10 @@ function runShell(executor: Executor) {
  * nicer UI, one entry in the client's TOOL_UI registry — unknown tools still
  * render with a sensible default).
  */
-const REGISTRY: Array<{ name: string; executor: "in-proc" | "sandbox"; create: () => Tool | null }> = [
+const REGISTRY: Array<{ name: string; executor: "in-proc" | "sandbox"; create: (ctx: ToolContext) => Tool | null }> = [
   { name: "fetch_url", executor: "in-proc", create: () => { const p = createFetchProvider(); return p ? fetchUrl(p) : null; } },
   { name: "web_search", executor: "in-proc", create: () => { const p = createSearchProvider(); return p ? webSearch(p) : null; } },
-  { name: "run_shell", executor: "sandbox", create: () => { const e = createExecutor(); return e ? runShell(e) : null; } },
+  { name: "run_shell", executor: "sandbox", create: (ctx) => { const e = getExecutor(); return e ? runShell(e, ctx.conversationId) : null; } },
 ];
 
 // lard memory tools, bound to ONE kloe user's token (store + sub). Only offered
@@ -142,7 +144,7 @@ function lardTools(store: Store, sub: string): ToolSet {
 }
 
 /** Extra context a run passes in so per-user tools (lard) bind to the right token. */
-export interface ToolContext { store?: Store; owner?: string; }
+export interface ToolContext { store?: Store; owner?: string; conversationId?: string; }
 
 /**
  * Wrap every tool's `execute` so a failure returns a clean, recoverable message
@@ -174,7 +176,7 @@ export function harden(tools: ToolSet): ToolSet {
 export function toolSet(ctx: ToolContext = {}): ToolSet {
   const tools: ToolSet = {};
   for (const entry of REGISTRY) {
-    const t = entry.create();
+    const t = entry.create(ctx);
     if (t) tools[entry.name] = t;
   }
   if (ctx.store && ctx.owner && lardEnabled() && lardConnected(ctx.store, ctx.owner)) {

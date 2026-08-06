@@ -153,7 +153,7 @@ export class JobDriver {
     await actor.runText(
       spec.runId,
       spec.messageId,
-      (signal) => this.streamTimed(messages, spec, signal, owner, project, timing),
+      (signal) => this.streamTimed(messages, spec, signal, owner, actor.conversationId, project, timing),
       (seq) => {
         // Advance the job's durable checkpoint + lease on each flush so a
         // crash mid-run is re-claimed from the last flushed seq.
@@ -201,10 +201,11 @@ export class JobDriver {
     spec: RunSpec,
     signal: AbortSignal,
     owner: string,
+    conversationId: string,
     project: RunProject | undefined,
     timing?: RunTiming,
   ): AsyncGenerator<RunStep> {
-    for await (const step of run(messages, { runId: spec.runId, model: spec.model, abortSignal: signal, store: this.store, owner, project })) {
+    for await (const step of run(messages, { runId: spec.runId, model: spec.model, abortSignal: signal, store: this.store, owner, conversationId, project })) {
       if (timing && step.kind === "text") {
         if (!timing.firstTokenAt) timing.firstTokenAt = Date.now();
         timing.chunks++;

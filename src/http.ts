@@ -12,6 +12,7 @@ import { getConfig } from "./settings";
 import { gateApi, getSession, sessionUser, authEnabled } from "./auth";
 import { lardEnabled, lardConnected, lardDisconnect, LOCAL_SUB, memoryList, memoryProjects, memoryRead, memoryWrite, memoryDelete, getContext } from "./lard";
 import type { BlobStore } from "./blobs";
+import { getExecutor } from "./executor";
 
 /**
  * The web layer as a plain data structure: `apiRoutes(deps)` returns a Bun
@@ -669,6 +670,7 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         if (denied) return denied;
         const orphaned = store.deleteConversation(req.params.id);
         actors.delete(req.params.id); // drop the in-memory actor so it can't resurrect the log
+        getExecutor()?.disposeSession(req.params.id); // tear down this chat's persistent sandbox
         // Free blobs this conversation was the last to reference: bytes first,
         // then the metadata row (a crash between leaves it for the GC sweep).
         for (const sha256 of orphaned) {

@@ -135,6 +135,8 @@ export interface RunOptions {
   /** For per-user lard: the run's store + the conversation owner's `sub`. */
   store?: Store;
   owner?: string;
+  /** The conversation, so the sandbox binds to its persistent per-chat container. */
+  conversationId?: string;
   /** Set when the conversation is filed under a project. */
   project?: RunProject;
 }
@@ -152,7 +154,7 @@ export async function* run(
   // Only send tools when some are configured (e.g. web_search needs a search
   // provider) — a toolless deployment sends no `tools`, so endpoints that reject
   // an unknown tools field are unaffected.
-  const tools = toolSet({ store: opts.store, owner: opts.owner });
+  const tools = toolSet({ store: opts.store, owner: opts.owner, conversationId: opts.conversationId });
   const hasTools = Object.keys(tools).length > 0;
   // Output cap: an explicit provider override wins; otherwise fall back to the
   // model's own default/max from the catalog (e.g. Hyper reports 384K). Sending
