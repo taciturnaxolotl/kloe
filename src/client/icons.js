@@ -10,7 +10,7 @@ import {
   ArrowUpRight, ArrowUp, ChevronRight, GripVertical, EllipsisVertical, Trash2,
   Search, PanelLeft, MessageCirclePlus, MessagesSquare, Settings,
   Plus, Pencil, Folder,
-  User, Users, Hash, Brain,
+  User, Users, Hash, Brain, SquareTerminal,
 } from "lucide";
 
 /** Serialize a Lucide IconNode to an SVG string. `attrs` override the defaults. */
@@ -56,3 +56,4 @@ export var USER_ICON = icon(User, { "stroke-width": 1.8 });
 export var USERS_ICON = icon(Users, { "stroke-width": 1.8 });
 export var HASH_ICON = icon(Hash, { "stroke-width": 1.8 });
 export var BRAIN_ICON = icon(Brain, { "stroke-width": 1.7 });
+export var TERMINAL_ICON = icon(SquareTerminal, { "stroke-width": 1.8 });

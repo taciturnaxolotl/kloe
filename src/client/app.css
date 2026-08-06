@@ -394,6 +394,16 @@ body.selecting #selectBtn { order: 4; }
   line-height: 1.5; white-space: pre-wrap; word-break: break-word; margin: 2px 0; }
 .turn .body .stepper .step.tool .targs { color: var(--ink-faint); }
 .turn .body .stepper .step.tool .tout.err { color: var(--err); }
+/* run_shell: a terminal card — the command on a prompt line, output below. */
+.turn .body .stepper .step.tool .term { margin: 4px 0; border: 1px solid var(--rule);
+  border-radius: var(--radius-md); background: var(--bg-sunk); overflow: hidden; }
+.turn .body .stepper .step.tool .termcmd { font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word; color: var(--ink); padding: 7px 10px;
+  border-bottom: 1px solid var(--rule); background: color-mix(in srgb, var(--ink) 4%, transparent); }
+.turn .body .stepper .step.tool .termcmd::before { content: "$ "; color: var(--accent); font-weight: 600; }
+.turn .body .stepper .step.tool .termout { font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word; color: var(--ink-muted); padding: 7px 10px; margin: 0;
+  max-height: 320px; overflow: auto; }
 /* fetch_url row: favicon + page title (label), hostname out-link on the right. */
 .turn .body .stepper .stepicon .favicon { width: 15px; height: 15px; border-radius: 3px; display: block; }
 .turn .body .stepper .step .stephost { flex: none; margin-left: 10px; display: inline-flex; align-items: center;

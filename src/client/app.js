@@ -25,6 +25,7 @@ import { mountDialogs } from "./confirm.js";
 import {
   CHEV_ICON as CHEV, CLOCK_ICON as ICON_CLOCK, GLOBE_ICON as ICON_GLOBE,
   TOOL_ICON as ICON_TOOL, PAGE_ICON as ICON_PAGE, EXT_ICON as ICON_EXT,
+  TERMINAL_ICON as ICON_TERMINAL,
   SEND_ICON as SEND, FILE_ICON as FILE_SVG,
 } from "./icons.js";
 
@@ -696,7 +697,7 @@ import {
         step.body.appendChild(el);
       }
     }
-    var t = { row: step.row, label: step.label, body: step.body, toolName: data.toolName, block: a };
+    var t = { row: step.row, label: step.label, body: step.body, toolName: data.toolName, input: data.input, block: a };
     rec.toolSteps[data.toolCallId] = t;
     var entry = { name: data.toolName, input: data.input };
     a.tools.push(entry);
@@ -769,6 +770,19 @@ import {
     var out = document.createElement("div"); out.className = "tout"; out.textContent = toolValue(output);
     t.body.appendChild(out);
   }
+  // A shell run as a terminal card: the command on a `$` prompt line, its output
+  // below. The result string is already `exit code:…\n\nstdout:…` — shown verbatim.
+  function firstLine(s) { s = String(s || ""); var i = s.indexOf("\n"); return i < 0 ? s : s.slice(0, i) + " …"; }
+  function renderShellResult(t, output) {
+    var term = document.createElement("div"); term.className = "term";
+    if (t.input && t.input.command) {
+      var cmd = document.createElement("div"); cmd.className = "termcmd"; cmd.textContent = t.input.command;
+      term.appendChild(cmd);
+    }
+    var out = document.createElement("div"); out.className = "termout"; out.textContent = toolValue(output);
+    term.appendChild(out);
+    t.body.appendChild(term);
+  }
   function errorResult(t, output) {
     var out = document.createElement("div"); out.className = "tout err"; out.textContent = toolValue(output);
     t.body.appendChild(out);
@@ -827,6 +841,17 @@ import {
         if (output && output.content != null) renderFetchResult(t, output);
         else defaultResult(t, output);
       },
+    },
+    run_shell: {
+      icon: ICON_TERMINAL,
+      // The command as the row label (first line; the full command shows in the
+      // expanded terminal card).
+      row: function (input) { return input && input.command ? firstLine(input.command) : "run_shell"; },
+      summary: function (steps, active) {
+        var verb = active ? "Running" : "Ran";
+        return steps.length > 1 ? verb + " " + steps.length + " commands" : verb + " a command";
+      },
+      result: renderShellResult,
     },
   };
   var DEFAULT_TOOL = {
@@ -945,6 +970,11 @@ import {
         toolResult(assistantTurn(data.messageId), data);
         break;
       case "text-delta": {
+        // Providers emit empty text chunks between tool rounds; opening a text
+        // sink for one would collapse the activity block and split consecutive
+        // tool calls into separate traces. Ignore empties so a run of tool calls
+        // with no real answer between them stays one collapsed trace.
+        if (!data.delta) break;
         var rec = assistantTurn(data.messageId);
         var sink = openText(rec); // ends any open thinking; collapses the stepper
         if (!rec.firstDeltaAt) rec.firstDeltaAt = Date.now();
