@@ -488,26 +488,8 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
   border: 0; border-radius: var(--radius-md); padding: 6px 8px; cursor: default; display: inline-flex;
   align-items: center; gap: 7px; white-space: nowrap; }
 .ctx.hidden { display: none; }
-/* Real ordered (Bayer 4×4) dither: the fill colour is masked by a Bayer pattern
-   — dense (75%, the old ▓) for the filled run and sparse (25%, the old ░) for
-   the track — each intersected with a hard mask at `--f` so the boundary stays
-   pixel-exact. Colour comes from CSS (themeable); the SVG masks are just the
-   threshold pixels. */
-.ctx .bar { position: relative; width: 84px; height: 14px; border-radius: 2px; overflow: hidden;
-  --barfill: color-mix(in srgb, var(--accent) 55%, var(--ink-muted));
-  --bayer-dense: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='4'%20height='4'%3E%3Crect%20width='4'%20height='1'%20fill='%23fff'/%3E%3Crect%20x='1'%20y='1'%20width='1'%20height='1'%20fill='%23fff'/%3E%3Crect%20x='3'%20y='1'%20width='1'%20height='1'%20fill='%23fff'/%3E%3Crect%20y='2'%20width='4'%20height='1'%20fill='%23fff'/%3E%3Crect%20x='1'%20y='3'%20width='1'%20height='1'%20fill='%23fff'/%3E%3Crect%20x='3'%20y='3'%20width='1'%20height='1'%20fill='%23fff'/%3E%3C/svg%3E");
-  --bayer-sparse: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='4'%20height='4'%3E%3Crect%20width='1'%20height='1'%20fill='%23fff'/%3E%3Crect%20x='2'%20width='1'%20height='1'%20fill='%23fff'/%3E%3Crect%20y='2'%20width='1'%20height='1'%20fill='%23fff'/%3E%3Crect%20x='2'%20y='2'%20width='1'%20height='1'%20fill='%23fff'/%3E%3C/svg%3E"); }
-.ctx .bar::before, .ctx .bar::after {
-  content: ""; position: absolute; inset: 0; background: var(--barfill);
-  mask-repeat: repeat, no-repeat; -webkit-mask-repeat: repeat, no-repeat;
-  mask-size: 8px 8px, auto; -webkit-mask-size: 8px 8px, auto;
-  mask-composite: intersect; -webkit-mask-composite: source-in; }
-.ctx .bar::before { /* dense dither, up to --f */
-  mask-image: var(--bayer-dense), linear-gradient(to right, #000 0 var(--f, 0%), transparent var(--f, 0%));
-  -webkit-mask-image: var(--bayer-dense), linear-gradient(to right, #000 0 var(--f, 0%), transparent var(--f, 0%)); }
-.ctx .bar::after { /* sparse dither, from --f on */
-  mask-image: var(--bayer-sparse), linear-gradient(to right, transparent var(--f, 0%), #000 var(--f, 0%));
-  -webkit-mask-image: var(--bayer-sparse), linear-gradient(to right, transparent var(--f, 0%), #000 var(--f, 0%)); }
+.ctx .bar { letter-spacing: -0.5px; font-size: 15px; line-height: 1;
+  color: color-mix(in srgb, var(--accent) 55%, var(--ink-muted)); }
 .ctx .pct { color: var(--ink-faint); }
 
 .pickwrap { position: relative; display: inline-flex; }

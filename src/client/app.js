@@ -365,9 +365,16 @@ import {
   function updateCtx() {
     var used = usedTokens(lastUsage);
     if (!selected || !selected.contextWindow || used == null) { ctx.classList.add("hidden"); return; }
-    var raw = Math.max(0, Math.min(100, (used / selected.contextWindow) * 100));
-    ctxbar.style.setProperty("--f", raw.toFixed(1) + "%"); // precise boundary; Bayer pattern draws the texture
-    ctxpct.textContent = Math.round(raw) + "%";
+    // The real shade glyphs, with a ▒ boundary cell for partial fill — same look
+    // as the old ▓░ bar, quarter-block precision instead of full-blocks-only.
+    var n = 12, exact = Math.max(0, Math.min(n, (used / selected.contextWindow) * n));
+    var full = Math.floor(exact), rem = exact - full, cells = full, s = "▓".repeat(full);
+    if (full < n) {
+      if (rem >= 0.75) { s += "▓"; cells++; }
+      else if (rem >= 0.25) { s += "▒"; cells++; }
+    }
+    ctxbar.textContent = s + "░".repeat(n - cells);
+    ctxpct.textContent = Math.round((used / selected.contextWindow) * 100) + "%";
     ctx.classList.remove("hidden");
     ctx.title = used.toLocaleString() + " / " + selected.contextWindow.toLocaleString() + " tokens";
   }
