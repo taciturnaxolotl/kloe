@@ -488,7 +488,7 @@ body:has(.connstat[data-state="offline"]) .banner { display: block; }
   border: 0; border-radius: var(--radius-md); padding: 6px 8px; cursor: default; display: inline-flex;
   align-items: center; gap: 7px; white-space: nowrap; }
 .ctx.hidden { display: none; }
-.ctx .bar { letter-spacing: -0.5px; font-size: 15px; line-height: 1;
+.ctx .bar { letter-spacing: 0; font-size: 15px; line-height: 1;
   color: color-mix(in srgb, var(--accent) 55%, var(--ink-muted)); }
 .ctx .pct { color: var(--ink-faint); }
 
