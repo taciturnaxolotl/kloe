@@ -3,7 +3,6 @@ import { toolSet } from "./tools";
 import { buildSystemPrompt } from "./prompt";
 import { lardEnabled, lardConnected, getContext, contextToText } from "./lard";
 import type { Store } from "./store";
-import { MAX_TOOL_STEPS } from "./config";
 import { ProviderRegistry } from "./providers";
 import { RateLimiter } from "./ratelimit";
 import { loadCatalog, type LoadCatalogOptions } from "./catalog";
@@ -185,7 +184,7 @@ export async function* run(
       : {}),
     // Tools + a step cap: streamText runs the agentic loop (call → execute →
     // feed back), bounded so a runaway can't loop forever.
-    ...(hasTools ? { tools, stopWhen: stepCountIs(MAX_TOOL_STEPS) } : {}),
+    ...(hasTools ? { tools, stopWhen: stepCountIs(getConfig().agent.maxToolSteps) } : {}),
   });
   // Consume the FULL stream (not just textStream) so reasoning models — whose
   // answer arrives as reasoning parts — come through instead of an empty turn.

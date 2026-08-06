@@ -116,6 +116,16 @@ const SandboxSchema = v.object({
   brokerToken: v.optional(v.string()),
 });
 
+/** The agentic tool loop. */
+const AgentSchema = v.object({
+  /**
+   * Max provider round-trips per run when tools are in play (call → execute →
+   * feed back → …). Bounds a runaway loop; raise it for long agentic sessions
+   * (shell exploration burns through steps fast).
+   */
+  maxToolSteps: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 64),
+});
+
 /** Web-search backing for the `web_search` tool. Disabled by default. */
 const SearchSchema = v.object({
   provider: v.optional(v.picklist(["none", "ceramic"]), "none"),
@@ -209,6 +219,7 @@ export const ConfigSchema = v.object({
   server: section(ServerSchema),
   blobs: section(BlobsSchema),
   catwalk: section(CatwalkSchema),
+  agent: section(AgentSchema),
   search: section(SearchSchema),
   fetch: section(FetchSchema),
   sandbox: section(SandboxSchema),
