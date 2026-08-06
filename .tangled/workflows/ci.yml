@@ -1,0 +1,26 @@
+when:
+  - event: ["push", "pull_request"]
+    branch: main
+
+engine: microvm
+image: nixos
+
+dependencies:
+  - bun
+
+steps:
+  - name: install
+    command: |
+      bun install --frozen-lockfile
+
+  - name: lint + format (biome)
+    command: |
+      bunx biome ci .
+
+  - name: typecheck
+    command: |
+      bunx tsc --noEmit
+
+  - name: test
+    command: |
+      bun test
