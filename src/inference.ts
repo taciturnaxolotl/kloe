@@ -160,6 +160,7 @@ export async function* run(
   // it prevents the endpoint's low default from cutting a run off mid-reasoning
   // (which surfaced as finishReason=length with no answer text).
   const maxOutputTokens = cfg?.maxOutputTokens || modelInfo(opts.model)?.defaultMaxTokens || undefined;
+  const maxToolSteps = getConfig().agent.maxToolSteps;
   // Per-user durable memory (lard): fold the owner's context bundle into the
   // prompt. Best-effort — a failed/absent fetch never blocks the run.
   let memory = "";
@@ -184,7 +185,9 @@ export async function* run(
       : {}),
     // Tools + a step cap: streamText runs the agentic loop (call → execute →
     // feed back), bounded so a runaway can't loop forever.
-    ...(hasTools ? { tools, stopWhen: stepCountIs(getConfig().agent.maxToolSteps) } : {}),
+    // 0 → unlimited: never force-stop, so the loop runs until the model stops
+    // calling tools or the user cancels (abortSignal). A positive cap bounds it.
+    ...(hasTools ? { tools, stopWhen: maxToolSteps > 0 ? stepCountIs(maxToolSteps) : () => false } : {}),
   });
   // Consume the FULL stream (not just textStream) so reasoning models — whose
   // answer arrives as reasoning parts — come through instead of an empty turn.

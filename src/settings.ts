@@ -120,10 +120,11 @@ const SandboxSchema = v.object({
 const AgentSchema = v.object({
   /**
    * Max provider round-trips per run when tools are in play (call → execute →
-   * feed back → …). Bounds a runaway loop; raise it for long agentic sessions
-   * (shell exploration burns through steps fast).
+   * feed back → …). `0` (the default) means unlimited — the loop runs until the
+   * model stops calling tools or the user cancels the run. Set a positive number
+   * to cap a runaway loop.
    */
-  maxToolSteps: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 64),
+  maxToolSteps: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0)), 0),
 });
 
 /** Web-search backing for the `web_search` tool. Disabled by default. */
