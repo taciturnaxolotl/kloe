@@ -366,7 +366,7 @@ import {
     var used = usedTokens(lastUsage);
     if (!selected || !selected.contextWindow || used == null) { ctx.classList.add("hidden"); return; }
     var raw = Math.max(0, Math.min(100, (used / selected.contextWindow) * 100));
-    ctxbar.style.setProperty("--f", raw.toFixed(1) + "%"); // continuous fill, not 12 blocks
+    ctxbar.style.setProperty("--f", raw.toFixed(1) + "%"); // precise boundary; Bayer pattern draws the texture
     ctxpct.textContent = Math.round(raw) + "%";
     ctx.classList.remove("hidden");
     ctx.title = used.toLocaleString() + " / " + selected.contextWindow.toLocaleString() + " tokens";
