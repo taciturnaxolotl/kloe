@@ -39,17 +39,18 @@ test("createExecutor builds a docker executor when enabled", () => {
   expect(e?.kind).toBe("docker");
 });
 
-test("createExecutor returns null for the not-yet-implemented spindle backend", () => {
-  expect(
-    createExecutor({
-      enabled: true,
-      backend: "spindle",
-      image: "alpine:3.20",
-      timeoutMs: 30_000,
-      idleMs: 600_000,
-      network: false,
-    }),
-  ).toBeNull();
+test("createExecutor reflects the configured runtime in kind (kata → microVM)", () => {
+  const e = createExecutor({
+    enabled: true,
+    backend: "docker",
+    image: "alpine:3.20",
+    runtime: "kata",
+    dockerHost: "ssh://kloe@prattle",
+    timeoutMs: 30_000,
+    idleMs: 600_000,
+    network: false,
+  });
+  expect(e?.kind).toBe("kata");
 });
 
 test("formatExecResult surfaces exit code, stdout, and stderr", () => {

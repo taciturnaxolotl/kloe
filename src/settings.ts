@@ -95,25 +95,35 @@ const FetchSchema = v.object({
 
 /**
  * The sandbox executor that backs side-effecting tools (`run_shell`). Disabled
- * by default. `docker` runs each command in a throwaway container on this host
- * (dev). `spindle` (not yet implemented) will stream to a broker on the spindle
- * box over the tailnet, which runs it in a microVM — the vsock/VM stay remote.
+ * by default. Commands run in a docker container; `runtime: "runsc"` wraps each
+ * in gVisor's userspace kernel (syscalls intercepted, not the shared host
+ * kernel), so untrusted model-authored commands are strongly isolated.
+ * `dockerHost` points the CLI at a remote daemon over the tailnet (e.g. a
+ * dedicated box), keeping execution off this host entirely.
  */
 const SandboxSchema = v.object({
   enabled: v.optional(v.boolean(), false),
-  backend: v.optional(v.picklist(["docker", "spindle"]), "docker"),
-  /** docker: the image each command runs in. */
+  backend: v.optional(v.picklist(["docker"]), "docker"),
+  /** The image each command runs in. */
   image: v.optional(v.string(), "alpine:3.20"),
+  /**
+   * OCI runtime to run containers under. Omit for docker's default (runc,
+   * shared-kernel). "runsc" (gVisor) sandboxes each container in a userspace
+   * kernel; needs the runtime registered on the daemon (see the host's config).
+   */
+  runtime: v.optional(v.string()),
+  /**
+   * Remote docker endpoint, e.g. "ssh://kloe@prattle" over the tailnet. Sets
+   * DOCKER_HOST for the spawned CLI so containers run there, not on this host.
+   * Omit to use the local daemon.
+   */
+  dockerHost: v.optional(v.string()),
   /** Per-command wall-clock cap. */
   timeoutMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 30_000),
   /** Idle time before a conversation's persistent sandbox is torn down. */
   idleMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 10 * 60_000),
   /** docker: give the container network access (off = `--network none`). */
   network: v.optional(v.boolean(), false),
-  /** spindle: the broker's base URL on the tailnet, e.g. http://terebithia:6161. */
-  brokerUrl: v.optional(v.string()),
-  /** spindle: bearer token for the broker's authed exec endpoint. */
-  brokerToken: v.optional(v.string()),
 });
 
 /** The agentic tool loop. */

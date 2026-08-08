@@ -4,19 +4,22 @@ import { type Config, getConfig } from "./settings";
  * The sandbox executor: where a side-effecting tool's command actually runs.
  * Adapter-by-type, the same spirit as providers — a tool tagged `sandbox` hands
  * its command to whatever `Executor` the deployment configured, and never runs
- * it in-process. Two backings are planned:
+ * it in-process.
  *
- *   - `LocalDockerExecutor` — containers on this host. Works on the dev machine
- *     today (docker is all it needs), so the whole sandboxed-tool flow is
- *     exercisable without any homelab infra.
- *   - `SpindleExecutor` (later) — an HTTP/SSE client to a broker on the spindle
- *     box (terebithia) over the tailnet, which runs the command in a microVM.
+ * One backing, `LocalDockerExecutor`, covers the whole range via config rather
+ * than separate classes:
+ *
+ *   - Local dev: docker on this host, default runtime (shared kernel). All the
+ *     sandboxed-tool plumbing is exercisable with nothing but docker.
+ *   - Remote microVM: `dockerHost` points the CLI at a KVM box over the tailnet
+ *     and `runtime: "kata"` boots each container in a lightweight VM there — the
+ *     spec's per-chat microVM, reached through docker's own ssh transport rather
+ *     than a bespoke broker. The VM and its execution stay off this host.
  *
  * `session` is the per-conversation key: calls sharing a session share a live
  * sandbox (its `/workspace` and installed packages persist across the chat),
- * torn down on idle or when the conversation is deleted — the docker analog of
- * the spec's per-chat, physically-pooled microVM. A call with no session runs
- * one-off (ephemeral container), which is all a probe/test needs.
+ * torn down on idle or when the conversation is deleted. A call with no session
+ * runs one-off (ephemeral container), which is all a probe/test needs.
  */
 
 export interface ExecSpec {
@@ -37,7 +40,7 @@ export interface ExecResult {
 }
 
 export interface Executor {
-  /** A short tag for logs/UI ("docker", "spindle"). */
+  /** A short tag for logs/UI ("docker", "kata"). */
   readonly kind: string;
   run(spec: ExecSpec, signal?: AbortSignal): Promise<ExecResult>;
   /** Tear down a conversation's persistent sandbox (on delete). Best-effort. */
@@ -49,9 +52,17 @@ function clamp(s: string): string {
   return s.length > MAX_OUTPUT ? s.slice(0, MAX_OUTPUT) + "\n…[output truncated]" : s;
 }
 
+// A prebuilt spawn env, or undefined to inherit this process's. Set once per
+// executor so every docker call targets the same (possibly remote) daemon.
+type DockerEnv = Record<string, string> | undefined;
+
 /** Run a docker CLI invocation to completion, returning its captured streams. */
-async function dockerRun(argv: string[], signal?: AbortSignal): Promise<ExecResult> {
-  const proc = Bun.spawn(["docker", ...argv], { stdout: "pipe", stderr: "pipe", signal });
+async function dockerRun(
+  argv: string[],
+  env: DockerEnv,
+  signal?: AbortSignal,
+): Promise<ExecResult> {
+  const proc = Bun.spawn(["docker", ...argv], { stdout: "pipe", stderr: "pipe", env, signal });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -60,9 +71,9 @@ async function dockerRun(argv: string[], signal?: AbortSignal): Promise<ExecResu
   return { stdout, stderr, exitCode, timedOut: false };
 }
 /** Fire-and-forget docker command whose output we don't need (rm, etc.). */
-function dockerQuiet(argv: string[]): void {
+function dockerQuiet(argv: string[], env: DockerEnv): void {
   try {
-    void Bun.spawn(["docker", ...argv], { stdout: "ignore", stderr: "ignore" }).exited;
+    void Bun.spawn(["docker", ...argv], { stdout: "ignore", stderr: "ignore", env }).exited;
   } catch {
     /* daemon down */
   }
@@ -83,24 +94,46 @@ interface Session {
  * `docker run --rm`.
  */
 export class LocalDockerExecutor implements Executor {
-  readonly kind = "docker";
+  readonly kind: string;
   private readonly image: string;
   private readonly defaultTimeoutMs: number;
   private readonly network: boolean;
   private readonly idleMs: number;
+  private readonly runtime: string | undefined;
+  private readonly env: DockerEnv;
   private readonly sessions = new Map<string, Session>();
 
-  constructor(image: string, defaultTimeoutMs: number, network: boolean, idleMs: number) {
+  constructor(
+    image: string,
+    defaultTimeoutMs: number,
+    network: boolean,
+    idleMs: number,
+    runtime?: string,
+    dockerHost?: string,
+  ) {
     this.image = image;
     this.defaultTimeoutMs = defaultTimeoutMs;
     this.network = network;
     this.idleMs = idleMs;
+    this.runtime = runtime;
+    // "kata" et al. are more informative in logs/UI than a bare "docker".
+    this.kind = runtime ?? "docker";
+    // A remote daemon (e.g. a KVM box over the tailnet) is selected purely via
+    // DOCKER_HOST; the rest of the env is inherited. Undefined → local daemon.
+    this.env = dockerHost
+      ? { ...(process.env as Record<string, string>), DOCKER_HOST: dockerHost }
+      : undefined;
     // Reap containers a prior run left behind (a crash skips teardown), then
     // sweep idle ones periodically. Both best-effort; unref'd so neither pins
     // the process open.
-    dockerQuiet(["container", "prune", "-f", "--filter", "label=kloe-sandbox=1"]);
+    dockerQuiet(["container", "prune", "-f", "--filter", "label=kloe-sandbox=1"], this.env);
     const sweeper = setInterval(() => this.evictIdle(), 60_000);
     if (typeof sweeper.unref === "function") sweeper.unref();
+  }
+
+  /** `--runtime <name>` for container-creating commands; empty for the default. */
+  private runtimeArgs(): string[] {
+    return this.runtime ? ["--runtime", this.runtime] : [];
   }
 
   private containerName(session: string): string {
@@ -123,7 +156,7 @@ export class LocalDockerExecutor implements Executor {
   }
 
   private async startContainer(name: string): Promise<void> {
-    dockerQuiet(["rm", "-f", name]); // clear a stale same-named container first
+    dockerQuiet(["rm", "-f", name], this.env); // clear a stale same-named container first
     const argv = [
       "run",
       "-d",
@@ -131,13 +164,14 @@ export class LocalDockerExecutor implements Executor {
       name,
       "--label",
       "kloe-sandbox=1",
+      ...this.runtimeArgs(),
       ...this.limits(),
       this.image,
       "sh",
       "-c",
       "mkdir -p /workspace && exec tail -f /dev/null",
     ];
-    const r = await dockerRun(argv);
+    const r = await dockerRun(argv, this.env);
     if (r.exitCode !== 0)
       throw new Error(
         "sandbox container failed to start: " + (r.stderr.trim() || `exit ${r.exitCode}`),
@@ -160,7 +194,7 @@ export class LocalDockerExecutor implements Executor {
     for (const [key, s] of this.sessions) {
       if (s.lastUsed < cutoff) {
         this.sessions.delete(key);
-        dockerQuiet(["rm", "-f", s.name]);
+        dockerQuiet(["rm", "-f", s.name], this.env);
       }
     }
   }
@@ -168,7 +202,7 @@ export class LocalDockerExecutor implements Executor {
   disposeSession(session: string): void {
     const s = this.sessions.get(session);
     this.sessions.delete(session);
-    dockerQuiet(["rm", "-f", s ? s.name : this.containerName(session)]);
+    dockerQuiet(["rm", "-f", s ? s.name : this.containerName(session)], this.env);
   }
 
   // Abort on the caller's signal OR the timeout, tracking which fired.
@@ -209,6 +243,7 @@ export class LocalDockerExecutor implements Executor {
           "--interactive",
           "--label",
           "kloe-sandbox=1",
+          ...this.runtimeArgs(),
           ...this.limits(),
           this.image,
           "sh",
@@ -216,7 +251,7 @@ export class LocalDockerExecutor implements Executor {
           spec.command,
         ];
       }
-      const r = await dockerRun(argv, t.signal);
+      const r = await dockerRun(argv, this.env, t.signal);
       return {
         stdout: clamp(r.stdout),
         stderr: clamp(r.stderr),
@@ -245,10 +280,16 @@ export function createExecutor(cfg: Config["sandbox"] = getConfig().sandbox): Ex
   if (!cfg.enabled) return null;
   switch (cfg.backend) {
     case "docker":
-      return new LocalDockerExecutor(cfg.image, cfg.timeoutMs, cfg.network, cfg.idleMs);
-    case "spindle":
-      // Increment 2: an HTTP/SSE client to the broker route on terebithia.
-      return null;
+      // Local dev or remote microVM — the difference is entirely config:
+      // `dockerHost` (which daemon) and `runtime` (e.g. "kata" for a VM).
+      return new LocalDockerExecutor(
+        cfg.image,
+        cfg.timeoutMs,
+        cfg.network,
+        cfg.idleMs,
+        cfg.runtime,
+        cfg.dockerHost,
+      );
     default:
       return null;
   }
