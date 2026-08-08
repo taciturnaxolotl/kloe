@@ -1,0 +1,17 @@
+when:
+  - event: ["push"]
+    branch: ["microvm-smoke-test"]
+
+# Smoke test for the microVM engine on prattle (the nixos image built via the
+# spindle-nixos-image flake package). Proves spindle boots a real microVM and
+# runs commands in it, end to end. Throwaway branch; delete after.
+engine: microvm
+image: nixos
+
+steps:
+  - name: prove it's a real microvm
+    command: |
+      uname -a
+      echo "cpus: $(nproc)"
+      echo "kvm-backed guest reporting in from prattle"
+      cat /proc/cpuinfo | grep -m1 "model name" || true
