@@ -42,19 +42,70 @@ import { mountSidebar } from "./sidebar.js";
   // or math block. The URL is computed so the app bundler leaves it external —
   // the heavy grammars never touch the app entry, and text-only chats never
   // fetch them. Fail-soft: if it can't load, prose stays as plain markdown.
-  var _enrich;
+  var _enrichMod;
+  function enrichMod() {
+    if (!_enrichMod) {
+      _enrichMod = import(new URL("/assets/enrich.js", document.baseURI).href).catch(function () {
+        return {};
+      });
+    }
+    return _enrichMod;
+  }
   function enrich(el) {
-    if (!_enrich) {
-      _enrich = import(new URL("/assets/enrich.js", document.baseURI).href)
-        .then(function (m) {
-          return m.enrich;
+    enrichMod().then(function (m) {
+      if (m.enrich) m.enrich(el);
+    });
+  }
+
+  // Live syntax highlighting for the ACTIVE (last, still-growing) code block of a
+  // streaming turn. Only one block is ever streaming — completed blocks are done
+  // by the end-of-turn enrich pass — so we re-highlight just that one, throttled:
+  // a single pass in flight per block, and whatever streamed in meanwhile is kept
+  // as a plain tail and picked up on the next pass. `_hlLen` is the text length
+  // we've highlighted through, so an unchanged block is skipped. Pathologically
+  // large blocks fall back to end-of-turn highlighting to avoid O(n²) churn.
+  var HL_MAX = 20000;
+  function streamHighlightActive(proseEl) {
+    var codes = proseEl.querySelectorAll("pre > code");
+    if (!codes.length) return;
+    var el = codes[codes.length - 1];
+    var len = el.textContent.length;
+    if (el._hlLen === len || len > HL_MAX) return;
+    streamHl(el);
+  }
+  function streamHl(el) {
+    if (el._hlBusy) return; // a pass is running; it re-checks the length when done
+    var text = el.textContent;
+    if (el._hlLen === text.length) return;
+    el._hlBusy = true;
+    enrichMod().then(function (m) {
+      if (!m.highlightInner) {
+        el._hlBusy = false;
+        return;
+      }
+      m.highlightInner(el, text)
+        .then(function (inner) {
+          // Record the length we attempted, success OR failure. Without this a
+          // failed highlight (null) would leave _hlLen unset, so the "did it grow?"
+          // check below stays true forever and re-calls in a tight async loop that
+          // freezes the page. On failure we just leave the block plain.
+          el._hlLen = text.length;
+          if (inner != null) {
+            // smd may have appended more text while we highlighted; it only appends,
+            // so `text` is still a prefix — keep the tail plain for the next pass.
+            var cur = el.textContent;
+            var tail = cur.length > text.length ? cur.slice(text.length) : "";
+            el.innerHTML = inner;
+            if (tail) el.appendChild(document.createTextNode(tail));
+            el.classList.add("hl"); // enables the token colors (see app.css)
+          }
+          el._hlBusy = false;
+          if (el.textContent.length !== el._hlLen && el.textContent.length <= HL_MAX) streamHl(el);
         })
         .catch(function () {
-          return function () {};
+          el._hlLen = text.length; // don't retry the same text in a loop
+          el._hlBusy = false;
         });
-    }
-    _enrich.then(function (fn) {
-      fn(el);
     });
   }
 
@@ -392,6 +443,13 @@ import { mountSidebar } from "./sidebar.js";
     };
     var base = r.set_attr;
     r.set_attr = function (data, type, value) {
+      // A code fence's language just became known — start fetching its grammar now
+      // so the load overlaps the streaming text (helps first-use of a language).
+      if (type === smd.LANG && value) {
+        enrichMod().then(function (m) {
+          if (m.preloadLang) m.preloadLang(value);
+        });
+      }
       var out = value;
       if (type === smd.HREF || type === smd.SRC) {
         if (/^\s*(javascript|vbscript|file):/i.test(value)) out = "#";
@@ -464,6 +522,7 @@ import { mountSidebar } from "./sidebar.js";
         ts.buf = "";
         painted = true;
         liveMeta(r);
+        streamHighlightActive(ts.el); // live-highlight the active code block, if any
       }
     }
     if (painted) autoScroll();

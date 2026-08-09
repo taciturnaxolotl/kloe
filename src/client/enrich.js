@@ -38,6 +38,41 @@ var LANGS = {
   ruby: () => import("@shikijs/langs/ruby"),
   diff: () => import("@shikijs/langs/diff"),
   toml: () => import("@shikijs/langs/toml"),
+  csharp: () => import("@shikijs/langs/csharp"),
+  fsharp: () => import("@shikijs/langs/fsharp"),
+  kotlin: () => import("@shikijs/langs/kotlin"),
+  swift: () => import("@shikijs/langs/swift"),
+  zig: () => import("@shikijs/langs/zig"),
+  nix: () => import("@shikijs/langs/nix"),
+  php: () => import("@shikijs/langs/php"),
+  lua: () => import("@shikijs/langs/lua"),
+  dockerfile: () => import("@shikijs/langs/dockerfile"),
+  elixir: () => import("@shikijs/langs/elixir"),
+  erlang: () => import("@shikijs/langs/erlang"),
+  haskell: () => import("@shikijs/langs/haskell"),
+  ocaml: () => import("@shikijs/langs/ocaml"),
+  scala: () => import("@shikijs/langs/scala"),
+  clojure: () => import("@shikijs/langs/clojure"),
+  elm: () => import("@shikijs/langs/elm"),
+  dart: () => import("@shikijs/langs/dart"),
+  julia: () => import("@shikijs/langs/julia"),
+  r: () => import("@shikijs/langs/r"),
+  perl: () => import("@shikijs/langs/perl"),
+  groovy: () => import("@shikijs/langs/groovy"),
+  graphql: () => import("@shikijs/langs/graphql"),
+  hcl: () => import("@shikijs/langs/hcl"),
+  terraform: () => import("@shikijs/langs/terraform"),
+  powershell: () => import("@shikijs/langs/powershell"),
+  proto: () => import("@shikijs/langs/proto"),
+  solidity: () => import("@shikijs/langs/solidity"),
+  vue: () => import("@shikijs/langs/vue"),
+  svelte: () => import("@shikijs/langs/svelte"),
+  xml: () => import("@shikijs/langs/xml"),
+  ini: () => import("@shikijs/langs/ini"),
+  makefile: () => import("@shikijs/langs/makefile"),
+  cmake: () => import("@shikijs/langs/cmake"),
+  latex: () => import("@shikijs/langs/latex"),
+  gdscript: () => import("@shikijs/langs/gdscript"),
 };
 // Short/alternate names → a curated lang id.
 var ALIAS = {
@@ -52,29 +87,72 @@ var ALIAS = {
   yml: "yaml",
   md: "markdown",
   "c++": "cpp",
-  "c#": "c",
+  "c#": "csharp",
+  cs: "csharp",
+  "f#": "fsharp",
+  fs: "fsharp",
   golang: "go",
+  kt: "kotlin",
+  kts: "kotlin",
+  docker: "dockerfile",
+  ex: "elixir",
+  exs: "elixir",
+  erl: "erlang",
+  hs: "haskell",
+  ml: "ocaml",
+  clj: "clojure",
+  cljs: "clojure",
+  jl: "julia",
+  pl: "perl",
+  ps1: "powershell",
+  pwsh: "powershell",
+  tf: "terraform",
+  sol: "solidity",
+  gd: "gdscript",
+  tex: "latex",
+  protobuf: "proto",
 };
-var _hl = null;
-async function highlighter() {
-  if (!_hl) {
-    var core = await import("shiki/core");
-    var eng = await import("shiki/engine/javascript");
-    _hl = await core.createHighlighterCore({
-      themes: [import("@shikijs/themes/github-light"), import("@shikijs/themes/github-dark")],
-      langs: Object.keys(LANGS).map(function (k) {
-        return LANGS[k]();
-      }),
-      engine: eng.createJavaScriptRegexEngine(),
-    });
+// Memoize the highlighter PROMISE, not the resolved instance. Caching the
+// resolved value lets concurrent callers (preloadLang, streamHl, enrichCode all
+// fire at once) each pass the `if (!_hl)` check before the first await resolves,
+// spawning a highlighter per call — and since `_loaded` tracks grammars against
+// one instance, a different instance never has them and codeToHtml fails. One
+// shared promise → one singleton instance, exactly as Shiki expects.
+var _hlPromise = null;
+function highlighter() {
+  if (!_hlPromise) {
+    _hlPromise = (async function () {
+      var core = await import("shiki/core");
+      var eng = await import("shiki/engine/javascript");
+      // No grammars up front — each language loads lazily on first use (loadLang),
+      // so a JS-only conversation costs one grammar, not all of them.
+      return core.createHighlighterCore({
+        themes: [import("@shikijs/themes/github-light"), import("@shikijs/themes/github-dark")],
+        langs: [],
+        engine: eng.createJavaScriptRegexEngine(),
+      });
+    })();
   }
-  return _hl;
+  return _hlPromise;
+}
+// lang id -> load promise, so concurrent highlights of the same language (a page
+// full of code blocks on reload) trigger one grammar fetch, not one per block.
+var _loaded = Object.create(null);
+async function loadLang(hl, lang) {
+  if (!LANGS[lang]) return "text"; // unknown → core plaintext (always available)
+  if (!_loaded[lang]) _loaded[lang] = hl.loadLanguage(LANGS[lang]());
+  try {
+    await _loaded[lang];
+    return lang;
+  } catch (_) {
+    return "text"; // grammar failed to load → still boxed, just uncolored
+  }
 }
 async function highlightCode(code, lang) {
   var hl = await highlighter();
   lang = (lang || "").toLowerCase();
   lang = ALIAS[lang] || lang;
-  if (!LANGS[lang]) lang = "text"; // plaintext is always available in core
+  lang = await loadLang(hl, lang);
   // defaultColor:false → every token carries --shiki-light/--shiki-dark vars and
   // no fixed color, so the app theme picks one (see .hl in app.css).
   return hl.codeToHtml(code, {
@@ -83,6 +161,20 @@ async function highlightCode(code, lang) {
     defaultColor: false,
   });
 }
+// Start loading a language's grammar (and the highlighter core) as soon as a code
+// fence's language is known, so the fetch overlaps the streaming text instead of
+// starting only when the first highlight pass runs. Fire-and-forget.
+export function preloadLang(lang) {
+  lang = (lang || "").toLowerCase();
+  lang = ALIAS[lang] || lang;
+  if (!LANGS[lang]) return;
+  highlighter()
+    .then(function (hl) {
+      return loadLang(hl, lang);
+    })
+    .catch(function () {});
+}
+
 // smd sets the fence's language as the code element's class verbatim (`<code
 // class="js">`), not the `language-js` convention — so read it straight, minus
 // our own `hl` marker and the optional `language-` prefix.
@@ -109,6 +201,23 @@ async function enrichCode(root) {
     } catch (_) {
       /* leave the plain code block */
     }
+  }
+}
+
+// Streaming highlight: the inner HTML (Shiki spans) for `text` in the code
+// element's fenced language, returned so app.js can drop it into the live block
+// and keep whatever streamed in while we highlighted. Null on failure → stay
+// plain. Whole-block each call, so context changes (a `/` that becomes `//`)
+// simply resolve — no token bookkeeping needed for a single active block.
+export async function highlightInner(codeEl, text) {
+  try {
+    var html = await highlightCode(text, codeLang(codeEl));
+    var tmp = document.createElement("template");
+    tmp.innerHTML = html;
+    var inner = tmp.content.querySelector("code");
+    return inner ? inner.innerHTML : null;
+  } catch (_) {
+    return null;
   }
 }
 
