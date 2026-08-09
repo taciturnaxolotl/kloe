@@ -66,16 +66,38 @@ type AsstPart = ReasoningPart | { type: "text"; text: string } | ToolCallPart;
  * Returned unchanged when within budget, so the common small result is untouched.
  */
 function capToolOutput(output: unknown): unknown {
-  const note = (s: string): string =>
-    s.slice(0, TOOL_OUTPUT_MAX) + `\n…[truncated, ${s.length} chars total]`;
-  if (typeof output === "string") return output.length > TOOL_OUTPUT_MAX ? note(output) : output;
+  const note = (s: string, budget: number): string =>
+    s.slice(0, budget) + `\n…[truncated, ${s.length} chars total]`;
+  if (typeof output === "string")
+    return output.length > TOOL_OUTPUT_MAX ? note(output, TOOL_OUTPUT_MAX) : output;
   let json: string;
   try {
     json = JSON.stringify(output);
   } catch {
     return output;
   }
-  return json.length > TOOL_OUTPUT_MAX ? note(json) : output;
+  if (json.length <= TOOL_OUTPUT_MAX) return output; // common small result, untouched
+  // Oversized object: keep its SHAPE and truncate just its largest string field
+  // (a fetched page's content, a big blob) so metadata — a title, favicon URLs —
+  // survives for the client and the object stays parseable for the model.
+  if (output && typeof output === "object" && !Array.isArray(output)) {
+    const obj = output as Record<string, unknown>;
+    let biggest: string | null = null;
+    let biggestLen = 0;
+    for (const k of Object.keys(obj)) {
+      const v = obj[k];
+      if (typeof v === "string" && v.length > biggestLen) {
+        biggest = k;
+        biggestLen = v.length;
+      }
+    }
+    if (biggest) {
+      const overhead = json.length - biggestLen; // everything but that field
+      const budget = TOOL_OUTPUT_MAX - overhead;
+      if (budget > 0) return { ...obj, [biggest]: note(obj[biggest] as string, budget) };
+    }
+  }
+  return note(json, TOOL_OUTPUT_MAX); // no string field to trim → degrade to a string
 }
 
 /** Wraps a logged tool output in the AI SDK's typed tool-result output shape. */
