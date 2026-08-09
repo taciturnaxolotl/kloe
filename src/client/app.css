@@ -956,6 +956,7 @@ body.selecting #selectBtn {
   align-items: baseline;
   gap: 10px;
   margin-bottom: 8px;
+  user-select: none; /* the sender name + timestamp aren't part of the message */
 }
 .turn .who {
   font-size: 13px;
@@ -1412,6 +1413,7 @@ body.selecting #selectBtn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  user-select: none; /* navigation chrome — it lost the summary's on the a11y move */
   font-family: var(--mono);
   font-size: 11.5px;
   letter-spacing: 0.02em;

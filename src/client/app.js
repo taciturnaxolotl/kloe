@@ -657,6 +657,27 @@ import { mountSidebar } from "./sidebar.js";
     if (enrichObserver) enrichObserver.disconnect();
     enrichPending = new WeakMap();
   }
+  // Copying inside the thread: the browser's native text/plain pads block
+  // boundaries with newlines (the .body > .prose > <p> chrome leaves trailing
+  // blank lines). `sel.toString()` is the clean text, so drive the clipboard from
+  // it — trim surrounding newlines and collapse any 3+ blank-line runs — and keep
+  // the selection's HTML so rich paste still works.
+  thread.addEventListener("copy", function (e) {
+    var sel = window.getSelection ? window.getSelection() : null;
+    if (!sel || sel.isCollapsed || !sel.rangeCount || !e.clipboardData) return;
+    var cleaned = sel
+      .toString()
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/^\n+/, "")
+      .replace(/[ \t\n]+$/, "");
+    if (!cleaned) return; // nothing meaningful selected — leave native copy alone
+    var frag = document.createElement("div");
+    frag.appendChild(sel.getRangeAt(0).cloneContents());
+    e.clipboardData.setData("text/plain", cleaned);
+    e.clipboardData.setData("text/html", frag.innerHTML);
+    e.preventDefault();
+  });
+
   // While backfilling older history, `renderAnchor` is the turn to insert BEFORE
   // (so older turns stack in order above the already-rendered newest ones); null
   // means append (live turns, and the newest-first phase).
