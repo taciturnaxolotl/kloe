@@ -2240,4 +2240,13 @@ import { mountSidebar } from "./sidebar.js";
     router.start(location.pathname + location.search);
     updateSend();
   })();
+
+  // Register the service worker (instant cold paint + offline shell + instant
+  // chat-open). Progressive enhancement: absent/unsupported, the app runs exactly
+  // as before. Deferred to load so it never competes with the boot fetches.
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", function () {
+      navigator.serviceWorker.register("/sw.js").catch(function () {});
+    });
+  }
 })();

@@ -187,6 +187,15 @@ if (import.meta.main) {
       return new Response("not found", { status: 404 });
     },
     routes: {
+      // The service worker: root scope, revalidated each load so updates land.
+      "/sw.js": () =>
+        new Response(Bun.file(new URL("./src/client/sw.js", import.meta.url)), {
+          headers: {
+            "Content-Type": "text/javascript; charset=utf-8",
+            "Cache-Control": "no-cache",
+            "Service-Worker-Allowed": "/",
+          },
+        }),
       "/": page("index.html"),
       "/c/:id": page("index.html"), // deep link to a conversation — the SPA reads the id from the path
       "/settings": page("index.html"), // SPA route — the shell mounts the settings view
