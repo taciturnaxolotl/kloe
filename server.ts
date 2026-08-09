@@ -1,11 +1,7 @@
 import { watch } from "node:fs";
+import { ASSET_CACHE, buildClient, type ClientBundle, HTML_CACHE, serveAsset } from "./src/assets";
 import { clientMetadata, handleCallback, handleLogin, handleLogout } from "./src/auth";
 import { createBlobStore } from "./src/blobs";
-import conversationsHTML from "./src/client/conversations.html";
-import indexHTML from "./src/client/index.html";
-import projectHTML from "./src/client/project.html";
-import projectsHTML from "./src/client/projects.html";
-import settingsHTML from "./src/client/settings.html";
 import { BLOB_GC_GRACE_MS, BLOB_GC_INTERVAL_MS, REAP_INTERVAL_MS } from "./src/config";
 import { JobDriver } from "./src/drive";
 import { sweepOrphanBlobs } from "./src/gc";
@@ -16,10 +12,10 @@ import { getConfig } from "./src/settings";
 import { Store } from "./src/store";
 
 /**
- * Web entrypoint. Bun's native `routes` serve the HTML pages (transpiled,
- * bundled, content-hashed, HMR in dev — no bundler config, no Vite) alongside
- * the framework-free API routes from src/http. Tests import `apiRoutes` directly
- * and never touch this file, so importing it never triggers frontend bundling.
+ * Web entrypoint. The client is built explicitly (see src/assets — content-hashed,
+ * compressed, immutable-cached) and served alongside the framework-free API routes
+ * from src/http. Tests import `apiRoutes` directly and never touch this file, so
+ * importing it never triggers a frontend build.
  *
  * The inline drive loop shares its implementation with worker.ts via JobDriver;
  * both entrypoints run the same claim/run/checkpoint logic.
@@ -109,20 +105,32 @@ if (import.meta.main) {
     for (const out of build.outputs) enrichAssets.set(out.path.replace(/^\.?\//, ""), out);
   }
   await buildEnrich();
-  // `bun --watch` restarts on server.ts + its imports, but enrich.js is built
-  // from a path (never imported), so its edits wouldn't otherwise rebuild. In
-  // dev, watch the client sources and rebuild the bundle in place; the no-cache
-  // entry header (below) then lets a plain browser reload pick it up.
-  if (Bun.env.NODE_ENV !== "production") {
+
+  // The app client (index + the satellite pages), built explicitly so we control
+  // caching, compression, and asset paths (see src/assets). Held in a mutable ref
+  // so the dev watcher can swap in a rebuild without re-registering routes.
+  const dev = Bun.env.NODE_ENV !== "production";
+  let client: ClientBundle = await buildClient(dev);
+
+  // `bun --watch` restarts on server.ts + its imports, but the client and enrich
+  // are built from paths (never imported), so their edits wouldn't otherwise
+  // rebuild. In dev, watch the client sources and rebuild in place; the no-cache
+  // HTML header then lets a plain browser reload pick up the new hashed assets.
+  if (dev) {
     const dir = new URL("./src/client/", import.meta.url).pathname;
     let timer: ReturnType<typeof setTimeout> | null = null;
     watch(dir, { recursive: true }, (_evt, file) => {
-      if (file && !/\.(js|css)$/.test(file)) return; // ignore editor temp files
+      if (file && !/\.(js|css|html)$/.test(file)) return; // ignore editor temp files
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
-        buildEnrich()
-          .then(() => console.log("[enrich] rebuilt"))
-          .catch((err) => console.error("[enrich] rebuild failed:", err));
+        Promise.all([
+          buildEnrich(),
+          buildClient(dev).then((c) => {
+            client = c;
+          }),
+        ])
+          .then(() => console.log("[client] rebuilt"))
+          .catch((err) => console.error("[client] rebuild failed:", err));
       }, 80);
     });
   }
@@ -157,17 +165,34 @@ if (import.meta.main) {
   // keepalive — so an idle stream would be killed before the first keepalive
   // fires. Raise it to Bun's max (255s); the keepalive resets the idle clock
   // well inside that window, so streams stay open indefinitely.
+  // An entry document, served with revalidate-caching. Reads from the mutable
+  // `client` ref so a dev rebuild is reflected without re-registering the route.
+  const page = (name: string) => (req: Request) => {
+    const doc = client.html.get(name);
+    if (!doc) return new Response("client not built", { status: 500 });
+    return serveAsset(req, doc, HTML_CACHE);
+  };
+
   Bun.serve({
     port,
     idleTimeout: 255,
-    development: process.env.NODE_ENV !== "production",
+    development: dev,
+    // Content-hashed client assets (/chunk-*.js, /favicon-*, …) live at the root
+    // under names that change each build, so they can't be static route keys;
+    // this fallback serves them immutably from the current bundle by basename.
+    fetch(req) {
+      const name = new URL(req.url).pathname.slice(1);
+      const asset = client.assets.get(name);
+      if (asset) return serveAsset(req, asset, ASSET_CACHE);
+      return new Response("not found", { status: 404 });
+    },
     routes: {
-      "/": indexHTML,
-      "/c/:id": indexHTML, // deep link to a conversation — the SPA reads the id from the path
-      "/settings": settingsHTML,
-      "/conversations": conversationsHTML,
-      "/projects": projectsHTML,
-      "/p/:id": projectHTML, // project detail — the page reads the id from the path
+      "/": page("index.html"),
+      "/c/:id": page("index.html"), // deep link to a conversation — the SPA reads the id from the path
+      "/settings": page("settings.html"),
+      "/conversations": page("conversations.html"),
+      "/projects": page("projects.html"),
+      "/p/:id": page("project.html"), // project detail — the page reads the id from the path
       // Auth (indiko OAuth). Inert unless auth.enabled — the SPA only navigates
       // here after a 401. /client-metadata.json is the public client document.
       "/client-metadata.json": () => clientMetadata(),
