@@ -139,6 +139,9 @@ import { mountSidebar } from "./sidebar.js";
   var queued = Object.create(null); // runId -> { content, attachments } (staging panel)
   var flushHandle = null;
   var lastUsage = null; // real token usage from the last completed turn
+  var lastUsageConv = null; // which conversation lastUsage belongs to (empty chats have none)
+  var ctxDisplayed = 0; // the token count the gauge is currently showing (animated)
+  var ctxAnim = null; // rAF handle for the gauge tween
   var staged = []; // attachments uploaded and waiting on the next send
 
   // ---- attachments -------------------------------------------------------
@@ -488,8 +491,9 @@ import { mountSidebar } from "./sidebar.js";
     if (u.totalTokens != null) return u.totalTokens;
     return null;
   }
-  function updateCtx() {
-    var used = usedTokens(lastUsage);
+  // Paint the gauge for a specific token count. `used == null` (or no model
+  // window) hides it. Fractional `used` is fine — the tween feeds it fractions.
+  function renderCtx(used) {
     if (!selected || !selected.contextWindow || used == null) {
       ctx.classList.add("hidden");
       return;
@@ -514,7 +518,36 @@ import { mountSidebar } from "./sidebar.js";
     ctxbar.textContent = s + "░".repeat(n - cells);
     ctxpct.textContent = Math.round((used / selected.contextWindow) * 100) + "%";
     ctx.classList.remove("hidden");
-    ctx.title = used.toLocaleString() + " / " + selected.contextWindow.toLocaleString() + " tokens";
+    ctx.title =
+      Math.round(used).toLocaleString() +
+      " / " +
+      selected.contextWindow.toLocaleString() +
+      " tokens";
+  }
+  // Animate the gauge from what it's showing to lastUsage's value, so switching
+  // conversations glides the fill rather than blanking and popping. An empty chat
+  // (or no model window) drains to zero, then hides.
+  function updateCtx() {
+    var target = usedTokens(lastUsage);
+    var hideAfter = target == null || !selected || !selected.contextWindow;
+    if (ctxAnim) cancelAnimationFrame(ctxAnim);
+    if (hideAfter && ctx.classList.contains("hidden") && ctxDisplayed === 0) return; // nothing to do
+    var to = hideAfter ? 0 : target;
+    var from = ctxDisplayed,
+      t0 = null;
+    function step(now) {
+      if (t0 === null) t0 = now;
+      var p = Math.min(1, (now - t0) / 320);
+      var eased = 1 - (1 - p) ** 3; // easeOutCubic
+      ctxDisplayed = from + (to - from) * eased;
+      renderCtx(hideAfter && p >= 1 ? null : ctxDisplayed);
+      if (p < 1) ctxAnim = requestAnimationFrame(step);
+      else {
+        ctxAnim = null;
+        if (hideAfter) ctxDisplayed = 0;
+      }
+    }
+    ctxAnim = requestAnimationFrame(step);
   }
   function updateSend() {
     // One button in the action slot: Stop while a run streams, Send otherwise.
@@ -554,7 +587,9 @@ import { mountSidebar } from "./sidebar.js";
     renderQueue();
     clearStaged();
     streaming = false;
-    lastUsage = null;
+    // Note: lastUsage is intentionally NOT reset here — the gauge keeps the
+    // previous conversation's value so it can animate to the next one. openStream
+    // / loadHistoryThenStream own the gauge reset (drain to empty for a new chat).
     if (flushHandle) {
       cancelAnimationFrame(flushHandle);
       flushHandle = null;
@@ -1239,8 +1274,12 @@ import { mountSidebar } from "./sidebar.js";
         liveMeta(rec); // provider reported no usage: fall back to wall-clock
       }
     }
-    if (usage) {
+    // The gauge tracks the NEWEST turn's usage. `renderAnchor` is set only while
+    // backfilling older turns above the tail — those must not clobber it, or the
+    // gauge flashes down to an old (small) value as history loads in.
+    if (usage && !renderAnchor) {
       lastUsage = usage;
+      lastUsageConv = convId;
       updateCtx();
     }
     if (stripped) failbar(rec.body, "some content was removed by the sanitizer");
@@ -1405,11 +1444,9 @@ import { mountSidebar } from "./sidebar.js";
     // through a satellite view, it briefly shows the old conversation (a full
     // round-trip for a new chat) until loadHistoryThenStream's fetch returns.
     clearThread();
-    // Reset the context-window gauge for the conversation we're switching to;
-    // replay of an existing chat's last turn repopulates it, a new chat leaves
-    // it hidden (no usage yet) instead of showing the previous chat's number.
-    lastUsage = null;
-    updateCtx();
+    // Leave the gauge showing the previous conversation's value here; the tail
+    // load below animates it to the new conversation's usage (or drains it to
+    // empty if this chat has none), so switching glides instead of blanking.
     atBottom = true; // a freshly opened conversation should land at the end
     void loadHistoryThenStream(id);
   }
@@ -1428,6 +1465,13 @@ import { mountSidebar } from "./sidebar.js";
     if (convId !== id) return; // switched conversations while loading
     var tail = await streamInto(res, id, null, true); // phase 1: newest turns at the bottom
     if (convId !== id) return;
+    // No completed turn carried usage for this conversation (a new/empty chat, or
+    // one whose last turn had none): the gauge is still showing the previous
+    // conversation's value, so drain it to empty now.
+    if (lastUsageConv !== id) {
+      lastUsage = null;
+      updateCtx();
+    }
     updateSend(); // repaint the action button once to the final state (no strobe)
     connectStream(id, tail.lastId); // live tail from the newest event we have
     if (tail.rendered && tail.firstSeq > 1) void backfill(id, tail.firstSeq); // older turns, in the background
