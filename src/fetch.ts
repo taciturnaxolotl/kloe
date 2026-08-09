@@ -35,6 +35,13 @@ export interface FetchResult {
   format: "markdown" | "text";
   /** True when `content` was cut to the char cap. */
   truncated: boolean;
+  /** The page's SVG favicon (absolute). Adaptive SVGs self-fix dark mode; either
+   *  way it beats a flat service .ico. Preferred as the default mark. */
+  faviconSvg?: string;
+  /** An explicit dark-mode favicon variant (absolute) — a prefers-color-scheme
+   *  media link or GitHub's data-base-href convention. Used as a dark <picture>
+   *  source. Both favicon fields are candidates the client preloads. */
+  faviconDark?: string;
 }
 
 export interface FetchProvider {
@@ -123,6 +130,23 @@ export function rewriteForFetch(raw: string): string {
     if ((m = p.match(/^\/([^/]+)\/([^/]+)$/))) return `${rawBase}/${m[1]}/${m[2]}/HEAD/README.md`;
   }
   return raw;
+}
+
+// Known dark-appropriate favicons for hosts we can't read a <head> from — either
+// because we rewrite the URL to raw content (GitHub repos → raw README, so there's
+// no HTML page) or the host reliably serves these. Keyed on the ORIGINAL host.
+const KNOWN_FAVICONS: Record<string, { svg?: string; dark?: string }> = {
+  "github.com": {
+    svg: "https://github.githubassets.com/favicons/favicon.svg",
+    dark: "https://github.githubassets.com/favicons/favicon-dark.svg",
+  },
+};
+function knownFavicons(rawUrl: string): { svg?: string; dark?: string } {
+  try {
+    return KNOWN_FAVICONS[new URL(rawUrl).hostname.replace(/^www\./, "")] ?? {};
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -328,7 +352,48 @@ function feedToMarkdown(xml: string): { title: string; markdown: string } | null
 }
 
 /** HTML → main-content markdown, with a whole-body fallback if extraction fails. */
-function htmlToMarkdown(html: string, baseUrl: string): { title: string; markdown: string } {
+// The favicons a page declares that beat a flat .ico from a favicon service on a
+// dark theme, resolved absolute. No service does theme-aware icons (they hand you
+// one flat image), and there's no consumer-side library for this — so we read the
+// page's own tags. Two things the client can use:
+//   svg  — the page's SVG favicon. An *adaptive* SVG (prefers-color-scheme inside)
+//          self-fixes dark mode when shown via <img>; a plain one is at least the
+//          real logo. Preferred as the default mark when present.
+//   dark — an explicit dark variant: a `prefers-color-scheme: dark` media link
+//          (rare but clean), or GitHub's `js-site-favicon` convention where the
+//          dark file is "<data-base-href>-dark.svg".
+// Both are *candidates* — the client preloads and falls back if one 404s.
+function pageFavicons(
+  doc: ReturnType<typeof parseHTML>["document"],
+  baseUrl: string,
+): { svg?: string; dark?: string } {
+  const abs = (href: string): string | undefined => {
+    try {
+      return new URL(href, baseUrl).href;
+    } catch {
+      return undefined;
+    }
+  };
+  let svg: string | undefined;
+  let dark: string | undefined;
+  const links = doc.querySelectorAll('link[rel~="icon"], link[rel="apple-touch-icon"]');
+  for (const l of Array.from(links) as Array<{ getAttribute(name: string): string | null }>) {
+    const type = (l.getAttribute("type") || "").toLowerCase();
+    const media = (l.getAttribute("media") || "").toLowerCase();
+    const href = l.getAttribute("href");
+    if (href && media.includes("prefers-color-scheme") && media.includes("dark"))
+      dark = dark ?? abs(href);
+    else if (href && (type.includes("svg") || /\.svg(\?|#|$)/i.test(href))) svg = svg ?? abs(href);
+    const base = l.getAttribute("data-base-href");
+    if (base) dark = dark ?? abs(base + "-dark.svg");
+  }
+  return { svg, dark };
+}
+
+function htmlToMarkdown(
+  html: string,
+  baseUrl: string,
+): { title: string; markdown: string; faviconSvg?: string; faviconDark?: string } {
   const td = new TurndownService({
     headingStyle: "atx",
     codeBlockStyle: "fenced",
@@ -350,6 +415,10 @@ function htmlToMarkdown(html: string, baseUrl: string): { title: string; markdow
   ]);
   const { document } = parseHTML(html);
   const title = document.querySelector("title")?.textContent?.trim() || baseUrl;
+  // Read the favicons NOW — Readability.parse() mutates the document (it strips it
+  // down to the article, removing <head> links), so doing this afterwards finds
+  // nothing on any page where Readability succeeds (i.e. most content pages).
+  const favs = pageFavicons(document, baseUrl);
   let article: {
     title?: string | null;
     content?: string | null;
@@ -372,7 +441,12 @@ function htmlToMarkdown(html: string, baseUrl: string): { title: string; markdow
     .turndown(source)
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  return { title: (article?.title || title).trim(), markdown };
+  return {
+    title: (article?.title || title).trim(),
+    markdown,
+    faviconSvg: favs.svg,
+    faviconDark: favs.dark,
+  };
 }
 
 export class LocalFetchProvider implements FetchProvider {
@@ -440,6 +514,8 @@ export class LocalFetchProvider implements FetchProvider {
     let title = current;
     let content: string;
     let format: "markdown" | "text" = "text";
+    let faviconSvg: string | undefined;
+    let faviconDark: string | undefined;
     if (contentType.includes("markdown")) {
       // The server negotiated markdown directly — use it verbatim (no lossy
       // HTML round-trip), and lift the first H1 as the title.
@@ -463,6 +539,8 @@ export class LocalFetchProvider implements FetchProvider {
       title = out.title;
       content = out.markdown;
       format = "markdown";
+      faviconSvg = out.faviconSvg;
+      faviconDark = out.faviconDark;
     } else if (
       contentType.includes("text/") ||
       contentType.includes("json") ||
@@ -496,7 +574,15 @@ export class LocalFetchProvider implements FetchProvider {
         content.slice(0, this.opts.maxChars) + `\n\n…[truncated to ${this.opts.maxChars} chars]`;
       truncated = true;
     }
-    return { url: current, title, content, format, truncated };
+    // No page favicons (a raw-content rewrite left no HTML, e.g. a GitHub repo)?
+    // Fall back to the original host's known ones. `rawUrl` is what the user asked
+    // for, before rewriteForFetch pointed us at raw.githubusercontent.com.
+    if (!faviconSvg && !faviconDark) {
+      const known = knownFavicons(rawUrl);
+      faviconSvg = known.svg;
+      faviconDark = known.dark;
+    }
+    return { url: current, title, content, format, truncated, faviconSvg, faviconDark };
   }
 }
 

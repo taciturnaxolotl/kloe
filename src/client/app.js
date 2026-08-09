@@ -1107,10 +1107,41 @@ import { mountSidebar } from "./sidebar.js";
     });
     t.body.appendChild(card);
   }
+  // Upgrade a fetched page's favicon from the default service .ico using what the
+  // page actually declares (fetch.ts pageFavicons): prefer its own SVG favicon
+  // (adaptive SVGs self-fix dark mode via the media query inside them, rendered
+  // through <img>), and when a dark variant is known, add a <picture> source so a
+  // dark theme shows a legible mark natively. Each candidate is preloaded first,
+  // so a 404 or bad guess keeps the reliable default instead of a broken image.
+  function preloadImg(url, ok) {
+    var i = new Image();
+    i.onload = ok;
+    i.src = url;
+  }
+  function upgradeFavicon(t, output) {
+    var img = t.row.querySelector("img.favicon");
+    if (!img || img.tagName !== "IMG") return; // onerror already swapped to ICON_PAGE
+    if (output.faviconSvg)
+      preloadImg(output.faviconSvg, function () {
+        img.src = output.faviconSvg;
+      });
+    if (output.faviconDark)
+      preloadImg(output.faviconDark, function () {
+        if (!img.parentNode || img.parentNode.tagName === "PICTURE") return;
+        var pic = document.createElement("picture");
+        var src = document.createElement("source");
+        src.media = "(prefers-color-scheme: dark)";
+        src.srcset = output.faviconDark;
+        img.parentNode.insertBefore(pic, img);
+        pic.appendChild(src);
+        pic.appendChild(img);
+      });
+  }
   // A fetched page: the summary row's label becomes the page title (the hostname
   // link is already in the summary), and the body holds the content.
   function renderFetchResult(t, output) {
     if (output.title && t.label) t.label.textContent = output.title;
+    upgradeFavicon(t, output);
     if (output.content) {
       // Only markdown gets prose-rendered; raw text/JSON/XML stays verbatim in a
       // preformatted block, so non-HTML content doesn't get mangled by the parser.
