@@ -191,7 +191,7 @@ if (import.meta.main) {
       "/c/:id": page("index.html"), // deep link to a conversation — the SPA reads the id from the path
       "/settings": page("settings.html"),
       "/conversations": page("conversations.html"),
-      "/projects": page("projects.html"),
+      "/projects": page("index.html"), // SPA route — the shell's router mounts the projects view
       "/p/:id": page("project.html"), // project detail — the page reads the id from the path
       // Auth (indiko OAuth). Inert unless auth.enabled — the SPA only navigates
       // here after a 401. /client-metadata.json is the public client document.

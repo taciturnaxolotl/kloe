@@ -16,13 +16,10 @@
 import { brotliCompressSync, gzipSync, constants as zlib } from "node:zlib";
 
 const CLIENT_DIR = new URL("./client/", import.meta.url).pathname;
-const ENTRY_HTML = [
-  "index.html",
-  "conversations.html",
-  "settings.html",
-  "projects.html",
-  "project.html",
-];
+// projects.html is gone — /projects is served by the shell (index.html) and its
+// router mounts src/client/views/projects.js. The other satellites are still
+// their own documents until they're converted too.
+const ENTRY_HTML = ["index.html", "conversations.html", "settings.html", "project.html"];
 
 /** A built output ready to serve: raw bytes plus precomputed encodings and its ETag. */
 export interface ServedAsset {

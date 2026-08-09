@@ -32,6 +32,7 @@ import {
   TOOL_ICON as ICON_TOOL,
   SEND_ICON as SEND,
 } from "./icons.js";
+import { createRouter } from "./router.js";
 import { mountSidebar } from "./sidebar.js";
 
 (function () {
@@ -1734,11 +1735,17 @@ import { mountSidebar } from "./sidebar.js";
   var conversations = [];
   var dialogs = mountDialogs();
   var sidebar = mountSidebar({
-    onSelect: function (id, t) {
-      selectConversation(id, t);
+    // Route through the router so these work from any view: if a satellite is
+    // mounted, it's torn down and the chat shell comes back; on chat, it's a
+    // normal soft-nav. `router` is assigned below (before any user click fires).
+    onSelect: function (id) {
+      router.navigate("/c/" + encodeURIComponent(id));
     },
     onNew: function () {
-      newConversation();
+      // "New chat" always yields a fresh conversation. Already home → reset in
+      // place; otherwise navigate home, where enterChat starts a fresh one.
+      if (location.pathname === "/" && !location.search) newConversation("none");
+      else router.navigate("/");
     },
     activeId: function () {
       return convId;
@@ -1849,16 +1856,81 @@ import { mountSidebar } from "./sidebar.js";
     input.focus();
     if (nav !== "none") setUrl("/", nav === "replace");
   }
-  window.addEventListener("popstate", function () {
-    var id = convIdFromPath();
-    if (id) {
-      var c = conversations.find(function (x) {
-        return x.id === id;
-      });
-      selectConversation(id, c ? c.title : null, "none");
-    } else {
+  // Enter (or re-enter) the chat view for a resolved route. The router owns the
+  // URL, so nav mode is always "none" here — we only open the right conversation.
+  // Called on click-nav to chat, on popstate landing on chat, and at boot.
+  function enterChat(params) {
+    if (params && params.isNew) {
       newConversation("none");
+      return;
     }
+    if (params && params.id) {
+      var c = conversations.find(function (x) {
+        return x.id === params.id;
+      });
+      selectConversation(params.id, c ? c.title : null, "none");
+      return;
+    }
+    newConversation("none"); // bare "/" — a fresh chat, not the last conversation
+  }
+
+  // The route table. Chat ("/", "/c/:id", legacy "/?c=" and "/?new") is the
+  // persistent home; /projects is a mounted view. Everything else returns null so
+  // the router lets the browser do a real navigation (not yet SPA-converted).
+  function resolveRoute(path) {
+    var u = new URL(path, location.origin);
+    var q = new URLSearchParams(u.search);
+    if (u.pathname === "/") {
+      if (q.has("new")) return { kind: "chat", nav: "chat", params: { isNew: true } };
+      if (q.get("c")) return { kind: "chat", nav: "chat", params: { id: q.get("c") } };
+      return { kind: "chat", nav: "chat", params: {} };
+    }
+    var m = u.pathname.match(/^\/c\/([^/]+)\/?$/);
+    if (m) return { kind: "chat", nav: "chat", params: { id: decodeURIComponent(m[1]) } };
+    if (u.pathname === "/projects") {
+      return {
+        kind: "view",
+        nav: "projects",
+        params: {},
+        load: function () {
+          return import("./views/projects.js");
+        },
+      };
+    }
+    return null;
+  }
+
+  // Light up the rail row for the current section (the MPA baked this into each
+  // page's HTML; soft-nav has to do it live). "New chat" and the active recent are
+  // handled separately by sidebar.render, so chat clears both top rows.
+  function setActiveNav(section) {
+    document.getElementById("chatsBtn").classList.toggle("active", section === "conversations");
+    document.getElementById("projectsBtn").classList.toggle("active", section === "projects");
+  }
+
+  // Shared context handed to mounted views: the live sidebar, the dialog helpers,
+  // soft navigation, and the rail toggle (each view wires its own header button).
+  var viewCtx = {
+    sidebar: sidebar,
+    dialogs: dialogs,
+    navigate: function (path) {
+      router.navigate(path);
+    },
+    toggleRail: function () {
+      sidebar.toggleRail();
+    },
+  };
+  var router = createRouter({
+    outlet: document.getElementById("viewOutlet"),
+    chatShell: document.getElementById("chatShell"),
+    resolve: resolveRoute,
+    enterChat: enterChat,
+    onNav: setActiveNav,
+    ctx: viewCtx,
+    // Instant swap. The content paints synchronously from cache, so a crossfade
+    // is pure perceived latency on top of an already-there view — a snap reads as
+    // faster. (The cross-document @view-transition still smooths real page loads.)
+    transition: false,
   });
 
   // ---- model picker ------------------------------------------------------
@@ -2061,16 +2133,12 @@ import { mountSidebar } from "./sidebar.js";
         .catch(function () {});
     }
 
-    if (params.has("new")) {
-      newConversation("replace");
-    } else if (wantId) {
-      var c = conversations.find(function (x) {
-        return x.id === wantId;
-      });
-      selectConversation(wantId, c ? c.title : null, "replace");
-    } else {
-      newConversation("replace"); // land on a fresh chat, not the last conversation
-    }
+    // Normalize a "?new" landing to "/" (drop the query so a refresh and the
+    // "New chat" home-check both see a canonical fresh chat); the project, if any,
+    // was already captured in pendingProject. Then hand off to the router, which
+    // enters chat or mounts the matching view for whatever URL we loaded on.
+    if (params.has("new")) history.replaceState({}, "", "/");
+    router.start(location.pathname + location.search);
     updateSend();
   })();
 })();

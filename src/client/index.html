@@ -51,6 +51,11 @@
     </nav>
 
     <div class="main">
+      <!-- The chat view is the persistent home: its DOM (and its live SSE stream)
+           stays mounted while satellite routes render into #viewOutlet, so peeking
+           at Settings or Projects never tears the conversation down. The router
+           (router.js) toggles which of the two is shown. -->
+      <div class="chatshell" id="chatShell">
       <header class="head">
         <button class="icon menu" id="menu" type="button" aria-label="Toggle sidebar" title="Toggle sidebar">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>
@@ -104,6 +109,10 @@
           </form>
         </div>
       </div>
+      </div>
+      <!-- Satellite routes (Conversations, Projects, Settings) mount here; hidden
+           while the chat view is showing. -->
+      <div class="viewoutlet" id="viewOutlet" hidden></div>
     </div>
 
   </div>

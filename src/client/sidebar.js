@@ -137,5 +137,5 @@ export function mountSidebar(config) {
   var cached = readRecents();
   if (cached && cached.length) render(cached);
 
-  return { render: render, closeRail: closeRail };
+  return { render: render, closeRail: closeRail, toggleRail: toggleRail };
 }

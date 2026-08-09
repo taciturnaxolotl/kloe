@@ -837,6 +837,23 @@ body.selecting #selectBtn {
   min-height: 0;
   min-width: 0;
 }
+/* The chat view and the router's satellite outlet are the two panes inside .main.
+   Each fills it and is itself a column, so .scroll / .chatscroll keep their
+   flex:1 overflow behavior. Exactly one shows at a time; the [hidden] rules must
+   be explicit because an author `display:flex` outranks the `hidden` attribute's
+   UA `display:none`. */
+.chatshell,
+.viewoutlet {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.chatshell[hidden],
+.viewoutlet[hidden] {
+  display: none;
+}
 /* Fixed header height so it never grows/shifts when the collapsed-sidebar
    toggle appears in it. */
 .head {
