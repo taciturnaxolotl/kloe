@@ -146,23 +146,35 @@ function authPage(opts: {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#5577a3">
 <title>${esc(opts.title)} · ${brand}</title>
 <style>
-  :root{--bg:#ffffff;--card:#ffffff;--ink:#17181a;--muted:#6a6d73;--rule:#e6e7e9;--accent:#5577a3}
-  @media (prefers-color-scheme:dark){:root{--bg:#121315;--card:#1a1b1e;--ink:#e8e9ea;--muted:#9a9da3;--rule:#2a2c2f;--accent:#7aa0cc}}
+  /* Standalone (served before the SPA bundle), but the tokens mirror app.css so
+     it reads as the same product in both light and dark. */
+  :root{
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    --bg:#ffffff;--bg-raise:#ffffff;--ink:#17181a;--muted:#6a6d73;
+    --rule:#e6e7e9;--rule-strong:#d9dade;--accent:#5577a3}
+  @media (prefers-color-scheme:dark){:root{
+    --bg:#121315;--bg-raise:#1a1b1e;--ink:#e8e9ea;--muted:#9a9da3;
+    --rule:#2a2c2f;--rule-strong:#3a3d42;--accent:#5577a3}}
   *{box-sizing:border-box}html,body{height:100%}
   body{margin:0;display:grid;place-items:center;padding:1.5rem;background:var(--bg);color:var(--ink);
-    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;line-height:1.55}
-  .card{width:100%;max-width:23rem;background:var(--card);border:1px solid var(--rule);border-radius:14px;padding:2rem 1.75rem;text-align:center}
-  .brand{display:inline-flex;align-items:center;gap:.55rem;font-weight:600;font-size:1.05rem;letter-spacing:-.02em}
-  .brand .dot{width:22px;height:22px;border-radius:7px;background:var(--accent)}
-  h1{font-size:1.02rem;font-weight:600;margin:1.4rem 0 .35rem}
-  p{color:var(--muted);font-size:.9rem;margin:.35rem 0}
-  .btn{display:inline-block;margin-top:1.4rem;padding:.6rem 1.15rem;background:var(--accent);color:#fff;border-radius:9px;text-decoration:none;font-size:.9rem;font-weight:500}
-  .btn:hover{filter:brightness(1.06)}
+    font-family:var(--sans);line-height:1.55;-webkit-font-smoothing:antialiased}
+  .card{width:100%;max-width:22rem;background:var(--bg-raise);border:1px solid var(--rule);
+    border-radius:12px;padding:1.9rem 1.75rem;text-align:center}
+  .brand{display:inline-flex;align-items:center;gap:.5rem;font-weight:700;font-size:15px;
+    letter-spacing:-.02em;color:var(--ink)}
+  .brand img{width:26px;height:26px;border-radius:7px;display:block}
+  h1{font-size:1rem;font-weight:600;margin:1.35rem 0 .3rem}
+  p{color:var(--muted);font-size:.9rem;margin:0 auto;max-width:28ch}
+  .btn{display:inline-block;margin-top:1.5rem;padding:8px 16px;font-size:13.5px;font-weight:500;
+    background:var(--accent);color:#fff;border:1px solid var(--accent);border-radius:8px;text-decoration:none}
+  .btn:hover{filter:brightness(1.08)}
+  .btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style></head>
 <body><main class="card">
-  <span class="brand"><span class="dot"></span>${brand}</span>
+  <div class="brand"><img src="/icon-192.png" alt="" width="26" height="26">${brand}</div>
   <h1>${esc(opts.title)}</h1>
   <p>${esc(opts.message)}</p>
   ${action}
@@ -227,7 +239,7 @@ export async function handleCallback(req: Request, store: Store): Promise<Respon
   }
 
   if (!code || !state || !saved.state || state !== saved.state)
-    return htmlError("Invalid or missing state — please retry.");
+    return htmlError("Invalid or missing state.");
   if (iss && trimSlash(iss) !== trimSlash(cfg.issuer))
     return htmlError("The response came from an unexpected issuer.");
 
