@@ -29,13 +29,13 @@ var TEMPLATE =
   '<span class="selcount" data-selcount>0 selected</span>' +
   '<div class="chatsearch">' +
   SEARCH_SVG +
-  '<input data-search type="search" placeholder="Search conversations…" autocomplete="off" spellcheck="false" aria-label="Search conversations">' +
+  '<input data-search name="q" type="search" placeholder="Search conversations…" autocomplete="off" spellcheck="false" aria-label="Search conversations">' +
   '<button class="clearsearch" data-clearsearch type="button" hidden aria-label="Clear search">' +
   CLEAR_SVG +
   "</button>" +
   "</div>" +
   '<button class="btn" data-selectbtn type="button">Select</button>' +
-  '<button class="btn" data-selectall type="button">Select all</button>' +
+  '<button class="btn" data-selectall type="button" hidden>Select all</button>' +
   '<button class="btn danger" data-deletebtn type="button" hidden>Delete</button>' +
   '<a class="btn primary" data-newbtn href="/?new=1">New</a>' +
   "</div>" +
@@ -69,7 +69,8 @@ export function mount(root, _params, ctx) {
   var selectBtn = q("[data-selectbtn]"),
     deleteBtn = q("[data-deletebtn]"),
     selCount = q("[data-selcount]"),
-    selectAllBtn = q("[data-selectall]");
+    selectAllBtn = q("[data-selectall]"),
+    newBtn = q("[data-newbtn]");
 
   var conversations = []; // full list (for the sidebar recents + unfiltered rows)
   var selectMode = false;
@@ -112,6 +113,8 @@ export function mount(root, _params, ctx) {
     selectMode = on;
     document.body.classList.toggle("selecting", on);
     selectBtn.textContent = on ? "Cancel" : "Select";
+    newBtn.hidden = on; // "New" is out of the way while selecting
+    selectAllBtn.hidden = !on; // "Select all" only makes sense while selecting
     if (!on)
       checks().forEach(function (c) {
         c.checked = false;
