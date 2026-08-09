@@ -827,6 +827,27 @@ import { mountSidebar } from "./sidebar.js";
       return e.name === name;
     });
   }
+  // Favicons collected from fetch_url RESULTS, keyed by the request's domain (the
+  // input host — GitHub's github.com, not the raw.githubusercontent.com the fetch
+  // was rewritten to). The header prefers these (real SVG + dark variant) over the
+  // flat service icon. A session cache — replayed results repopulate it on load.
+  var siteFavicons = Object.create(null);
+
+  // Distinct domains read in this block (fetch_url calls), first-seen order, capped.
+  // Drives the favicons shown in the collapsed header instead of a generic icon.
+  function fetchDomains(a, max) {
+    var seen = Object.create(null),
+      out = [];
+    for (var i = 0; i < a.tools.length && out.length < max; i++) {
+      if (a.tools[i].name !== "fetch_url") continue;
+      var d = domainOf((a.tools[i].input && a.tools[i].input.url) || "");
+      if (d && !seen[d]) {
+        seen[d] = 1;
+        out.push(d);
+      }
+    }
+    return out;
+  }
   // The collapsed header. While a step is live it reflects that step; once the
   // block settles it summarizes the LATEST tool used (last-tool-wins for a mixed
   // block), or the thinking if no tools ran. Per-tool phrasing comes from TOOL_UI.
@@ -848,8 +869,20 @@ import { mountSidebar } from "./sidebar.js";
       a.tools.forEach(function (e) {
         if (names.indexOf(e.name) < 0) names.push(e.name);
       });
-      var icons = names.map(function (n) {
-        return toolUI(n).icon;
+      // fetch_url contributes the read sites' favicons (deduped, capped) instead
+      // of one generic page icon; other tools keep their single icon.
+      var icons = [];
+      names.forEach(function (n) {
+        if (n === "fetch_url") {
+          var doms = fetchDomains(a, 5);
+          if (doms.length)
+            doms.forEach(function (d) {
+              icons.push({ fav: d });
+            });
+          else icons.push(toolUI(n).icon);
+        } else {
+          icons.push(toolUI(n).icon);
+        }
       });
       var label = names
         .map(function (n) {
@@ -862,20 +895,58 @@ import { mountSidebar } from "./sidebar.js";
       return { icon: ICON_CLOCK, label: a.thoughtLabel || "Thought", working: false };
     return null;
   }
+  // A header icon is either an SVG string (a tool icon) or { fav: domain } (a read
+  // site's favicon). Favicons load from the DDG service, falling back to the page
+  // icon if there's none.
+  function headIconInto(host, ic) {
+    if (typeof ic === "string") {
+      host.innerHTML = ic;
+      return;
+    }
+    host.classList.add("favic");
+    var f = siteFavicons[ic.fav]; // { svg?, dark? } from the fetch result, if seen
+    var img = document.createElement("img");
+    img.className = "favicon";
+    img.alt = "";
+    img.loading = "lazy";
+    // Prefer the page's own SVG (adaptive ones self-fix dark mode); else the DDG
+    // service icon.
+    img.src = (f && f.svg) || "https://icons.duckduckgo.com/ip3/" + ic.fav + ".ico";
+    img.onerror = function () {
+      host.classList.remove("favic");
+      host.innerHTML = ICON_PAGE;
+    };
+    // A known dark variant → a <picture> source, so the dark theme shows a legible
+    // mark natively.
+    if (f && f.dark) {
+      var pic = document.createElement("picture");
+      var src = document.createElement("source");
+      src.media = "(prefers-color-scheme: dark)";
+      src.srcset = f.dark;
+      pic.appendChild(src);
+      pic.appendChild(img);
+      host.appendChild(pic);
+    } else {
+      host.appendChild(img);
+    }
+  }
   function blockUpdateHead(a) {
     var s = blockHeadState(a);
     if (!s) return;
     var icons = s.icons || [s.icon];
+    a.headIcon.innerHTML = "";
+    a.headIcon.classList.remove("favic");
     if (icons.length > 1) {
       a.headIcon.classList.add("iconstack");
-      a.headIcon.innerHTML = icons
-        .map(function (ic) {
-          return '<span class="ic">' + ic + "</span>";
-        })
-        .join("");
+      icons.forEach(function (ic) {
+        var slot = document.createElement("span");
+        slot.className = "ic";
+        headIconInto(slot, ic);
+        a.headIcon.appendChild(slot);
+      });
     } else {
       a.headIcon.classList.remove("iconstack");
-      a.headIcon.innerHTML = icons[0];
+      headIconInto(a.headIcon, icons[0]);
     }
     a.headLabel.textContent = s.label;
     a.details.classList.toggle("working", s.working);
@@ -1149,6 +1220,11 @@ import { mountSidebar } from "./sidebar.js";
   function renderFetchResult(t, output) {
     if (output.title && t.label) t.label.textContent = output.title;
     upgradeFavicon(t, output);
+    // Stash the collected favicons under the REQUEST's domain (not output.url,
+    // which may be the rewritten raw host) so the collapsed header can reuse them.
+    var favDom = domainOf((t.input && t.input.url) || output.url || "");
+    if (favDom && (output.faviconSvg || output.faviconDark))
+      siteFavicons[favDom] = { svg: output.faviconSvg, dark: output.faviconDark };
     if (output.content) {
       // Only markdown gets prose-rendered; raw text/JSON/XML stays verbatim in a
       // preformatted block, so non-HTML content doesn't get mangled by the parser.

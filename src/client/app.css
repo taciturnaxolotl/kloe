@@ -1189,6 +1189,25 @@ body.selecting #selectBtn {
   height: 100%;
   display: block;
 }
+/* Read-site favicons in the collapsed header (single or stacked). Rounded square
+   so a favicon sits cleanly where a round tool icon would. */
+.turn .body .activity-head .stepicon.iconstack .ic.favic {
+  border-radius: 4px;
+}
+/* <picture> (theme-aware favicons) is layout-transparent so the <img> sizes to
+   the icon slot directly. */
+.turn .body .activity-head .stepicon.favic picture,
+.turn .body .activity-head .stepicon.iconstack .ic.favic picture {
+  display: contents;
+}
+.turn .body .activity-head .stepicon.favic .favicon,
+.turn .body .activity-head .stepicon.iconstack .ic.favic .favicon {
+  width: 100%;
+  height: 100%;
+  border-radius: 3px;
+  display: block;
+  object-fit: contain;
+}
 
 /* The stepper (shown when open). */
 .turn .body .stepper {
