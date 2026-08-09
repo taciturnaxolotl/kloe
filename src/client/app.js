@@ -1856,12 +1856,39 @@ import { mountSidebar } from "./sidebar.js";
     input.focus();
     if (nav !== "none") setUrl("/", nav === "replace");
   }
+  // Learn a pending project's name so a new chat's header breadcrumb reads
+  // "Project / …" rather than a bare caret. Shared by boot and a soft-nav
+  // project-scoped new chat (/?new=1&project=<id>).
+  function enrichPendingProject() {
+    fetch("/api/projects/" + encodeURIComponent(pendingProject))
+      .then(function (r) {
+        return r.ok ? r.json() : null;
+      })
+      .then(function (d) {
+        // Still pending only while the new chat is unfiled; if it's been cleared
+        // (first message filed it), leave the header alone.
+        if (!d || !d.project || !pendingProject) return;
+        pendingProjectName = d.project.name;
+        var cur = title.querySelector(".crumbtitle");
+        setHeader(cur ? cur.textContent : "New conversation", {
+          id: pendingProject,
+          name: pendingProjectName,
+        });
+      })
+      .catch(function () {});
+  }
+
   // Enter (or re-enter) the chat view for a resolved route. The router owns the
   // URL, so nav mode is always "none" here — we only open the right conversation.
   // Called on click-nav to chat, on popstate landing on chat, and at boot.
   function enterChat(params) {
     if (params && params.isNew) {
+      // A project-scoped new chat carries its project in the URL; on soft-nav the
+      // module-level pendingProject isn't set from the query, so set it here.
+      pendingProject = params.project || null;
+      pendingProjectName = null;
       newConversation("none");
+      if (pendingProject) enrichPendingProject();
       return;
     }
     if (params && params.id) {
@@ -1881,12 +1908,34 @@ import { mountSidebar } from "./sidebar.js";
     var u = new URL(path, location.origin);
     var q = new URLSearchParams(u.search);
     if (u.pathname === "/") {
-      if (q.has("new")) return { kind: "chat", nav: "chat", params: { isNew: true } };
+      if (q.has("new"))
+        return { kind: "chat", nav: "chat", params: { isNew: true, project: q.get("project") } };
       if (q.get("c")) return { kind: "chat", nav: "chat", params: { id: q.get("c") } };
       return { kind: "chat", nav: "chat", params: {} };
     }
     var m = u.pathname.match(/^\/c\/([^/]+)\/?$/);
     if (m) return { kind: "chat", nav: "chat", params: { id: decodeURIComponent(m[1]) } };
+    var pm = u.pathname.match(/^\/p\/([^/]+)\/?$/);
+    if (pm) {
+      return {
+        kind: "view",
+        nav: "projects",
+        params: { id: decodeURIComponent(pm[1]) },
+        load: function () {
+          return import("./views/project.js");
+        },
+      };
+    }
+    if (u.pathname === "/conversations") {
+      return {
+        kind: "view",
+        nav: "conversations",
+        params: {},
+        load: function () {
+          return import("./views/conversations.js");
+        },
+      };
+    }
     if (u.pathname === "/projects") {
       return {
         kind: "view",
@@ -1894,6 +1943,16 @@ import { mountSidebar } from "./sidebar.js";
         params: {},
         load: function () {
           return import("./views/projects.js");
+        },
+      };
+    }
+    if (u.pathname === "/settings") {
+      return {
+        kind: "view",
+        nav: "settings",
+        params: {},
+        load: function () {
+          return import("./views/settings.js");
         },
       };
     }
@@ -2109,29 +2168,9 @@ import { mountSidebar } from "./sidebar.js";
     setPfp(me);
     await dataPromise;
 
-    // Open with "replace" so the initial route doesn't add a spurious history
-    // entry. A bare landing (no /c/<id>, no ?new) starts a fresh chat rather than
-    // reopening the last conversation.
-    // A project-scoped new chat (/?new=1&project=<id>): learn the project's name
-    // so the header breadcrumb reads "Project / …" rather than a bare caret.
-    if (pendingProject) {
-      fetch("/api/projects/" + encodeURIComponent(pendingProject))
-        .then(function (r) {
-          return r.ok ? r.json() : null;
-        })
-        .then(function (d) {
-          // `pendingProject` is still set only while the new chat is unfiled; if
-          // it's been cleared (first message filed it), leave the header alone.
-          if (!d || !d.project || !pendingProject) return;
-          pendingProjectName = d.project.name;
-          var cur = title.querySelector(".crumbtitle");
-          setHeader(cur ? cur.textContent : "New conversation", {
-            id: pendingProject,
-            name: pendingProjectName,
-          });
-        })
-        .catch(function () {});
-    }
+    // A project-scoped new chat landed on directly (/?new=1&project=<id>):
+    // pendingProject was captured from the URL at module load; learn its name.
+    if (pendingProject) enrichPendingProject();
 
     // Normalize a "?new" landing to "/" (drop the query so a refresh and the
     // "New chat" home-check both see a canonical fresh chat); the project, if any,

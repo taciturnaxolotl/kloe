@@ -189,10 +189,10 @@ if (import.meta.main) {
     routes: {
       "/": page("index.html"),
       "/c/:id": page("index.html"), // deep link to a conversation — the SPA reads the id from the path
-      "/settings": page("settings.html"),
-      "/conversations": page("conversations.html"),
+      "/settings": page("index.html"), // SPA route — the shell mounts the settings view
+      "/conversations": page("index.html"), // SPA route — the shell mounts the conversations view
       "/projects": page("index.html"), // SPA route — the shell's router mounts the projects view
-      "/p/:id": page("project.html"), // project detail — the page reads the id from the path
+      "/p/:id": page("index.html"), // SPA route — the shell mounts the project-detail view
       // Auth (indiko OAuth). Inert unless auth.enabled — the SPA only navigates
       // here after a 401. /client-metadata.json is the public client document.
       "/client-metadata.json": () => clientMetadata(),

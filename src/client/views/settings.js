@@ -1,16 +1,17 @@
 /*
- * The settings page, split into tabs. "Models" curates the chat picker (GET
- * /models; toggle visibility, rename, drag to order via partial PATCH /models).
- * "Memory" (shown only when lard is enabled) links this user's lard account
- * (Connect → /lard/connect) and inspects their memory — a subject list (GET
- * /api/lard/memory) and a per-subject markdown view/editor (GET/PUT
- * /api/lard/subject). Uses the shared sidebar.
+ * Settings, as a router view, split into tabs. "Models" curates the chat picker
+ * (GET /models; toggle visibility, rename, drag to order via partial PATCH
+ * /models). "Memory" (shown only when lard is enabled) links this user's lard
+ * account (Connect → /lard/connect, a real navigation) and inspects their memory.
+ * Mounted into the shell's #viewOutlet.
+ *
+ * Converted from the standalone settings.js: client-owned markup, DOM lookups
+ * scoped to `root`, dialogs via ctx, and a destroy() that removes the three
+ * document-level drag/selection listeners (wired once per mount) so they don't
+ * accumulate across visits.
  */
-
 import * as smd from "streaming-markdown";
-import { requireAuth, setPfp } from "./authguard.js";
-import { mountDialogs } from "./confirm.js";
-import { showContextMenu } from "./ctxmenu.js";
+import { showContextMenu } from "../ctxmenu.js";
 import {
   BRAIN_ICON,
   FOLDER_ICON,
@@ -21,54 +22,90 @@ import {
   TRASH_ICON,
   USER_ICON,
   USERS_ICON,
-} from "./icons.js";
-import { mountSidebar } from "./sidebar.js";
+} from "../icons.js";
 
-(function () {
-  "use strict";
-  var content = document.getElementById("content");
-  var dialogs = mountDialogs();
-  var sidebar = mountSidebar({
-    onSelect: function (id) {
-      window.location.href = "/c/" + encodeURIComponent(id);
-    },
-    onNew: function () {
-      window.location.href = "/?new=1";
-    },
-    dialogs: dialogs,
-    reload: loadSidebar,
-  });
-  async function loadSidebar() {
-    try {
-      var r = await fetch("/api/conversations");
-      sidebar.render((await r.json()).conversations || []);
-    } catch (_) {
-      sidebar.render([]);
-    }
-  }
+var MENU_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>';
+
+var TEMPLATE =
+  '<header class="head">' +
+  '<button class="icon menu" id="menu" type="button" aria-label="Toggle sidebar" title="Toggle sidebar">' +
+  MENU_SVG +
+  "</button>" +
+  '<span class="title">Settings</span>' +
+  "</header>" +
+  '<div class="chatscroll"><div class="setpage">' +
+  '<div class="settabs" id="settabs" role="tablist">' +
+  '<button class="settab active" type="button" data-tab="models" role="tab">Models</button>' +
+  '<button class="settab" type="button" data-tab="memory" role="tab" hidden>Memory</button>' +
+  "</div>" +
+  '<section class="settabpanel" data-panel="models">' +
+  '<p class="lede">Turn models on to add them to the chat picker, drag the enabled ones to set their order (⌘-click to move several at once), and give them display names.</p>' +
+  '<div id="content">Loading…</div>' +
+  "</section>" +
+  '<section class="settabpanel" data-panel="memory" hidden>' +
+  '<div id="lardStatus" class="lardconn"></div>' +
+  '<div id="lardInspector" class="lardinspect" hidden>' +
+  '<aside class="lardbrowser">' +
+  '<input id="lardSearch" class="lardsearch" type="search" placeholder="Search subjects" autocomplete="off">' +
+  '<div class="lardlist" id="lardSubjects"></div>' +
+  "</aside>" +
+  '<div class="lardviewer" id="lardViewer"></div>' +
+  "</div>" +
+  "</section>" +
+  "</div></div>";
+
+var KINDS = [
+  { kind: "profile", label: "Profile", icon: USER_ICON },
+  { kind: "area", label: "Areas", icon: FOLDER_ICON },
+  { kind: "topic", label: "Topics", icon: HASH_ICON },
+  { kind: "person", label: "People", icon: USERS_ICON },
+];
+var KIND_LABEL = {};
+var KIND_ICON = {};
+KINDS.forEach(function (k) {
+  KIND_LABEL[k.kind] = k.label;
+  KIND_ICON[k.kind] = k.icon;
+});
+var KIND_SINGULAR = { profile: "Profile", area: "Area", topic: "Topic", person: "Person" };
+
+function providerOf(ref) {
+  return ref.split("/")[0];
+}
+function fmtCtx(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+  return Math.round(n / 1000) + "k";
+}
+function cap(m) {
+  var c = [];
+  if (m.contextWindow) c.push(fmtCtx(m.contextWindow) + " ctx");
+  if (m.reasoningLevels && m.reasoningLevels.length) c.push("reasoning");
+  if (m.supportsImages) c.push("images");
+  return c.join(" · ");
+}
+
+export function mount(root, _params, ctx) {
+  root.innerHTML = TEMPLATE;
+  var byId = function (id) {
+    return root.querySelector("#" + id);
+  };
+  var content = byId("content");
 
   var byRef = Object.create(null);
   var allModels = [];
-  function providerOf(ref) {
-    return ref.split("/")[0];
-  }
+  var dragActive = false;
+  var lardSubjects = []; // full listing, for search filtering
+  var activeSubjectPath = null;
+
+  byId("menu").addEventListener("click", function () {
+    ctx.toggleRail();
+  });
+
   function seclabel(text) {
     var d = document.createElement("div");
     d.className = "seclabel";
     d.textContent = text;
     return d;
-  }
-
-  function fmtCtx(n) {
-    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
-    return Math.round(n / 1000) + "k";
-  }
-  function cap(m) {
-    var c = [];
-    if (m.contextWindow) c.push(fmtCtx(m.contextWindow) + " ctx");
-    if (m.reasoningLevels && m.reasoningLevels.length) c.push("reasoning");
-    if (m.supportsImages) c.push("images");
-    return c.join(" · ");
   }
 
   // Flash the row's inline indicator: "saved" (green) or "failed" (red).
@@ -254,39 +291,31 @@ import { mountSidebar } from "./sidebar.js";
       }
     });
   }
-  // Clear the enabled-list selection when a click lands anywhere outside it
-  // (page background, a section label, the disabled rows) — standard
-  // file-manager behavior. Wired once; survives re-renders.
+  // Clear the enabled-list selection when a click lands outside it. Scoped to this
+  // view's rows; the document listener is removed on destroy.
   function clearAllSelection() {
-    Array.prototype.slice
-      .call(document.querySelectorAll(".modelrow.selected"))
-      .forEach(function (r) {
-        r.classList.remove("selected");
-      });
+    Array.prototype.slice.call(root.querySelectorAll(".modelrow.selected")).forEach(function (r) {
+      r.classList.remove("selected");
+    });
   }
-  document.addEventListener("mousedown", function (e) {
+  function onDocMousedown(e) {
     if (!e.target.closest(".modellist-enabled")) clearAllSelection();
-  });
-
-  // While a model drag is in flight, accept dragover/drop anywhere on the page
-  // so releasing over the heading (or any spot outside the list) doesn't trigger
-  // the browser's snap-back animation. Wired once.
-  var dragActive = false;
-  document.addEventListener("dragover", function (e) {
+  }
+  function onDocDragover(e) {
     if (dragActive) e.preventDefault();
-  });
-  document.addEventListener("drop", function (e) {
+  }
+  function onDocDrop(e) {
     if (dragActive) e.preventDefault();
-  });
+  }
+  document.addEventListener("mousedown", onDocMousedown);
+  document.addEventListener("dragover", onDocDragover);
+  document.addEventListener("drop", onDocDrop);
 
-  // Off-screen drag image: the lead card, with faint offset cards behind it and
-  // a count badge when more than one row is moving together.
+  // Off-screen drag image: the lead card, faint offset cards behind, count badge.
   function buildGhost(group, lead) {
     var wrap = document.createElement("div");
     wrap.className = "dragghost";
     var n = group.length;
-    // A single card behind the lead hints "more than one"; the badge carries
-    // the exact count.
     if (n > 1) {
       var b = document.createElement("div");
       b.className = "ghostback";
@@ -319,9 +348,6 @@ import { mountSidebar } from "./sidebar.js";
       });
     }
 
-    // File-manager selection: plain click selects just that row, ⌘/Ctrl-click
-    // toggles one, Shift-click extends a range from the anchor. Clicks on the
-    // row's own controls (handle, toggle, rename) are left alone.
     list.addEventListener("click", function (e) {
       if (e.target.closest(".toggle, .mrename")) return;
       var row = e.target.closest(".modelrow");
@@ -349,9 +375,6 @@ import { mountSidebar } from "./sidebar.js";
     });
 
     rows().forEach(function (row) {
-      // Grabbing anywhere on the card starts a drag; only the toggle and rename
-      // field are excluded so they stay clickable. draggable is toggled on
-      // press so text/clicks elsewhere behave normally until a drag begins.
       row.addEventListener("mousedown", function (e) {
         row.draggable = !e.target.closest(".toggle, .mrename");
       });
@@ -360,9 +383,6 @@ import { mountSidebar } from "./sidebar.js";
       });
       row.addEventListener("dragstart", function (e) {
         srcRow = row;
-        // Dragging an unselected row makes it the sole selection first (like
-        // dragging an unselected file); dragging a selected row carries the
-        // whole selection.
         if (!row.classList.contains("selected")) {
           clearSel();
           row.classList.add("selected");
@@ -376,7 +396,6 @@ import { mountSidebar } from "./sidebar.js";
         try {
           e.dataTransfer.setData("text/plain", "");
         } catch (_) {}
-        // Stacked drag image (removed once the browser has snapshotted it).
         var ghost = buildGhost(group, row);
         document.body.appendChild(ghost);
         try {
@@ -385,9 +404,6 @@ import { mountSidebar } from "./sidebar.js";
         setTimeout(function () {
           ghost.remove();
         }, 0);
-        // The grabbed row becomes the single drop slot; the rest of the
-        // selection leaves the flow (display:none). Deferred a tick because
-        // hiding the source node synchronously inside dragstart aborts the drag.
         var picked = group;
         setTimeout(function () {
           if (!dragActive) return;
@@ -400,7 +416,6 @@ import { mountSidebar } from "./sidebar.js";
         row.draggable = false;
         dragActive = false;
         if (group) {
-          // Gather the whole selection (in original order) at the drop slot's spot.
           var ref = row.nextSibling;
           while (ref && group.indexOf(ref) !== -1) ref = ref.nextSibling;
           group.forEach(function (r) {
@@ -423,25 +438,25 @@ import { mountSidebar } from "./sidebar.js";
 
   // ---- settings tabs ----
   function currentTab() {
-    var active = document.querySelector(".settabpanel:not([hidden])");
+    var active = root.querySelector(".settabpanel:not([hidden])");
     return active ? active.dataset.panel : "models";
   }
   function selectTab(name) {
-    document.querySelectorAll(".settab").forEach(function (t) {
+    root.querySelectorAll(".settab").forEach(function (t) {
       t.classList.toggle("active", t.dataset.tab === name);
     });
-    document.querySelectorAll(".settabpanel").forEach(function (p) {
+    root.querySelectorAll(".settabpanel").forEach(function (p) {
       p.hidden = p.dataset.panel !== name;
     });
     if (location.hash !== "#" + name) history.replaceState({}, "", location.pathname + "#" + name);
   }
   function setupTabs() {
-    document.querySelectorAll(".settab").forEach(function (t) {
+    root.querySelectorAll(".settab").forEach(function (t) {
       t.addEventListener("click", function () {
         selectTab(t.dataset.tab);
       });
     });
-    var search = document.getElementById("lardSearch");
+    var search = byId("lardSearch");
     if (search)
       search.addEventListener("input", function () {
         renderSubjectList(search.value);
@@ -449,24 +464,6 @@ import { mountSidebar } from "./sidebar.js";
   }
 
   // ---- lard (memory) ----
-  // Per-kind presentation: a plural group label and an icon. Order sets the
-  // order groups appear in the browser.
-  var KINDS = [
-    { kind: "profile", label: "Profile", icon: USER_ICON },
-    { kind: "area", label: "Areas", icon: FOLDER_ICON },
-    { kind: "topic", label: "Topics", icon: HASH_ICON },
-    { kind: "person", label: "People", icon: USERS_ICON },
-  ];
-  var KIND_LABEL = {};
-  var KIND_ICON = {};
-  KINDS.forEach(function (k) {
-    KIND_LABEL[k.kind] = k.label;
-    KIND_ICON[k.kind] = k.icon;
-  });
-  var KIND_SINGULAR = { profile: "Profile", area: "Area", topic: "Topic", person: "Person" };
-
-  var lardSubjects = []; // full listing, for search filtering
-
   function renderLard(el, connected) {
     el.innerHTML = "";
     var ic = document.createElement("div");
@@ -493,7 +490,7 @@ import { mountSidebar } from "./sidebar.js";
         btn.disabled = true;
         btn.textContent = "Disconnecting…";
         await fetch("/api/lard", { method: "DELETE" }).catch(function () {});
-        document.getElementById("lardInspector").hidden = true;
+        byId("lardInspector").hidden = true;
         renderLard(el, false);
       };
     } else {
@@ -505,8 +502,8 @@ import { mountSidebar } from "./sidebar.js";
     el.appendChild(btn);
   }
   async function loadLard() {
-    var tabBtn = document.querySelector('.settab[data-tab="memory"]');
-    var inspector = document.getElementById("lardInspector");
+    var tabBtn = root.querySelector('.settab[data-tab="memory"]');
+    var inspector = byId("lardInspector");
     var enabled = false,
       connected = false;
     try {
@@ -519,11 +516,10 @@ import { mountSidebar } from "./sidebar.js";
       if (currentTab() === "memory") selectTab("models");
       return;
     }
-    renderLard(document.getElementById("lardStatus"), connected);
+    renderLard(byId("lardStatus"), connected);
     inspector.hidden = !connected;
     if (connected) {
-      document.getElementById("lardViewer").innerHTML =
-        '<p class="lardhint">Select a subject to read or edit it.</p>';
+      byId("lardViewer").innerHTML = '<p class="lardhint">Select a subject to read or edit it.</p>';
       loadSubjects();
     }
     // After a connect round-trip, clear the flag and land on the Memory tab.
@@ -533,7 +529,7 @@ import { mountSidebar } from "./sidebar.js";
     }
   }
   async function loadSubjects() {
-    var list = document.getElementById("lardSubjects");
+    var list = byId("lardSubjects");
     list.innerHTML = '<p class="lardhint">Loading…</p>';
     try {
       lardSubjects = (await (await fetch("/api/lard/memory")).json()).listing || [];
@@ -543,21 +539,17 @@ import { mountSidebar } from "./sidebar.js";
     }
     renderSubjectList("");
   }
-  // After an edit, re-pull the listing so the rail reflects any name/description
-  // lard derived from the new body — quietly, keeping the current selection and
-  // search rather than repainting a "Loading…" state.
   async function refreshSubjectMeta() {
     try {
       lardSubjects = (await (await fetch("/api/lard/memory")).json()).listing || lardSubjects;
     } catch (_) {
       return;
     }
-    renderSubjectList(document.getElementById("lardSearch").value);
+    renderSubjectList(byId("lardSearch").value);
   }
 
-  var activeSubjectPath = null;
   function renderSubjectList(query) {
-    var list = document.getElementById("lardSubjects");
+    var list = byId("lardSubjects");
     var q = (query || "").trim().toLowerCase();
     var items = !q
       ? lardSubjects
@@ -576,7 +568,6 @@ import { mountSidebar } from "./sidebar.js";
       list.innerHTML = '<p class="lardhint">No subjects match “' + query + "”.</p>";
       return;
     }
-    // Group by kind, in KINDS order, then any unknown kinds after.
     var groups = {};
     items.forEach(function (s) {
       (groups[s.kind] = groups[s.kind] || []).push(s);
@@ -644,7 +635,7 @@ import { mountSidebar } from "./sidebar.js";
   }
 
   async function openSubject(s) {
-    var v = document.getElementById("lardViewer");
+    var v = byId("lardViewer");
     v.innerHTML = '<p class="lardhint">Loading…</p>';
     var path = s.path,
       body;
@@ -659,7 +650,6 @@ import { mountSidebar } from "./sidebar.js";
     if (activeSubjectPath !== path) return; // a newer selection won the race
 
     v.innerHTML = "";
-    // Header: display name, kind badge, mono path, and the read/edit action.
     var head = document.createElement("div");
     head.className = "lardvhead";
     var titleWrap = document.createElement("div");
@@ -674,7 +664,6 @@ import { mountSidebar } from "./sidebar.js";
       badge.textContent = KIND_SINGULAR[s.kind];
       titleWrap.appendChild(badge);
     }
-    // Read mode uses a ⋮ menu (Edit / Delete); edit mode swaps in Cancel + Save.
     var menuBtn = document.createElement("button");
     menuBtn.className = "lardvmenu";
     menuBtn.type = "button";
@@ -720,7 +709,7 @@ import { mountSidebar } from "./sidebar.js";
     };
 
     async function deleteSubject() {
-      var ok = await dialogs.confirm({
+      var ok = await ctx.dialogs.confirm({
         title: "Delete this subject?",
         body:
           "“" +
@@ -739,9 +728,8 @@ import { mountSidebar } from "./sidebar.js";
         return x.path !== path;
       });
       activeSubjectPath = null;
-      renderSubjectList(document.getElementById("lardSearch").value);
-      document.getElementById("lardViewer").innerHTML =
-        '<p class="lardhint">Select a subject to read or edit it.</p>';
+      renderSubjectList(byId("lardSearch").value);
+      byId("lardViewer").innerHTML = '<p class="lardhint">Select a subject to read or edit it.</p>';
     }
 
     function showRead() {
@@ -797,26 +785,27 @@ import { mountSidebar } from "./sidebar.js";
     showRead();
   }
 
-  (async function () {
-    // Fire all three requests at once — the auth check shouldn't gate the data
-    // fetches behind an extra round trip. The sidebar renders from its cache
-    // immediately (mountSidebar) and refreshes when loadSidebar resolves.
-    var mePromise = requireAuth();
-    loadSidebar();
-    setupTabs();
-    if (location.hash === "#memory") selectTab("memory");
-    loadLard();
-    var modelsPromise = fetch("/api/models").then(function (r) {
+  // ---- boot the view (auth + sidebar are already up in the shell) ----
+  setupTabs();
+  if (location.hash === "#memory") selectTab("memory");
+  loadLard();
+  fetch("/api/models")
+    .then(function (r) {
       return r.json();
-    });
-    var me = await mePromise;
-    if (!me) return; // redirecting to login
-    setPfp(me);
-    try {
-      allModels = (await modelsPromise).models || [];
+    })
+    .then(function (d) {
+      allModels = d.models || [];
       render();
-    } catch (e) {
+    })
+    .catch(function (e) {
       content.innerHTML = '<p class="lede">Failed to load models: ' + e.message + "</p>";
-    }
-  })();
-})();
+    });
+
+  return {
+    destroy: function () {
+      document.removeEventListener("mousedown", onDocMousedown);
+      document.removeEventListener("dragover", onDocDragover);
+      document.removeEventListener("drop", onDocDrop);
+    },
+  };
+}

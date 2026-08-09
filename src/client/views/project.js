@@ -1,57 +1,114 @@
 /*
- * Project detail (/p/<id>): name + description (edited via the ⋮ → details
- * modal, not inline), the project's chats with a "new chat" action, and a side
- * panel — Memory (the pinned lard project + a content preview) and Context
- * (uploaded files injected into the project's chats). Shares the app sidebar.
+ * Project detail (/p/<id>), as a router view. Name + description (edited via ⋮ →
+ * details modal), the project's chats with a "new chat" action, and a side panel:
+ * Memory (the pinned lard project + preview) and Context (uploaded files injected
+ * into the project's chats). Mounted into the shell's #viewOutlet.
+ *
+ * Converted from the standalone project.js: client-owned markup (including the
+ * modals + hidden file input, which were body-level and now live inside the view
+ * root so they're torn down with it), DOM lookups scoped to `root`, navigation via
+ * ctx, and a destroy() that removes the document-level Escape handler.
  */
+import { convRow } from "../convrow.js";
+import { showContextMenu } from "../ctxmenu.js";
+import { MORE_ICON, PENCIL_ICON, PLUS_ICON, TRASH_ICON } from "../icons.js";
 
-import { requireAuth, setPfp } from "./authguard.js";
-import { mountDialogs } from "./confirm.js";
-import { convRow } from "./convrow.js";
-import { showContextMenu } from "./ctxmenu.js";
-import { MORE_ICON, PENCIL_ICON, PLUS_ICON, TRASH_ICON } from "./icons.js";
-import { mountSidebar } from "./sidebar.js";
+var MENU_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>';
 
-(function () {
-  "use strict";
-  var $ = function (id) {
-    return document.getElementById(id);
+var TEMPLATE =
+  '<header class="head">' +
+  '<button class="icon menu" id="menu" type="button" aria-label="Toggle sidebar" title="Toggle sidebar">' +
+  MENU_SVG +
+  "</button>" +
+  '<nav class="crumbs"><a href="/projects">Projects</a><span class="crumbsep">/</span><span id="crumbname" class="title">…</span></nav>' +
+  '<div class="chatsactions"><button class="icon" id="projMenu" type="button" aria-label="Project options" title="Project options"></button></div>' +
+  "</header>" +
+  '<div class="chatscroll"><div class="projdetail" id="detail" hidden>' +
+  '<div class="projcol">' +
+  '<h1 class="projtitle" id="pname">…</h1>' +
+  '<p class="projsub" id="pdesc"></p>' +
+  '<button class="btn primary projnew" id="newChat" type="button">New chat in this project</button>' +
+  '<div class="raillabel">Chats</div>' +
+  '<div class="chatrows" id="rows"><div class="chatsempty">No chats yet.</div></div>' +
+  "</div>" +
+  '<aside class="projaside">' +
+  '<section class="projpanel"><div class="panelhead"><span>Memory</span><button class="panelbtn" id="memEdit" type="button" aria-label="Change pinned project"></button></div><div class="panelbody" id="memBody"></div></section>' +
+  '<section class="projpanel"><div class="panelhead"><span>Context</span><button class="panelbtn" id="ctxAdd" type="button" aria-label="Add a context file"></button></div><div class="panelbody" id="ctxBody"></div></section>' +
+  "</aside>" +
+  "</div></div>" +
+  '<input type="file" id="fileInput" accept=".md,.markdown,.txt,.text,.json,.csv,.yaml,.yml,text/*" hidden>' +
+  '<div class="modal" id="detailsModal" hidden><div class="modalback" id="detailsBack"></div><div class="modalcard">' +
+  '<div class="modalh">Project details</div>' +
+  '<label class="modallabel" for="mName">Name</label><input class="modalinput" id="mName" maxlength="120">' +
+  '<label class="modallabel" for="mDesc">Description</label><textarea class="modaltext" id="mDesc" rows="3" maxlength="2000" placeholder="What is this project about?"></textarea>' +
+  '<div class="modalbtns"><button class="btn" id="mCancel" type="button">Cancel</button><button class="btn primary" id="mSave" type="button">Save</button></div>' +
+  "</div></div>" +
+  '<div class="modal" id="pinModal" hidden><div class="modalback" id="pinBack"></div><div class="modalcard">' +
+  '<div class="modalh">Pin lard project</div>' +
+  '<input class="modalinput" id="pinSearch" placeholder="Search projects…" autocomplete="off">' +
+  '<div class="pinlist" id="pinList"></div>' +
+  '<div class="modalbtns"><button class="btn" id="pinUnpin" type="button" style="margin-right:auto">Unpin</button><button class="btn" id="pinCancel" type="button">Cancel</button></div>' +
+  "</div></div>";
+
+var TYPE = {
+  md: "MD",
+  markdown: "MD",
+  txt: "TXT",
+  text: "TXT",
+  json: "JSON",
+  csv: "CSV",
+  yaml: "YAML",
+  yml: "YAML",
+};
+var BINARY_EXT =
+  /\.(xlsx?|xlsm|ods|docx?|pptx?|pdf|png|jpe?g|gif|webp|bmp|tiff?|ico|svg|heic|zip|gz|tar|rar|7z|bz2|xz|mp3|wav|flac|ogg|mp4|mov|avi|mkv|webm|exe|dll|so|dylib|bin|wasm|class|ttf|otf|woff2?|sqlite|db)$/i;
+function isTextFile(f) {
+  if (BINARY_EXT.test(f.name)) return false;
+  if (f.type && !/^text\//.test(f.type)) {
+    return (
+      /^application\/(json|xml|x-yaml|yaml|toml|x-sh|javascript|csv)$|^$/.test(f.type) ||
+      /\+xml$|\+json$/.test(f.type)
+    );
+  }
+  return true;
+}
+
+export function mount(root, params, ctx) {
+  root.innerHTML = TEMPLATE;
+  var $ = function (sel) {
+    return root.querySelector(sel);
   };
-  var dialogs = mountDialogs();
-  var projectId = (location.pathname.match(/^\/p\/([^/]+)/) || [])[1];
-  projectId = projectId ? decodeURIComponent(projectId) : null;
+  var projectId = params.id;
   var project = null;
+  var pinProjects = null; // cached list from /api/lard/projects
 
-  var sidebar = mountSidebar({
-    onSelect: function (id) {
-      window.location.href = "/c/" + encodeURIComponent(id);
-    },
-    onNew: function () {
-      window.location.href = "/?new=1";
-    },
-    dialogs: dialogs,
-    reload: loadSidebar,
+  if (!projectId) {
+    ctx.navigate("/projects");
+    return {};
+  }
+
+  $("#menu").addEventListener("click", function () {
+    ctx.toggleRail();
   });
 
   // Icons from the shared set (no inline SVG).
-  $("projMenu").innerHTML = MORE_ICON;
-  $("memEdit").innerHTML = PENCIL_ICON;
-  $("ctxAdd").innerHTML = PLUS_ICON;
+  $("#projMenu").innerHTML = MORE_ICON;
+  $("#memEdit").innerHTML = PENCIL_ICON;
+  $("#ctxAdd").innerHTML = PLUS_ICON;
 
   // ---- chats ----
   function renderChats(list) {
-    var rows = $("rows");
+    var rows = $("#rows");
     rows.innerHTML = "";
     if (!list.length) {
       rows.innerHTML = '<div class="chatsempty">No chats yet. Start one below.</div>';
       return;
     }
     list.forEach(function (c) {
-      rows.appendChild(convRow(c, { dialogs: dialogs, reload: loadChats }));
+      rows.appendChild(convRow(c, { dialogs: ctx.dialogs, reload: loadChats }));
     });
   }
-
-  // Re-fetch just this project's chats (after a rename/delete from the ⋮ menu).
   async function loadChats() {
     try {
       var d = await (await fetch("/api/projects/" + encodeURIComponent(projectId))).json();
@@ -60,7 +117,6 @@ import { mountSidebar } from "./sidebar.js";
       /* leave the current rows */
     }
   }
-
   async function patch(fields) {
     try {
       await fetch("/api/projects/" + encodeURIComponent(projectId), {
@@ -75,7 +131,7 @@ import { mountSidebar } from "./sidebar.js";
 
   // ---- memory panel ----
   async function renderMemory() {
-    var el = $("memBody");
+    var el = $("#memBody");
     var pin = project.lardProject;
     if (!pin) {
       el.innerHTML =
@@ -93,8 +149,8 @@ import { mountSidebar } from "./sidebar.js";
             : "Couldn’t load memory.";
         return;
       }
-      var ctx = await r.json();
-      var preview = (ctx.area || ctx.profile || "").trim();
+      var data = await r.json();
+      var preview = (data.area || data.profile || "").trim();
       el.querySelector(".lardhint").textContent = preview
         ? preview.slice(0, 240) + (preview.length > 240 ? "…" : "")
         : "No memory recorded yet.";
@@ -103,19 +159,16 @@ import { mountSidebar } from "./sidebar.js";
     }
   }
 
-  // ---- pin-project picker (searchable list of lard projects) ----
-  var pinProjects = null; // cached list from /api/lard/projects
-
+  // ---- pin-project picker ----
   async function pinTo(id) {
     await patch({ lardProject: id });
     project.lardProject = id;
     closePin();
     renderMemory();
   }
-
   function renderPinList() {
-    var list = $("pinList");
-    var q = $("pinSearch").value.trim().toLowerCase();
+    var list = $("#pinList");
+    var q = $("#pinSearch").value.trim().toLowerCase();
     if (pinProjects === null) {
       list.innerHTML = '<p class="lardhint">Loading…</p>';
       return;
@@ -153,21 +206,19 @@ import { mountSidebar } from "./sidebar.js";
       list.appendChild(row);
     });
   }
-
   function closePin() {
-    $("pinModal").hidden = true;
+    $("#pinModal").hidden = true;
   }
-  $("pinBack").addEventListener("click", closePin);
-  $("pinCancel").addEventListener("click", closePin);
-  $("pinUnpin").addEventListener("click", function () {
+  $("#pinBack").addEventListener("click", closePin);
+  $("#pinCancel").addEventListener("click", closePin);
+  $("#pinUnpin").addEventListener("click", function () {
     pinTo("");
   });
-  $("pinSearch").addEventListener("input", renderPinList);
-
-  $("memEdit").addEventListener("click", async function () {
-    $("pinSearch").value = "";
-    $("pinModal").hidden = false;
-    $("pinSearch").focus();
+  $("#pinSearch").addEventListener("input", renderPinList);
+  $("#memEdit").addEventListener("click", async function () {
+    $("#pinSearch").value = "";
+    $("#pinModal").hidden = false;
+    $("#pinSearch").focus();
     renderPinList();
     if (pinProjects === null) {
       try {
@@ -181,18 +232,8 @@ import { mountSidebar } from "./sidebar.js";
   });
 
   // ---- context files ----
-  var TYPE = {
-    md: "MD",
-    markdown: "MD",
-    txt: "TXT",
-    text: "TXT",
-    json: "JSON",
-    csv: "CSV",
-    yaml: "YAML",
-    yml: "YAML",
-  };
   async function renderContext() {
-    var el = $("ctxBody");
+    var el = $("#ctxBody");
     var files;
     try {
       files =
@@ -241,33 +282,15 @@ import { mountSidebar } from "./sidebar.js";
       el.appendChild(card);
     });
   }
-
-  // Context files are injected verbatim into the project's chats, so only text
-  // is useful. Pre-check by type/extension (the server also enforces this) and
-  // explain the rejection rather than uploading garbage.
-  var BINARY_EXT =
-    /\.(xlsx?|xlsm|ods|docx?|pptx?|pdf|png|jpe?g|gif|webp|bmp|tiff?|ico|svg|heic|zip|gz|tar|rar|7z|bz2|xz|mp3|wav|flac|ogg|mp4|mov|avi|mkv|webm|exe|dll|so|dylib|bin|wasm|class|ttf|otf|woff2?|sqlite|db)$/i;
-  function isTextFile(f) {
-    if (BINARY_EXT.test(f.name)) return false;
-    if (f.type && !/^text\//.test(f.type)) {
-      // Allow a few text-ish application/* types; reject the rest (images, etc.).
-      return (
-        /^application\/(json|xml|x-yaml|yaml|toml|x-sh|javascript|csv)$|^$/.test(f.type) ||
-        /\+xml$|\+json$/.test(f.type)
-      );
-    }
-    return true;
-  }
-
-  $("ctxAdd").addEventListener("click", function () {
-    $("fileInput").click();
+  $("#ctxAdd").addEventListener("click", function () {
+    $("#fileInput").click();
   });
-  $("fileInput").addEventListener("change", async function () {
+  $("#fileInput").addEventListener("change", async function () {
     var file = this.files && this.files[0];
     this.value = "";
     if (!file) return;
     if (!isTextFile(file)) {
-      dialogs.confirm({
+      ctx.dialogs.confirm({
         title: "Only text files",
         body:
           "“" +
@@ -284,17 +307,13 @@ import { mountSidebar } from "./sidebar.js";
           encodeURIComponent(projectId) +
           "/context?name=" +
           encodeURIComponent(file.name),
-        {
-          method: "POST",
-          headers: { "content-type": "text/plain" },
-          body: text,
-        },
+        { method: "POST", headers: { "content-type": "text/plain" }, body: text },
       );
       if (!r.ok) {
         var err = await r.json().catch(function () {
           return {};
         });
-        dialogs.confirm({
+        ctx.dialogs.confirm({
           title: "Couldn’t add file",
           body: err.error || "The file was rejected.",
           ok: "OK",
@@ -307,44 +326,45 @@ import { mountSidebar } from "./sidebar.js";
     }
   });
 
-  // ---- details modal (name + description) ----
+  // ---- details modal ----
   function openDetails() {
-    $("mName").value = project.name;
-    $("mDesc").value = project.description || "";
-    $("detailsModal").hidden = false;
-    $("mName").focus();
+    $("#mName").value = project.name;
+    $("#mDesc").value = project.description || "";
+    $("#detailsModal").hidden = false;
+    $("#mName").focus();
   }
   function closeDetails() {
-    $("detailsModal").hidden = true;
+    $("#detailsModal").hidden = true;
   }
-  $("detailsBack").addEventListener("click", closeDetails);
-  $("mCancel").addEventListener("click", closeDetails);
-  $("mSave").addEventListener("click", async function () {
-    var name = $("mName").value.trim();
+  $("#detailsBack").addEventListener("click", closeDetails);
+  $("#mCancel").addEventListener("click", closeDetails);
+  $("#mSave").addEventListener("click", async function () {
+    var name = $("#mName").value.trim();
     if (!name) {
-      $("mName").focus();
+      $("#mName").focus();
       return;
     }
-    var desc = $("mDesc").value;
+    var desc = $("#mDesc").value;
     await patch({ name: name, description: desc });
     project.name = name;
     project.description = desc;
-    $("pname").textContent = name;
-    $("crumbname").textContent = name;
-    $("pdesc").textContent = desc;
-    $("pdesc").hidden = !desc;
+    $("#pname").textContent = name;
+    $("#crumbname").textContent = name;
+    $("#pdesc").textContent = desc;
+    $("#pdesc").hidden = !desc;
     document.title = name + " · Kloe";
     closeDetails();
   });
-  document.addEventListener("keydown", function (e) {
+  function onKeydown(e) {
     if (e.key !== "Escape") return;
-    if (!$("detailsModal").hidden) closeDetails();
-    if (!$("pinModal").hidden) closePin();
-  });
+    if (!$("#detailsModal").hidden) closeDetails();
+    if (!$("#pinModal").hidden) closePin();
+  }
+  document.addEventListener("keydown", onKeydown);
 
   // ---- ⋮ project menu ----
-  $("projMenu").addEventListener("click", function (e) {
-    e.stopPropagation(); // else this same click bubbles to the ctxmenu's outside-click close
+  $("#projMenu").addEventListener("click", function (e) {
+    e.stopPropagation();
     var r = this.getBoundingClientRect();
     showContextMenu(
       r.right,
@@ -356,7 +376,7 @@ import { mountSidebar } from "./sidebar.js";
           icon: TRASH_ICON,
           danger: true,
           onClick: async function () {
-            var ok = await dialogs.confirm({
+            var ok = await ctx.dialogs.confirm({
               title: "Delete project?",
               body: "Its chats stay but become unfiled. This can’t be undone.",
               ok: "Delete",
@@ -366,7 +386,7 @@ import { mountSidebar } from "./sidebar.js";
             await fetch("/api/projects/" + encodeURIComponent(projectId), {
               method: "DELETE",
             }).catch(function () {});
-            window.location.href = "/projects";
+            ctx.navigate("/projects");
           },
         },
       ],
@@ -374,17 +394,9 @@ import { mountSidebar } from "./sidebar.js";
     );
   });
 
-  $("newChat").addEventListener("click", function () {
-    window.location.href = "/?new=1&project=" + encodeURIComponent(projectId);
+  $("#newChat").addEventListener("click", function () {
+    ctx.navigate("/?new=1&project=" + encodeURIComponent(projectId));
   });
-
-  async function loadSidebar() {
-    try {
-      sidebar.render((await (await fetch("/api/conversations")).json()).conversations || []);
-    } catch (_) {
-      sidebar.render([]);
-    }
-  }
 
   async function load() {
     var res;
@@ -394,31 +406,27 @@ import { mountSidebar } from "./sidebar.js";
       return;
     }
     if (!res.ok) {
-      window.location.href = "/projects";
+      ctx.navigate("/projects");
       return;
     }
     var data = await res.json();
     project = data.project;
     document.title = project.name + " · Kloe";
-    $("crumbname").textContent = project.name;
-    $("pname").textContent = project.name;
-    $("pdesc").textContent = project.description || "";
-    $("pdesc").hidden = !project.description;
-    $("detail").hidden = false;
+    $("#crumbname").textContent = project.name;
+    $("#pname").textContent = project.name;
+    $("#pdesc").textContent = project.description || "";
+    $("#pdesc").hidden = !project.description;
+    $("#detail").hidden = false;
     renderChats(data.conversations || []);
     renderMemory();
     renderContext();
   }
 
-  (async function () {
-    if (!projectId) {
-      window.location.href = "/projects";
-      return;
-    }
-    var me = await requireAuth();
-    if (!me) return;
-    setPfp(me);
-    loadSidebar();
-    load();
-  })();
-})();
+  load();
+
+  return {
+    destroy: function () {
+      document.removeEventListener("keydown", onKeydown);
+    },
+  };
+}
