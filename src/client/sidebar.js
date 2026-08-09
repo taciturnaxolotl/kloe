@@ -111,8 +111,12 @@ export function mountSidebar(config) {
     // Highlight "New chat" while the open conversation is brand new — it has an
     // id but isn't in the saved list yet (nothing persisted). Not on the
     // Conversations page, which has its own active nav row.
+    // "New chat" lights up only on the chat view, and only for a brand-new chat
+    // that has an id but isn't saved yet. onChat() lets the shell say whether the
+    // chat view is even showing (a satellite view must not keep this lit).
+    var onChat = config.onChat ? config.onChat() : config.active !== "conversations";
     var isNewChat =
-      config.active !== "conversations" &&
+      onChat &&
       !!active &&
       !conversations.some(function (c) {
         return c.id === active;

@@ -82,6 +82,22 @@ export function mount(root, params, ctx) {
   var projectId = params.id;
   var project = null;
   var pinProjects = null; // cached list from /api/lard/projects
+  var abort = new AbortController(); // cancels the in-flight load on unmount
+
+  // Small sessionStorage helpers so the panels (memory preview, context files)
+  // paint instantly on a revisit and revalidate in the background.
+  function ssGet(key) {
+    try {
+      return JSON.parse(sessionStorage.getItem(key) || "null");
+    } catch (_) {
+      return null;
+    }
+  }
+  function ssSet(key, val) {
+    try {
+      sessionStorage.setItem(key, JSON.stringify(val));
+    } catch (_) {}
+  }
 
   if (!projectId) {
     ctx.navigate("/projects");
@@ -106,7 +122,17 @@ export function mount(root, params, ctx) {
       return;
     }
     list.forEach(function (c) {
-      rows.appendChild(convRow(c, { dialogs: ctx.dialogs, reload: loadChats }));
+      rows.appendChild(
+        convRow(c, {
+          dialogs: ctx.dialogs,
+          reload: loadChats,
+          // Soft-nav; convRow otherwise falls back to a full-page window.location
+          // (which also triggers the cross-document fade).
+          onOpen: function (conv) {
+            ctx.navigate("/c/" + encodeURIComponent(conv.id));
+          },
+        }),
+      );
     });
   }
   async function loadChats() {
@@ -130,6 +156,14 @@ export function mount(root, params, ctx) {
   }
 
   // ---- memory panel ----
+  var MEM_CACHE = "kloe:pmem:" + projectId;
+  // Paint the pin name + a hint line (cached preview, "Loading…", or an error).
+  function paintMem(pin, hint) {
+    var el = $("#memBody");
+    el.innerHTML = '<div class="pinname"></div><p class="lardhint"></p>';
+    el.querySelector(".pinname").textContent = pin;
+    el.querySelector(".lardhint").textContent = hint;
+  }
   async function renderMemory() {
     var el = $("#memBody");
     var pin = project.lardProject;
@@ -138,24 +172,32 @@ export function mount(root, params, ctx) {
         '<p class="lardhint">No memory pinned. Pin a lard project so this project’s chats read and record durable context.</p>';
       return;
     }
-    el.innerHTML = '<div class="pinname"></div><p class="lardhint">Loading…</p>';
-    el.querySelector(".pinname").textContent = pin;
+    // Instant paint from cache if it's for the same pin; else show Loading.
+    var cached = ssGet(MEM_CACHE);
+    paintMem(pin, cached && cached.pin === pin ? cached.hint : "Loading…");
     try {
-      var r = await fetch("/api/lard/context?project=" + encodeURIComponent(pin));
+      var r = await fetch("/api/lard/context?project=" + encodeURIComponent(pin), {
+        signal: abort.signal,
+      });
+      var hint;
       if (!r.ok) {
-        el.querySelector(".lardhint").textContent =
+        hint =
           r.status === 409
             ? "Connect lard in Settings to view its memory."
             : "Couldn’t load memory.";
+        paintMem(pin, hint);
         return;
       }
       var data = await r.json();
       var preview = (data.area || data.profile || "").trim();
-      el.querySelector(".lardhint").textContent = preview
+      hint = preview
         ? preview.slice(0, 240) + (preview.length > 240 ? "…" : "")
         : "No memory recorded yet.";
+      paintMem(pin, hint);
+      ssSet(MEM_CACHE, { pin: pin, hint: hint });
     } catch (_) {
-      el.querySelector(".lardhint").textContent = "Couldn’t load memory.";
+      if (abort.signal.aborted) return;
+      paintMem(pin, "Couldn’t load memory.");
     }
   }
 
@@ -232,17 +274,13 @@ export function mount(root, params, ctx) {
   });
 
   // ---- context files ----
-  async function renderContext() {
+  var CTX_CACHE = "kloe:pctx:" + projectId;
+  var ctxShown = null;
+  function paintCtxFiles(files) {
+    var j = JSON.stringify(files);
+    if (j === ctxShown) return; // unchanged revalidation — no rebuild, no flash
+    ctxShown = j;
     var el = $("#ctxBody");
-    var files;
-    try {
-      files =
-        (await (await fetch("/api/projects/" + encodeURIComponent(projectId) + "/context")).json())
-          .files || [];
-    } catch (_) {
-      el.innerHTML = '<p class="lardhint">Couldn’t load context files.</p>';
-      return;
-    }
     el.innerHTML = "";
     if (!files.length) {
       el.innerHTML =
@@ -281,6 +319,27 @@ export function mount(root, params, ctx) {
       card.appendChild(del);
       el.appendChild(card);
     });
+  }
+  async function renderContext() {
+    var cached = ssGet(CTX_CACHE);
+    if (cached) paintCtxFiles(cached); // instant paint on a revisit
+    var files;
+    try {
+      files =
+        (
+          await (
+            await fetch("/api/projects/" + encodeURIComponent(projectId) + "/context", {
+              signal: abort.signal,
+            })
+          ).json()
+        ).files || [];
+    } catch (_) {
+      if (abort.signal.aborted) return;
+      if (!cached) $("#ctxBody").innerHTML = '<p class="lardhint">Couldn’t load context files.</p>';
+      return;
+    }
+    ssSet(CTX_CACHE, files);
+    paintCtxFiles(files);
   }
   $("#ctxAdd").addEventListener("click", function () {
     $("#fileInput").click();
@@ -398,10 +457,39 @@ export function mount(root, params, ctx) {
     ctx.navigate("/?new=1&project=" + encodeURIComponent(projectId));
   });
 
+  // The detail payload survives a navigation in sessionStorage so a revisit paints
+  // instantly instead of blanking for a round-trip; the fetch below revalidates.
+  var CACHE = "kloe:project:";
+  function readCache() {
+    try {
+      return JSON.parse(sessionStorage.getItem(CACHE + projectId) || "null");
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Paint the project header + chats (and refresh Memory, which depends on the
+  // project's pin). Deduped: an unchanged revalidation doesn't rebuild the DOM,
+  // so the instant cached paint doesn't flash a round-trip later.
+  var shownJson = null;
+  function paint(data) {
+    var j = JSON.stringify(data);
+    if (j === shownJson) return;
+    shownJson = j;
+    project = data.project;
+    document.title = project.name + " · Kloe";
+    $("#crumbname").textContent = project.name;
+    $("#pname").textContent = project.name;
+    $("#pdesc").textContent = project.description || "";
+    $("#pdesc").hidden = !project.description;
+    renderChats(data.conversations || []);
+    renderMemory();
+  }
+
   async function load() {
     var res;
     try {
-      res = await fetch("/api/projects/" + encodeURIComponent(projectId));
+      res = await fetch("/api/projects/" + encodeURIComponent(projectId), { signal: abort.signal });
     } catch (_) {
       return;
     }
@@ -410,22 +498,25 @@ export function mount(root, params, ctx) {
       return;
     }
     var data = await res.json();
-    project = data.project;
-    document.title = project.name + " · Kloe";
-    $("#crumbname").textContent = project.name;
-    $("#pname").textContent = project.name;
-    $("#pdesc").textContent = project.description || "";
-    $("#pdesc").hidden = !project.description;
-    $("#detail").hidden = false;
-    renderChats(data.conversations || []);
-    renderMemory();
-    renderContext();
+    try {
+      sessionStorage.setItem(CACHE + projectId, JSON.stringify(data));
+    } catch (_) {}
+    paint(data);
   }
 
+  // Reveal the structure right away with a loading state (so a soft-nav doesn't
+  // show a blank pane), then paint cache instantly if we have it. Context files
+  // depend only on the id, so fetch them in parallel with the main payload.
+  $("#detail").hidden = false;
+  $("#rows").innerHTML = '<div class="chatsempty">Loading…</div>';
+  renderContext();
+  var cached = readCache();
+  if (cached && cached.project) paint(cached);
   load();
 
   return {
     destroy: function () {
+      abort.abort();
       document.removeEventListener("keydown", onKeydown);
     },
   };

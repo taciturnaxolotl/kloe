@@ -1400,6 +1400,11 @@ import { mountSidebar } from "./sidebar.js";
       connTimer = null;
     }
     convId = id;
+    // Clear the previous conversation's thread synchronously, before the async
+    // history load. Otherwise, when the chat shell is re-revealed after a detour
+    // through a satellite view, it briefly shows the old conversation (a full
+    // round-trip for a new chat) until loadHistoryThenStream's fetch returns.
+    clearThread();
     // Reset the context-window gauge for the conversation we're switching to;
     // replay of an existing chat's last turn repopulates it, a new chat leaves
     // it hidden (no usage yet) instead of showing the previous chat's number.
@@ -1734,7 +1739,14 @@ import { mountSidebar } from "./sidebar.js";
   // Conversations page; this page just tells it how to open/create a chat.
   var conversations = [];
   var dialogs = mountDialogs();
+  // The section the router is currently showing ("chat" | "conversations" |
+  // "projects" | "settings"). The sidebar's "New chat" highlight is a chat-view
+  // concern, so it only lights up while we're actually on chat.
+  var currentSection = "chat";
   var sidebar = mountSidebar({
+    onChat: function () {
+      return currentSection === "chat";
+    },
     // Route through the router so these work from any view: if a satellite is
     // mounted, it's torn down and the chat shell comes back; on chat, it's a
     // normal soft-nav. `router` is assigned below (before any user click fires).
@@ -1963,8 +1975,12 @@ import { mountSidebar } from "./sidebar.js";
   // page's HTML; soft-nav has to do it live). "New chat" and the active recent are
   // handled separately by sidebar.render, so chat clears both top rows.
   function setActiveNav(section) {
+    currentSection = section;
     document.getElementById("chatsBtn").classList.toggle("active", section === "conversations");
     document.getElementById("projectsBtn").classList.toggle("active", section === "projects");
+    // Leaving chat clears the "New chat" highlight now (views like Projects don't
+    // re-render the sidebar); on chat, enterChat's sidebar.render sets it.
+    if (section !== "chat") document.getElementById("new").classList.remove("active");
   }
 
   // Shared context handed to mounted views: the live sidebar, the dialog helpers,

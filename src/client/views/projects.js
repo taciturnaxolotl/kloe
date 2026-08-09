@@ -61,6 +61,17 @@ export function mount(root, _params, ctx) {
     ctx.toggleRail();
   });
 
+  // Skip a rebuild when the revalidated list is byte-identical to what's shown —
+  // otherwise the instant cached paint gets torn down and rebuilt a round-trip
+  // later, flashing the grid for no reason.
+  var shownJson = null;
+  function show(list) {
+    var j = JSON.stringify(list);
+    if (j === shownJson) return;
+    shownJson = j;
+    render(list);
+  }
+
   function render(list) {
     grid.innerHTML = "";
     if (!list.length) {
@@ -95,7 +106,7 @@ export function mount(root, _params, ctx) {
     try {
       var res = await fetch("/api/projects", { signal: abort.signal });
       var list = (await res.json()).projects || [];
-      render(list);
+      show(list);
       writeCache(list);
     } catch (_) {
       if (abort.signal.aborted) return; // navigated away — leave the DOM alone
@@ -126,7 +137,7 @@ export function mount(root, _params, ctx) {
 
   // Paint cached cards immediately (instant view swap), then revalidate.
   var cached = readCache();
-  if (cached && cached.length) render(cached);
+  if (cached && cached.length) show(cached);
   load();
 
   return {
