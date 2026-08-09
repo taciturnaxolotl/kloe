@@ -886,6 +886,11 @@ import { mountSidebar } from "./sidebar.js";
     var row,
       label,
       body = null;
+    // Each step lives in a positioned wrapper so a step can place non-toggle
+    // controls (fetch_url's out-link) OUTSIDE its <summary> — a <summary> owns
+    // Enter/Space, so an interactive element inside it isn't keyboard-reachable.
+    var host = document.createElement("div");
+    host.className = "steprow";
     if (expandable) {
       row = document.createElement("details");
       row.className = "step " + cls;
@@ -903,14 +908,15 @@ import { mountSidebar } from "./sidebar.js";
       row.innerHTML = '<span class="stepicon">' + icon + '</span><span class="steplabel"></span>';
       label = row.querySelector(".steplabel");
     }
-    a.stepper.appendChild(row);
+    host.appendChild(row);
+    a.stepper.appendChild(host);
     a.details.open = true; // working → reveal the steps
     // A block with one step needs no summarizing header (it would just duplicate
     // that step); the ".single" class hides the header so the lone step stands
     // alone. The header earns its place only once there are multiple steps.
     a.stepCount++;
     a.details.classList.toggle("single", a.stepCount === 1);
-    return { row: row, label: label, body: body };
+    return { row: row, label: label, body: body, host: host };
   }
   // The reasoning step currently streaming in the open block. Shimmers "Thinking"
   // while live, then settles to "Thought"; the turn's first reasoning gets the
@@ -1013,8 +1019,9 @@ import { mountSidebar } from "./sidebar.js";
       true,
     );
     if (ui.summaryDom) {
-      // The tool fully owns its summary (custom icon / label / right-side link).
-      step.label = ui.summaryDom(step.row.querySelector("summary"), data.input).label;
+      // The tool fully owns its summary (custom icon / label). `host` is the step
+      // wrapper, where a right-side out-link goes so it stays out of the summary.
+      step.label = ui.summaryDom(step.row.querySelector("summary"), data.input, step.host).label;
     } else {
       step.label.textContent = ui.row(data.input, data.toolName);
     }
@@ -1227,7 +1234,7 @@ import { mountSidebar } from "./sidebar.js";
       // Full custom summary: favicon + the page title (filled in on result), with
       // the hostname as a clickable out-link on the right. No chevron — click the
       // row to expand. Returns the label element so the result can set the title.
-      summaryDom: function (sum, input) {
+      summaryDom: function (sum, input, host) {
         var url = (input && input.url) || "";
         var hostName = domainOf(url) || "link";
         sum.innerHTML = "";
@@ -1254,12 +1261,11 @@ import { mountSidebar } from "./sidebar.js";
         hspan.textContent = hostName;
         link.appendChild(hspan);
         link.insertAdjacentHTML("beforeend", ICON_EXT);
-        link.addEventListener("click", function (e) {
-          e.stopPropagation();
-        }); // open the link, don't toggle
         sum.appendChild(icon);
         sum.appendChild(label);
-        sum.appendChild(link);
+        // The out-link lives on the wrapper (a sibling of the <summary>), not
+        // inside it — keyboard-reachable, and positioned over the row's right.
+        (host || sum).appendChild(link);
         return { label: label };
       },
       summary: function (steps, active) {

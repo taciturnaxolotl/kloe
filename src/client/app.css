@@ -1197,8 +1197,16 @@ body.selecting #selectBtn {
   flex-direction: column;
   margin: 3px 0 2px;
 }
+/* Each step + its optional out-link share a row; the link sits at the top so it
+   tracks the summary line even when the step is expanded. */
+.turn .body .stepper .steprow {
+  display: flex;
+  align-items: flex-start;
+}
 .turn .body .stepper .step {
   position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 /* connector line down the icon column; each icon's own background breaks it */
 .turn .body .stepper .step::before {
@@ -1210,10 +1218,10 @@ body.selecting #selectBtn {
   width: 1px;
   background: var(--rule);
 }
-.turn .body .stepper .step:first-child::before {
+.turn .body .stepper .steprow:first-child .step::before {
   top: 14px;
 } /* start at first icon */
-.turn .body .stepper .step:last-child::before {
+.turn .body .stepper .steprow:last-child .step::before {
   bottom: calc(100% - 14px);
 } /* end at last icon */
 .turn .body .stepper .step > summary {
@@ -1378,19 +1386,30 @@ body.selecting #selectBtn {
   border-radius: 3px;
   display: block;
 }
-.turn .body .stepper .step .stephost {
+.turn .body .stepper .steprow > .stephost {
   flex: none;
-  margin-left: 10px;
+  max-width: 45%;
+  padding: 4px 2px 4px 8px; /* vertical padding matches the summary, so it aligns */
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
   color: var(--ink-faint);
   text-decoration: none;
+  overflow: hidden;
 }
-.turn .body .stepper .step .stephost:hover {
+.turn .body .stepper .steprow > .stephost span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.turn .body .stepper .steprow > .stephost:hover {
   color: var(--ink-muted);
 }
-.turn .body .stepper .step .stephost svg {
+.turn .body .stepper .steprow > .stephost svg {
+  flex: none;
   width: 12px;
   height: 12px;
 }

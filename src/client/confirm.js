@@ -11,7 +11,7 @@ var HTML =
   '<div class="confirm-card" role="dialog" aria-modal="true">' +
   '<div class="confirm-title"></div>' +
   '<div class="confirm-body"></div>' +
-  '<input class="confirm-input" type="text" autocomplete="off" spellcheck="false" hidden>' +
+  '<input class="confirm-input" name="value" type="text" autocomplete="off" spellcheck="false" hidden>' +
   '<div class="confirm-actions">' +
   '<button class="btn confirm-cancel" type="button">Cancel</button>' +
   '<button class="btn confirm-ok" type="button">Confirm</button>' +
