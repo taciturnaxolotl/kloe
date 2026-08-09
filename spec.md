@@ -30,9 +30,13 @@ engine. No React, no WebSockets, no CRDT — until a specific feature earns them
  
 - No full local-first sync engine in the base build. (See "When to add more.")
 - No WebSockets in the base build — SSE down + POST up covers chat.
-- No client framework runtime (React/Vue), no web components, no build tooling. Plain ES modules served by Bun's HTML routes.
-- Not offline-write-capable by default. Base build assumes online with resilient
-  reconnect; offline authoring is an explicit later addition.
+- No client framework runtime (React/Vue), no web components. Plain ES modules —
+  but the client build is now *owned* (a small `Bun.build` step: content-hashed,
+  compressed, immutable-cached; see Frontend), not left to Bun's on-serve HTML
+  bundling. Still no framework, no bundler config, no Vite.
+- Not offline-**write**-capable by default. A service worker now caches the shell
+  and assets so the app cold-loads and reads offline; offline *authoring*
+  (queue-and-converge) is still an explicit later addition.
 ## Architecture
  
 ```
@@ -337,16 +341,61 @@ replay if you'd rather not hand-roll, at the cost of a dependency.)
   when `baseUrl` is https. The signed-in avatar shows in the rail footer next to
   Settings.
 ## Frontend
- 
-Built as vanilla ES modules (`src/client/`), no framework and no build tooling —
-Bun's HTML route handling transpiles and bundles on serve.
- 
+
+Vanilla ES modules (`src/client/`), no framework. The heavy lifting is DOM
+construction and streaming; the app never re-renders a tree, it appends.
+
 - Plain DOM construction; stream markdown deltas into it.
 - Native `EventSource` for the down channel; `fetch` for actions.
 - Local UI state is plain module variables + direct DOM updates; no signal
   primitive was needed at this size.
-- One vendored dependency: `streaming-markdown` (~3 KB brotli). Everything else
-  is hand-rolled and small.
+- Small vendored deps: `streaming-markdown` (~3 KB brotli) for the stream, plus a
+  lazy `enrich.js` split bundle (Shiki + KaTeX) fetched only when a code/math
+  block appears.
+
+### Single-page shell (`src/client/app.js` + `router.js`)
+
+The whole app is **one document**. `/`, `/c/:id`, `/conversations`, `/projects`,
+`/p/:id`, and `/settings` all serve the same shell HTML; a tiny client router
+intercepts link clicks + `popstate` and swaps views without a document reload.
+
+- The **chat view is the persistent home** — its DOM and live SSE stream stay
+  mounted in `#chatShell` while satellite views (Conversations, Projects, a
+  project, Settings) mount into `#viewOutlet` and unmount on the way out. Peeking
+  at Settings never tears down the conversation.
+- Each satellite is a `mount(root, params, ctx) → { destroy }` module,
+  lazy-imported on first visit, with client-owned markup and root-scoped DOM.
+- Swaps are **instant** (no crossfade) — content paints synchronously from a
+  per-view `sessionStorage` cache (recents, projects, the open project's payload)
+  and revalidates in the background, deduped so an unchanged refresh doesn't
+  flash. A cross-document `@view-transition` still smooths real full-page loads
+  (unowned routes, e.g. `/auth/*`, fall through to a normal navigation).
+
+### Owned client build (`src/assets.ts`)
+
+The client is built explicitly with `Bun.build` rather than left to Bun's
+on-serve HTML bundling, so kloe controls the response:
+
+- **content-hashed** outputs served `immutable` (a navigation re-fetches zero
+  bytes); the mutable entry documents are `no-cache` + ETag.
+- **build-time compression** (brotli/gzip precomputed once; Bun.serve does none),
+  so the ~100 KB of JS+CSS ships as ~20 KB.
+- **clean, root-absolute asset paths** that work under `/c/:id` and `/p/:id`.
+
+### Service worker (`src/client/sw.js`)
+
+Instant cold paint, an offline shell, and instant chat-open — from one worker
+whose strategy **mirrors the server's `Cache-Control`**, so it's correct in dev
+and prod alike:
+
+- **immutable** hashed assets → cache-first (a rebuild is a new URL, never stale).
+- **mutable** shell doc + `enrich.js` (`no-cache`) → network-first with a cache
+  fallback: fresh online, still available offline.
+- **conversation tails** (`/events?tailTurns=…` only) → a deliberate
+  stale-while-revalidate + cap: a revisit paints the last turns instantly and the
+  live SSE reconciles. Backfill (`?before=`) is never cached, so the message
+  cache is bounded by the cap, not by history length.
+- Never touched: the SSE stream, non-GET, cross-origin, `/auth/*` + `/lard/*`.
 ## Rendering
  
 The naive approach re-parses and re-renders the whole growing message on every
@@ -364,11 +413,19 @@ token — O(n²) work, and the real cost is DOM thrash, not parsing. Don't do th
   - The block-memoization pattern (marked lexer, freeze completed blocks,
     re-render only the last) is the framework equivalent — smd's append-only
     model gets you the same win without a framework.
-- **Syntax highlighting is deferred and off-thread.** Render code as plain text
-  while streaming; once the fence closes, highlight the completed block in a Web
-  Worker (Shiki `codeToTokens`), then swap in the styled result. Never highlight
-  a growing block per token. Lazy-load only the grammars/themes actually seen —
-  Shiki's full set is large and blows the bundle budget.
+- **Syntax highlighting streams.** The active (last, still-growing) code block is
+  re-highlighted with Shiki as it arrives — throttled to one pass in flight, with
+  whatever streamed in meanwhile kept as a plain tail and picked up on the next
+  pass — so code colorizes live instead of popping to color at message-end.
+  Whole-block re-highlight (not incremental token state) is what makes a context
+  flip just resolve (a `/` that becomes a `//` comment). Completed blocks and
+  replayed history highlight once via an IntersectionObserver, off the boot path.
+  Grammars load **on demand** — only the languages actually seen (Shiki's full set
+  blows the bundle), with the fetch kicked off at fence-open to overlap the
+  stream. It runs on the main thread, not a worker: a throttled whole-block
+  highlight of a single block is cheap, and one shared highlighter (a memoized
+  promise — caching the resolved instance let concurrent callers spawn dozens)
+  keeps it a singleton.
 - **Heavy renderers are per-block and lazy.** KaTeX and Mermaid load only when a
   math/diagram block appears, and render on completion, not mid-token.
 - **Throttle to the frame.** Batch DOM updates with `requestAnimationFrame` (~60
@@ -390,16 +447,20 @@ Resume interplay: because smd is append-only, on reconnect either keep the
 rendered DOM and feed only the gap since last seq, or reset the parser and replay
 the log — both are cheap DOM appends, no diffing.
  
-Rendering bundle: ~3 KB core (smd) only — Shiki/KaTeX/Mermaid are described
-above as the deferred path but are not built yet.
+Rendering bundle: ~3 KB core (smd) on the app entry. Shiki (code) + KaTeX (math)
+ride a lazy `enrich.js` split bundle that loads only when a code/math block
+appears, and per-language grammars split further so only what's actually seen is
+fetched. Mermaid is still the unbuilt deferred path.
  
 ## Tools, attachments, thinking & sandboxing
 
-> Status: **designed, not built.** The base build streams text only. This section
-> is the one large capability extension the base build was shaped to accept —
-> the event enum already reserves `tool-call`/`tool-result` and
-> `message-start.type` already admits `"tool-call"`. Build it in the sequence at
-> the end; don't land it all at once.
+> Status: **mostly built.** The full stream (text + reasoning + tool
+> calls/results), the durability split, the content-addressed blob store, the
+> in-process tool loop, `web_search`, and interleaved timeline rendering all ship;
+> the durability split predicted here held. What remains unbuilt is the
+> **approval gate** and wiring the docker/gVisor `Executor` (see the Stack table)
+> into the tool loop as a first-class sandboxed tool. This section reads as the
+> design that was followed; per-item status is called out where it still differs.
 
 The whole extension rides **one spine**: consume the provider's *full* stream
 (not just text), persist each non-reproducible part durably as its own event,
@@ -628,7 +689,19 @@ across tool boundaries).
   and resumability fall out for free — approve on a phone, the laptop's SSE
   replay rebuilds the same state.
 
-### Sandboxing — reuse the spindle *engine*, not its pipelines
+### Sandboxing
+
+> **What shipped:** an `Executor` interface (`src/executor.ts`) backed by docker —
+> one-off `run --rm` for stateless calls, a long-lived `run -d` + `exec` container
+> per conversation for stateful sessions (idle-evicted), with **gVisor (`runsc`)**
+> as the OCI runtime for isolation and `DOCKER_HOST=ssh://…` pointing at a KVM box
+> on the tailnet so execution is off the web tier. gVisor over a remote docker
+> daemon proved far simpler and more robust on the homelab than the microVM-broker
+> design below (Kata was tried and was operationally fragile). The spindle-engine
+> approach that follows was explored end-to-end and **set aside**; it's kept as a
+> design record and a fallback if per-tool microVM isolation is ever needed.
+
+#### Explored: reuse the spindle *engine*, not its pipelines
 
 Dangerous tools run in a microVM. The homelab already runs a **Tangled spindle**,
 whose execution engine is exactly a sandboxed command runner wearing a CI
@@ -919,15 +992,18 @@ cleanly into read, tool, and write paths:
 | Up transport     | HTTP POST (202 + job queue)                                    |
 | Persistence      | `bun:sqlite` (WAL): append-only event log + jobs + curation    |
 | Conversation hub | Single-writer per-conversation actor (in-proc today; DO at scale) |
-| Frontend         | Vanilla ES modules, no build step (Bun serves the HTML)        |
+| Frontend         | Vanilla ES modules, no framework; single-document SPA (shell + client router + mount/destroy views), instant soft-nav |
+| Client build     | Owned `Bun.build` (`src/assets.ts`): content-hashed, brotli/gzip-compressed, `immutable`-cached — **built** |
+| Delivery         | Service worker (`sw.js`): cache-first immutable / network-first mutable shell / SWR-capped conversation tails — instant cold paint, offline shell, instant chat-open — **built** |
 | Markdown render  | `streaming-markdown` (smd, ~3 KB, append-only); URL hardening instead of DOMPurify |
-| Code highlight   | Deferred to completed blocks (Shiki in a worker) — not built yet |
+| Code highlight   | Shiki, streamed live per frame (active block), grammars on demand, lazy `enrich.js` split bundle — **built** |
+| Math render      | KaTeX, lazy on first `$`, served from `/vendor` — **built** |
 | Event schema     | AG-UI-aligned typed events                                     |
 | Sync engine      | **None** in base build (see decision rules)                    |
 | Blob store       | Content-addressed (`sha256`), swappable backend via `KLOE_BLOB_BACKEND`: local-fs default + self-hosted S3 (Garage/MinIO/R2 via Bun `S3Client`) — **built**; endpoints/attachments next |
 | Tools            | AI SDK agentic loop (`streamText` + `stopWhen`); durable `tool-call`/`tool-result` events, `history()` folding, timeline rendering; in-process pure tools — **built** |
 | Search           | `web_search` behind a swappable `SearchProvider` (Ceramic first); config-selected, offered only when set — **built** |
-| Tool sandbox     | microVM via a broker over Tangled spindle's engine (agentproto/vsock); Nix env as an event-sourced fold — *designed, not built* |
+| Tool sandbox     | `Executor` interface (`src/executor.ts`): one-off + session containers via docker, gVisor (`runsc`) for isolation, remote over `DOCKER_HOST=ssh://…` to a KVM box on the tailnet — **built**; approval gate + spindle-microVM path explored but not shipped (see below) |
  
 ## When to add more (decision rules)
  
