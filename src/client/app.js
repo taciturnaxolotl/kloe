@@ -1430,11 +1430,17 @@ import { mountSidebar } from "./sidebar.js";
   function showPane() {
     $("pane").hidden = false;
     $("app").classList.add("pane-open");
+    $("docsBtn").hidden = true;
   }
   function paneChrome(mode) {
     paneMode = mode;
-    $("paneBack").hidden = mode !== "doc" || !artifactList.length;
+    // Expanding a list of documents means nothing; the control belongs to the
+    // document itself, alongside copy and download.
+    $("paneFull").hidden = mode !== "doc";
     $("paneDocActions").hidden = mode !== "doc";
+    // The header button and an open pane say the same thing, so only one of them
+    // says it. Closing the pane brings the button back.
+    $("docsBtn").hidden = !artifactList.length;
   }
   /** The conversation's documents, newest first. */
   function openPaneList() {
@@ -1568,6 +1574,7 @@ import { mountSidebar } from "./sidebar.js";
     $("pane").hidden = true;
     $("paneBody").innerHTML = "";
     $("app").classList.remove("pane-open", "pane-full");
+    $("docsBtn").hidden = !artifactList.length;
   }
   // The blob endpoint sets Content-Disposition from `?name`, so the browser
   // saves it under its real filename without the app re-encoding the bytes.
@@ -1617,7 +1624,7 @@ import { mountSidebar } from "./sidebar.js";
       .then(function (d) {
         if (convId !== id) return; // switched chats while it was in flight
         artifactList = d.artifacts || [];
-        btn.hidden = artifactList.length === 0;
+        btn.hidden = artifactList.length === 0 || !$("pane").hidden;
         $("docsCount").textContent = artifactList.length || "";
       })
       .catch(function () {});
@@ -1683,7 +1690,6 @@ import { mountSidebar } from "./sidebar.js";
     mountDocsButton();
     mountPaneResize();
     $("paneFull").addEventListener("click", togglePaneFull);
-    $("paneBack").addEventListener("click", openPaneList);
     $("paneClose").addEventListener("click", closePane);
     $("paneCopy").addEventListener("click", function () {
       if (!paneDoc) return;
@@ -1713,9 +1719,7 @@ import { mountSidebar } from "./sidebar.js";
     });
     document.addEventListener("keydown", function (e) {
       if (e.key !== "Escape" || $("pane").hidden) return;
-      // Escape unwinds one level: a document returns to the list it came from.
-      if (paneMode === "doc" && artifactList.length) openPaneList();
-      else closePane();
+      closePane();
     });
   }
   // A document, as a card: it names the thing, shows a scrap of it, and opens it
@@ -2430,7 +2434,10 @@ import { mountSidebar } from "./sidebar.js";
     bulkLoading = false;
     if (!cleared) clearThread(); // empty conversation
     flush();
-    if (scrollBottom) scroll.scrollTop = scroll.scrollHeight;
+    if (scrollBottom) {
+      scroll.scrollTop = scroll.scrollHeight;
+      pinToBottom(900); // hold it there while estimated heights become real
+    }
     return out;
   }
   function connectStream(id, afterId) {
@@ -3168,6 +3175,7 @@ import { mountSidebar } from "./sidebar.js";
   // Our own scrollTop writes fire `scroll`, so a wheel/touch is how we tell that
   // the user changed their mind. Give way immediately when they do.
   function cancelGlide() {
+    settleUntil = 0; // a deliberate scroll outranks the post-load settling
     if (!jumpAnim) return;
     cancelAnimationFrame(jumpAnim);
     jumpAnim = null;
@@ -3179,6 +3187,32 @@ import { mountSidebar } from "./sidebar.js";
     jump.classList.remove("show");
     glideToBottom();
   });
+  /**
+   * Hold the view at the end for a beat after a conversation opens.
+   *
+   * The ResizeObserver below re-pins as the thread grows, but only while
+   * `atBottom` — and that flag is exactly what a freshly opened conversation
+   * loses. Turns carry `content-visibility: auto`, so everything offscreen sits
+   * at a 240px estimate until it's scrolled near; as real heights replace those
+   * estimates the browser anchors the scroll to keep the visual position, which
+   * moves us off the bottom, clears the flag, and strands the view a little
+   * short. A chat full of long reports is where the estimate is most wrong.
+   *
+   * So this pins unconditionally for a window, and any deliberate scroll ends
+   * it — the user's intent always wins over the settling.
+   */
+  var settleUntil = 0;
+  function pinToBottom(ms) {
+    var already = settleUntil > Date.now();
+    settleUntil = Date.now() + ms;
+    if (already) return; // a loop is already running
+    var step = function () {
+      if (Date.now() > settleUntil) return;
+      scroll.scrollTop = scroll.scrollHeight;
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
   // Keep the view pinned to the bottom while `atBottom` as the thread grows —
   // opening a large conversation, async enrich (code/math), and images all add
   // height AFTER the last scroll, which otherwise leaves us short of the end.
