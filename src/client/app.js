@@ -22,6 +22,7 @@ import * as smd from "streaming-markdown";
 import { requireAuth, setPfp } from "./authguard.js";
 import { mountDialogs } from "./confirm.js";
 import { mountConn } from "./conn.js";
+import { showContextMenu } from "./ctxmenu.js";
 import { ditherFill } from "./dither.js";
 import {
   CHEV_ICON as CHEV,
@@ -807,6 +808,9 @@ import { mountSidebar } from "./sidebar.js";
       stepCount: 0,
       tools: [],
       activeTool: null, // tools: ordered {name, input}; activeTool: the in-flight one
+      // The turn this block belongs to, so a step can reach message-level things
+      // (artifacts collect on the turn, not in the gutter).
+      rec: rec,
     };
   }
   // The current open activity block. Opening one closes the current prose block
@@ -1145,6 +1149,199 @@ import { mountSidebar } from "./sidebar.js";
     autoScroll();
     return t;
   }
+  // ---- live tool progress (deep_research) --------------------------------
+  // A tool that runs for minutes reports as it goes (see ToolProgressData). The
+  // panel is built once per tool call and mutated in place by each phase, so a
+  // hundred progress events cost a hundred text assignments rather than a
+  // hundred rebuilds. Phases the client doesn't know are ignored, which is what
+  // lets the server add one without a client release.
+  function researchPanel(t) {
+    if (t.panel) return t.panel;
+    var wrap = document.createElement("div");
+    wrap.className = "rsrch";
+    var p = {
+      root: wrap,
+      plan: rsrchStep(wrap, "Planning the research"),
+      agents: document.createElement("div"),
+      gather: rsrchStep(wrap, "Gathering sources"),
+      tally: document.createElement("div"),
+      write: rsrchStep(wrap, "Writing the report"),
+      lanes: {},
+      domains: {},
+      order: [],
+      read: 0,
+    };
+    p.agents.className = "rsrchagents";
+    p.plan.appendChild(p.agents);
+    p.tally.className = "rsrchtally";
+    p.gather.appendChild(p.tally);
+    t.body.appendChild(wrap);
+    if (t.row.tagName === "DETAILS") t.row.open = true;
+    t.panel = p;
+    return p;
+  }
+  function rsrchStep(wrap, label) {
+    var el = document.createElement("div");
+    el.className = "rsrchstep";
+    el.innerHTML = '<span class="rsrchdot"></span><span class="rsrchlabel"></span>';
+    el.querySelector(".rsrchlabel").textContent = label;
+    wrap.appendChild(el);
+    return el;
+  }
+  // One lane per worker: its angle, and a live count of what it has read. The
+  // run's shape is "four of these at once", so the panel shows four of them.
+  function rsrchLane(p, agent, angle) {
+    var lane = p.lanes[agent];
+    if (lane) return lane;
+    var el = document.createElement("div");
+    el.className = "rsrchlane";
+    var name = document.createElement("span");
+    name.className = "rsrchangle";
+    name.textContent = angle || "Angle " + (agent + 1);
+    var count = document.createElement("span");
+    count.className = "rsrchlanecount";
+    el.appendChild(name);
+    el.appendChild(count);
+    p.agents.appendChild(el);
+    lane = { el: el, count: count, read: 0, searches: 0 };
+    p.lanes[agent] = lane;
+    return lane;
+  }
+  function rsrchLaneCount(lane) {
+    var bits = [];
+    if (lane.searches) bits.push(lane.searches + (lane.searches === 1 ? " search" : " searches"));
+    if (lane.read) bits.push(lane.read + (lane.read === 1 ? " page" : " pages"));
+    lane.count.textContent = bits.join(" \u00b7 ");
+  }
+  // Mark a milestone: "active" is the one in flight, "done" is behind us.
+  function rsrchState(el, state) {
+    el.classList.remove("active", "done");
+    if (state) el.classList.add(state);
+  }
+  function rsrchLabel(el, text) {
+    el.querySelector(".rsrchlabel").textContent = text;
+  }
+  // Per-domain counts with a bar each, longest first — at a glance, where the
+  // research actually went.
+  function rsrchTally(p) {
+    p.tally.innerHTML = "";
+    var rows = p.order
+      .map(function (d) {
+        return { domain: d, n: p.domains[d] };
+      })
+      .sort(function (a, b) {
+        return b.n - a.n;
+      });
+    var top = rows.slice(0, 6);
+    var max = top.length ? top[0].n : 1;
+    top.forEach(function (r) {
+      var row = document.createElement("div");
+      row.className = "rsrchsrc";
+      var img = document.createElement("img");
+      img.className = "favicon";
+      img.alt = "";
+      img.loading = "lazy";
+      img.src = "https://icons.duckduckgo.com/ip3/" + r.domain + ".ico";
+      img.onerror = function () {
+        img.style.visibility = "hidden";
+      };
+      var name = document.createElement("span");
+      name.className = "rsrchdomain";
+      name.textContent = r.domain;
+      var count = document.createElement("span");
+      count.className = "rsrchcount";
+      count.textContent = r.n + (r.n === 1 ? " source" : " sources");
+      var track = document.createElement("span");
+      track.className = "rsrchbar";
+      var fill = document.createElement("span");
+      fill.style.width = Math.round((r.n / max) * 100) + "%";
+      track.appendChild(fill);
+      row.appendChild(img);
+      row.appendChild(name);
+      row.appendChild(count);
+      row.appendChild(track);
+      p.tally.appendChild(row);
+    });
+    if (rows.length > top.length) {
+      var more = document.createElement("div");
+      more.className = "rsrchmore";
+      var n = rows.length - top.length;
+      more.textContent = "\u2026 " + n + (n === 1 ? " other domain" : " other domains");
+      p.tally.appendChild(more);
+    }
+  }
+  function toolProgress(rec, data) {
+    // Progress can beat its own tool-call event to the client when the provider
+    // streams the call and starts the tool in one tick, so the step is created
+    // here if it doesn't exist yet — same lazy pattern as toolResult.
+    var t =
+      (rec.toolSteps && rec.toolSteps[data.toolCallId]) ||
+      toolStep(rec, {
+        toolCallId: data.toolCallId,
+        toolName: data.toolName,
+        input: (data.data && { question: data.data.question }) || {},
+      });
+    if (data.toolName !== "deep_research") return; // nothing else reports yet
+    var p = researchPanel(t);
+    var d = data.data || {};
+    var lane = d.agent != null ? rsrchLane(p, d.agent, d.angle) : null;
+    switch (data.phase) {
+      case "planning":
+        rsrchState(p.plan, "active");
+        break;
+      case "plan": {
+        rsrchState(p.plan, "done");
+        var n = d.angles ? d.angles.length : 1;
+        rsrchLabel(p.plan, "Researching " + n + (n === 1 ? " angle" : " angles"));
+        rsrchState(p.gather, "active");
+        break;
+      }
+      case "agent":
+        rsrchLane(p, d.agent, d.angle);
+        break;
+      case "search":
+        if (lane) {
+          lane.searches++;
+          rsrchLaneCount(lane);
+        }
+        rsrchState(p.gather, "active");
+        break;
+      case "read": {
+        p.read++;
+        if (lane) {
+          lane.read++;
+          rsrchLaneCount(lane);
+        }
+        var host = domainOf(d.url) || "link";
+        if (!p.domains[host]) {
+          p.domains[host] = 0;
+          p.order.push(host);
+        }
+        p.domains[host]++;
+        rsrchLabel(p.gather, "Gathering " + p.read + " sources and counting\u2026");
+        rsrchTally(p);
+        break;
+      }
+      case "synthesis":
+        rsrchState(p.gather, "done");
+        rsrchLabel(p.gather, "Gathered " + p.read + (p.read === 1 ? " source" : " sources"));
+        rsrchState(p.write, "active");
+        rsrchLabel(p.write, "Merging findings into one report");
+        break;
+      case "report":
+        rsrchState(p.write, "active");
+        rsrchLabel(p.write, d.title ? "Created \u201c" + d.title + "\u201d" : "Writing the report");
+        break;
+      case "citing":
+        rsrchLabel(p.write, "Attaching citations");
+        break;
+      case "done":
+        rsrchState(p.write, "done");
+        rsrchLabel(p.write, "Report written");
+        break;
+    }
+    autoScroll();
+  }
   function toolResult(rec, data) {
     var t = (rec.toolSteps && rec.toolSteps[data.toolCallId]) || toolStep(rec, data);
     t.row.classList.remove("thinking");
@@ -1218,21 +1415,177 @@ import { mountSidebar } from "./sidebar.js";
   // card (the same one web_search results use — a citation IS a search result the
   // subagent thought was worth reading). `[n]` in the prose lines up with the nth
   // row, because the server renumbered them to agree before sending.
+  // ---- the artifact pane -------------------------------------------------
+  // A document opened out of the thread: the markdown rendered properly (same
+  // renderer the conversation uses, so code and math get the same treatment),
+  // with copy and download. One pane, reused — opening a second artifact
+  // replaces the first rather than stacking.
+  var paneDoc = null;
+  function openPane(doc) {
+    paneDoc = doc;
+    $("paneTitle").textContent = doc.title;
+    var body = $("paneBody");
+    body.innerHTML = "";
+    renderStaticMd(body, doc.content);
+    body.scrollTop = 0;
+    $("pane").hidden = false;
+    $("app").classList.add("pane-open");
+  }
+  function closePane() {
+    paneDoc = null;
+    $("pane").hidden = true;
+    $("paneBody").innerHTML = "";
+    $("app").classList.remove("pane-open");
+  }
+  // The report is already markdown text, so a blob URL saves it without a round
+  // trip to the server; it's revoked as soon as the click is dispatched.
+  function downloadMd() {
+    if (!paneDoc) return;
+    var url = URL.createObjectURL(new Blob([paneDoc.content], { type: "text/markdown" }));
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = paneDoc.filename || "document.md";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  // PDF via the browser's own print pipeline rather than a bundled generator:
+  // the pane is already the rendered document, so print CSS hides everything
+  // else and what you'd export is exactly what you're looking at.
+  function printPane() {
+    if (!paneDoc) return;
+    // The document title is the print dialog's default filename, so it's borrowed
+    // for the duration and handed back afterwards.
+    var prev = document.title;
+    document.title = paneDoc.title;
+    var restore = function () {
+      document.title = prev;
+      window.removeEventListener("afterprint", restore);
+    };
+    window.addEventListener("afterprint", restore);
+    window.print();
+  }
+  function mountPane() {
+    $("paneClose").addEventListener("click", closePane);
+    $("paneCopy").addEventListener("click", function () {
+      if (!paneDoc) return;
+      var btn = $("paneCopy");
+      navigator.clipboard.writeText(paneDoc.content).then(function () {
+        btn.textContent = "Copied";
+        setTimeout(function () {
+          btn.textContent = "Copy";
+        }, 1400);
+      });
+    });
+    // Everything that isn't the common case lives behind the chevron.
+    var more = $("paneMore");
+    more.addEventListener("click", function (e) {
+      if (!paneDoc) return;
+      e.stopPropagation(); // the menu's own outside-click handler closes it
+      var r = more.getBoundingClientRect();
+      showContextMenu(
+        r.right,
+        r.bottom + 6,
+        [
+          { label: "Download as Markdown", onClick: downloadMd },
+          { label: "Print / Save as PDF", onClick: printPane },
+        ],
+        { align: "right", trigger: more },
+      );
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && paneDoc) closePane();
+    });
+  }
+  // A finished report is a document, so it stops looking like a running job. The
+  // live panel (timeline, tally, streaming text) is scaffolding for work in
+  // progress; once the work is done it's replaced by a card that names the thing
+  // and opens it in the pane.
+  function researchArtifact(t, output) {
+    var report = output.report || "";
+    // The subagent names its own document (write_report). The report's own H1 and
+    // then the question are fallbacks for a run that ended before it filed.
+    var heading = /^#{1,3}\s+(.+?)\s*$/m.exec(report);
+    var title =
+      output.title ||
+      (heading && heading[1]) ||
+      (t.input && t.input.question) ||
+      "Research findings";
+    var doc = {
+      title: title,
+      filename: output.filename || "research-findings.md",
+      content: report,
+    };
+
+    var wrap = document.createElement("button");
+    wrap.type = "button";
+    wrap.className = "artifact";
+    wrap.addEventListener("click", function () {
+      openPane(doc);
+    });
+
+    var text = document.createElement("span");
+    text.className = "artifacttext";
+    var h = document.createElement("span");
+    h.className = "artifacttitle";
+    h.textContent = title;
+    var kind = document.createElement("span");
+    kind.className = "artifactkind";
+    kind.textContent =
+      "Document" +
+      (output.sources && output.sources.length
+        ? " \u00b7 " + output.sources.length + " sources"
+        : "");
+    text.appendChild(h);
+    text.appendChild(kind);
+
+    // A tilted scrap of the real text — enough to recognize the document by, not
+    // enough to read. Deliberately not an icon: the preview IS the content.
+    var peek = document.createElement("span");
+    peek.className = "artifactpeek";
+    var paper = document.createElement("span");
+    paper.className = "artifactpaper";
+    paper.textContent = report
+      .split("\n")
+      .filter(function (l) {
+        return l.trim();
+      })
+      .slice(0, 14)
+      .join("\n");
+    peek.appendChild(paper);
+
+    wrap.appendChild(text);
+    wrap.appendChild(peek);
+    return wrap;
+  }
+  // Artifacts belong to the message, not to the step that happened to make them:
+  // a document produced halfway through a turn shouldn't be buried in a tool
+  // gutter above three more paragraphs of reply.
+  //
+  // They hang off the TURN, after `.body`, rather than inside it. Inside, the
+  // best we could do is move the container to the end each time one lands — and
+  // the reply is still streaming, so the next prose block appends after it and
+  // the document ends up in the middle again. Outside the body it has nothing to
+  // race: `.body` is the turn's last child, so anything after it is last, always.
+  function addArtifact(rec, el) {
+    if (!rec.artifacts) {
+      rec.artifacts = document.createElement("div");
+      rec.artifacts.className = "artifacts";
+      rec.turn.appendChild(rec.artifacts);
+    }
+    rec.artifacts.appendChild(el);
+  }
   function renderResearchResult(t, output) {
-    if (output.report) {
-      var body = document.createElement("div");
-      body.className = "tout research";
-      body.textContent = output.report;
-      t.body.appendChild(body);
+    // The document leaves the gutter, but the work stays: the run's shape — its
+    // angles, and where the reading actually went — is what the step is for now,
+    // and it's the part a document can't tell you.
+    if (t.panel) {
+      rsrchState(t.panel.write, "done");
+      rsrchLabel(
+        t.panel.write,
+        output.title ? "Created \u201c" + output.title + "\u201d" : "Report written",
+      );
     }
-    if (Array.isArray(output.sources) && output.sources.length) {
-      var head = document.createElement("div");
-      head.className = "toutlabel";
-      head.textContent =
-        output.sources.length + (output.sources.length === 1 ? " source" : " sources");
-      t.body.appendChild(head);
-      t.body.appendChild(resultsCard(output.sources));
-    }
+    addArtifact(t.block.rec, researchArtifact(t, output));
   }
   // Upgrade a fetched page's favicon from the default service .ico using what the
   // page actually declares (fetch.ts pageFavicons): prefer its own SVG favicon
@@ -1575,6 +1928,9 @@ import { mountSidebar } from "./sidebar.js";
       case "tool-call":
         toolStep(assistantTurn(data.messageId), data);
         break;
+      case "tool-progress":
+        toolProgress(assistantTurn(data.messageId), data);
+        break;
       case "tool-result":
         toolResult(assistantTurn(data.messageId), data);
         break;
@@ -1644,6 +2000,7 @@ import { mountSidebar } from "./sidebar.js";
     "message-start",
     "reasoning-delta",
     "tool-call",
+    "tool-progress",
     "tool-result",
     "text-delta",
     "message-end",
@@ -2102,6 +2459,7 @@ import { mountSidebar } from "./sidebar.js";
   // Conversations page; this page just tells it how to open/create a chat.
   var conversations = [];
   var dialogs = mountDialogs();
+  mountPane();
   // The section the router is currently showing ("chat" | "conversations" |
   // "projects" | "settings"). The sidebar's "New chat" highlight is a chat-view
   // concern, so it only lights up while we're actually on chat.

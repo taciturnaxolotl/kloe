@@ -117,6 +117,27 @@
       <div class="viewoutlet" id="viewOutlet" hidden></div>
     </div>
 
+    <!-- Artifact pane: a document opened out of the thread. Sits beside the
+         conversation on wide screens and over it on narrow ones. -->
+    <aside class="pane" id="pane" hidden aria-label="Document">
+      <header class="panehead">
+        <span class="panetitle" id="paneTitle"></span>
+        <div class="paneactions">
+          <!-- Split button: Copy is the action, the chevron is everything else. -->
+          <span class="split">
+            <button class="panebtn" id="paneCopy" type="button">Copy</button>
+            <button class="panebtn splitmore" id="paneMore" type="button" aria-haspopup="menu" aria-label="More document actions">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+          </span>
+          <button class="icon panex" id="paneClose" type="button" aria-label="Close document" title="Close document">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+          </button>
+        </div>
+      </header>
+      <div class="panebody" id="paneBody"></div>
+    </aside>
+
   </div>
   <script type="module" src="./app.js"></script>
 </body>

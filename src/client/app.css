@@ -1346,6 +1346,363 @@ body.selecting #selectBtn {
 .turn .body .stepper .step.tool .tout.err {
   color: var(--err);
 }
+/* deep_research: a live panel rather than a spinner. Milestones run down a rail
+   on the left, each one owning whatever it produced — the source tally hangs off
+   "Gathering", the findings and their sources off "Writing" — so the shape of
+   the work reads top to bottom. */
+.rsrch {
+  margin: 2px 0 4px;
+}
+.rsrchstep {
+  position: relative;
+  padding: 0 0 14px 22px;
+}
+/* The rail is each step's own left border, so it grows with the content and
+   stops on its own at the last step. */
+.rsrchstep::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 10px;
+  bottom: -4px;
+  width: 1px;
+  background: var(--rule);
+}
+.rsrchstep:last-child::before {
+  display: none;
+}
+.rsrchdot {
+  position: absolute;
+  left: 0;
+  top: 4px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--rule-strong);
+}
+.rsrchstep.done .rsrchdot {
+  background: var(--ink-faint);
+}
+.rsrchstep.active .rsrchdot {
+  background: var(--accent);
+  animation: rsrchpulse 1.4s ease-in-out infinite;
+}
+@keyframes rsrchpulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.rsrchlabel {
+  font-size: 13.5px;
+  color: var(--ink-muted);
+}
+.rsrchstep.active .rsrchlabel {
+  color: var(--ink);
+}
+/* One lane per parallel worker: its angle, and what it has read so far. Six of
+   these at once IS the shape of the run, so the panel lists six. No per-lane
+   state marker — the milestones above and below already say where the run is,
+   and a rail on every row was more furniture than signal. */
+.rsrchagents:not(:empty) {
+  margin: 8px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.rsrchlane {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+.rsrchangle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rsrchlanecount {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+/* Where the reading actually went, longest first. */
+.rsrchtally:not(:empty) {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+}
+.rsrchsrc {
+  display: grid;
+  grid-template-columns: 16px 1fr auto 64px;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12.5px;
+}
+.rsrchsrc .favicon {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+}
+.rsrchdomain {
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rsrchcount {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+.rsrchbar {
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-sunk);
+  overflow: hidden;
+}
+.rsrchbar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--accent) 55%, var(--bg-sunk));
+  transition: width 0.3s ease;
+}
+.rsrchmore {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+/* Artifacts collect at the bottom of the message that produced them. */
+.artifacts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* A finished report, as a document card: it names the thing, shows a scrap of
+   it, and opens it in the pane. */
+.artifact {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  margin: 6px 0 2px;
+  padding: 10px 13px;
+  font: inherit;
+  text-align: left;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--rule));
+  border-radius: var(--radius-lg);
+  background: var(--bg-raise);
+  cursor: pointer;
+  transition: border-color 0.14s ease;
+}
+.artifact:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--rule));
+}
+.artifacttext {
+  min-width: 0;
+}
+.artifacttitle {
+  display: block;
+  font-size: 14.5px;
+  line-height: 1.3;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.artifactkind {
+  display: block;
+  margin-top: 1px;
+  font-size: 12.5px;
+  color: var(--ink-faint);
+}
+/* A tilted scrap of the real text: enough to recognize the document by, not
+   enough to read. The preview is the content, not an icon standing in for it. */
+.artifactpeek {
+  position: relative;
+  width: 76px;
+  height: 46px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+}
+.artifactpaper {
+  position: absolute;
+  left: 11px;
+  top: -5px;
+  width: 68px;
+  padding: 6px 7px;
+  border-radius: 3px;
+  background: var(--bg-sunk);
+  font-family: var(--mono);
+  font-size: 4.6px;
+  line-height: 1.75;
+  color: var(--ink-faint);
+  white-space: pre-wrap;
+  word-break: break-word;
+  transform: rotate(7deg);
+  transform-origin: top left;
+  /* The page runs off the bottom of its window rather than stopping flat. */
+  mask-image: linear-gradient(to bottom, #000 60%, transparent);
+}
+/* Once the document exists it says what the step was, and better — so the step's
+   own summary row stops competing with it. */
+.turn .body .stepper .step.finished > summary {
+  display: none;
+}
+.turn .body .stepper .step.finished::before {
+  display: none;
+}
+.turn .body .stepper .step.finished > .stepbody {
+  padding-left: 0;
+}
+
+/* ---- artifact pane ------------------------------------------------------ */
+/* A document opened out of the thread: beside the conversation when there's
+   room, over it when there isn't. */
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--rule);
+  background: var(--bg);
+}
+.pane[hidden] {
+  display: none;
+}
+.app.pane-open {
+  grid-template-columns: 244px minmax(0, 1fr) minmax(0, 42vw);
+}
+.panehead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px 10px 16px;
+  border-bottom: 1px solid var(--rule);
+}
+.panetitle {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.paneactions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.panebtn {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-muted);
+  background: none;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-md);
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.panebtn:hover {
+  color: var(--ink);
+  background: var(--bg-sunk);
+}
+/* Split button: the common action, and a chevron for the rest. Two real buttons
+   sharing one outline — one border collapses between them so it reads as a
+   single control while each half keeps its own hit area and focus ring. */
+.split {
+  display: inline-flex;
+}
+.split .panebtn:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.splitmore {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 6px;
+  margin-left: -1px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.splitmore svg {
+  width: 14px;
+  height: 14px;
+}
+/* Whichever half is hovered or focused comes forward, so the shared edge isn't
+   painted over by its neighbour. */
+.split .panebtn:hover,
+.split .panebtn:focus-visible {
+  position: relative;
+  z-index: 1;
+}
+.panex {
+  width: 30px;
+  height: 30px;
+}
+.panex svg {
+  width: 16px;
+  height: 16px;
+}
+.panebody {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 22px 26px 40px;
+}
+/* The document reads at its own measure, not the conversation's. */
+.panebody .block.prose {
+  max-width: 68ch;
+}
+@media (max-width: 900px) {
+  /* No room to sit beside the thread, so it covers it. */
+  .app.pane-open {
+    grid-template-columns: 244px minmax(0, 1fr);
+  }
+  .pane {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+  }
+}
+@media (max-width: 720px) {
+  .app.pane-open {
+    grid-template-columns: 1fr;
+  }
+}
+/* Printing an open document prints the document: the pane's body fills the page
+   and everything else steps out of the way. What you export is what you were
+   reading, which is why this needs no separate PDF generator. */
+@media print {
+  .rail,
+  .main,
+  .scrim,
+  .panehead {
+    display: none !important;
+  }
+  .pane {
+    position: static;
+    border: 0;
+  }
+  .panebody {
+    overflow: visible;
+    padding: 0;
+  }
+  .panebody .block.prose {
+    max-width: none;
+  }
+}
+
 /* deep_research: the findings are prose the subagent wrote for a reader, not a
    tool dump, so they get the reading face rather than the mono one. */
 .turn .body .stepper .step.tool .tout.research {
