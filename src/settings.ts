@@ -131,6 +131,19 @@ const SandboxSchema = v.object({
   idleMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 10 * 60_000),
   /** docker: give the container network access (off = `--network none`). */
   network: v.optional(v.boolean(), false),
+  /**
+   * Which docker network to attach to when `network` is on. The default bridge
+   * is unfiltered: the sandbox reaches the whole internet AND whatever the
+   * daemon's host is listening on (ssh, postgres, a dev server), which makes
+   * model-authored code an exfiltration path and a scanner of the host.
+   *
+   * Egress policy cannot be enforced from this process — it is firewall state on
+   * the daemon's host. So point this at a network created there with the rules
+   * you want (`docker network create kloe-egress`, plus iptables/nftables on its
+   * subnet: deny the host, default-deny out, allow what tasks actually need) and
+   * kloe will run every sandbox inside it.
+   */
+  dockerNetwork: v.optional(v.string(), "bridge"),
 });
 
 /** The agentic tool loop. */

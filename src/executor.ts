@@ -160,10 +160,51 @@ interface Session {
 }
 
 /** The sandbox section of config; `maxTimeoutMs` is optional for older callers. */
-type SandboxConfig = Omit<Config["sandbox"], "maxTimeoutMs"> & { maxTimeoutMs?: number };
+type SandboxConfig = Omit<Config["sandbox"], "maxTimeoutMs" | "dockerNetwork"> & {
+  maxTimeoutMs?: number;
+  dockerNetwork?: string;
+};
 
 const MEMORY = "512m";
 const CPUS = "1";
+
+/**
+ * Root inside the container, but a root that can do very little.
+ *
+ * Dropping every capability and adding back only the file-ownership set keeps
+ * package installs working (apk/apt need to chown and setuid the files they
+ * unpack) while removing the ones a sandbox has no business holding — raw
+ * sockets, module loading, mount, ptrace of anything it didn't start.
+ * `no-new-privileges` closes the setuid escalation path on top.
+ */
+const CAPABILITIES = [
+  "--cap-drop",
+  "ALL",
+  ...["CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "SETGID", "SETUID"].flatMap((c) => [
+    "--cap-add",
+    c,
+  ]),
+  "--security-opt",
+  "no-new-privileges",
+];
+
+/**
+ * Point the docker/OrbStack host aliases at the container's own loopback.
+ *
+ * With networking on, the daemon injects these names and they resolve to the
+ * host, which puts whatever the host is running — ssh, postgres, a dev server —
+ * one `curl` away from model-authored code. Blackholing the names is worth doing
+ * because the realistic path here is a model that was talked into fetching
+ * `host.docker.internal:5432`, and that now goes nowhere.
+ *
+ * It is NOT egress filtering, and must not be mistaken for it: the host is still
+ * reachable by raw gateway IP, and the whole internet is still reachable, full
+ * stop. Actually constraining egress means a firewalled network the daemon host
+ * owns — which is what `dockerNetwork` is for.
+ */
+const HOST_BLACKHOLE = ["host.docker.internal", "host.internal", "gateway.docker.internal"].flatMap(
+  (h) => ["--add-host", `${h}:127.0.0.1`],
+);
 
 /** Created up front so writing to the outbox never needs a `mkdir -p` first. */
 const WORKSPACE_DIRS = ["/workspace", "/workspace/inputs", "/workspace/outputs"];
@@ -183,6 +224,7 @@ export class LocalDockerExecutor implements Executor {
   private readonly defaultTimeoutMs: number;
   private readonly maxTimeoutMs: number;
   private readonly network: boolean;
+  private readonly dockerNetwork: string;
   private readonly idleMs: number;
   private readonly runtime: string | undefined;
   private readonly env: DockerEnv;
@@ -193,6 +235,7 @@ export class LocalDockerExecutor implements Executor {
     this.defaultTimeoutMs = cfg.timeoutMs;
     this.maxTimeoutMs = Math.max(cfg.maxTimeoutMs ?? cfg.timeoutMs, cfg.timeoutMs);
     this.network = cfg.network;
+    this.dockerNetwork = cfg.dockerNetwork ?? "bridge";
     this.idleMs = cfg.idleMs;
     this.runtime = cfg.runtime;
     // "kata" et al. are more informative in logs/UI than a bare "docker".
@@ -230,7 +273,9 @@ export class LocalDockerExecutor implements Executor {
   private limits(): string[] {
     return [
       "--network",
-      this.network ? "bridge" : "none",
+      this.network ? this.dockerNetwork : "none",
+      ...HOST_BLACKHOLE,
+      ...CAPABILITIES,
       "--cpus",
       CPUS,
       "--memory",

@@ -145,6 +145,59 @@ liveTest(
 );
 
 liveTest(
+  "a networked sandbox cannot reach the daemon host by its docker aliases",
+  async () => {
+    // The realistic path to the host is a model talked into fetching
+    // `host.docker.internal:5432`, so the names go nowhere. This is name-level
+    // only and deliberately so: the raw gateway IP and the open internet are
+    // still reachable, and constraining those is firewall state on the daemon's
+    // host (see `dockerNetwork`), not something this process can enforce.
+    const e = new LocalDockerExecutor({ ...SANDBOX, network: true });
+    const session = "test-" + Math.random().toString(36).slice(2);
+    try {
+      const r = await e.run({
+        command:
+          "for h in host.docker.internal host.internal gateway.docker.internal; do " +
+          'echo "$h=$(getent hosts $h | cut -d" " -f1)"; done',
+        session,
+      });
+      for (const line of r.stdout.trim().split("\n")) expect(line).toContain("=127.0.0.1");
+    } finally {
+      e.disposeSession(session);
+    }
+  },
+  90_000,
+);
+
+liveTest(
+  "the sandbox drops capabilities without breaking package installs",
+  async () => {
+    const e = new LocalDockerExecutor(SANDBOX);
+    const session = "test-" + Math.random().toString(36).slice(2);
+    try {
+      // CAP_SYS_ADMIN is gone, so a mount fails...
+      const mounted = await e.run({
+        command: "mount -t tmpfs none /mnt 2>/dev/null && echo ALLOWED || echo DENIED",
+        session,
+      });
+      expect(mounted.stdout).toContain("DENIED");
+      // ...while the file-ownership caps a package manager needs survive, which
+      // is the whole reason the drop isn't a blanket one.
+      const unpacked = await e.run({
+        command:
+          "mkdir -p /tmp/c && echo x > /tmp/c/f && chown 1000:1000 /tmp/c/f && " +
+          "chmod u+s /tmp/c/f && echo CAPS-OK",
+        session,
+      });
+      expect(unpacked.stdout).toContain("CAPS-OK");
+    } finally {
+      e.disposeSession(session);
+    }
+  },
+  90_000,
+);
+
+liveTest(
   "docker executor reports a nonzero exit code",
   async () => {
     const e = new LocalDockerExecutor(SANDBOX);
