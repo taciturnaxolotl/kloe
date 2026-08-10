@@ -1682,24 +1682,65 @@ body.selecting #selectBtn {
 }
 /* Printing an open document prints the document: the pane's body fills the page
    and everything else steps out of the way. What you export is what you were
-   reading, which is why this needs no separate PDF generator. */
+   reading, which is why this needs no separate PDF generator.
+
+   The app's grid has to go first. Hiding the rail and the thread removes their
+   tracks, so the pane inherits the FIRST column — 244px of sidebar width — and
+   the document prints as a thin ribbon down the left. Block layout, full width,
+   ink on paper. */
 @media print {
+  .app,
+  .pane {
+    display: block;
+  }
   .rail,
   .main,
   .scrim,
   .panehead {
     display: none !important;
   }
+  /* Paper is white whatever the screen was doing. */
+  :root {
+    color-scheme: light;
+  }
+  html,
+  body,
+  .app,
+  .pane,
+  .panebody {
+    background: #fff !important;
+    color: #000 !important;
+  }
   .pane {
     position: static;
     border: 0;
+    height: auto;
   }
   .panebody {
     overflow: visible;
     padding: 0;
+    max-width: none;
   }
   .panebody .block.prose {
     max-width: none;
+  }
+  /* Keep headings with the text they introduce, and don't split a code block. */
+  .panebody h1,
+  .panebody h2,
+  .panebody h3 {
+    break-after: avoid;
+  }
+  .panebody pre,
+  .panebody table,
+  .panebody blockquote {
+    break-inside: avoid;
+  }
+  .panebody a {
+    color: #000 !important;
+    text-decoration: underline;
+  }
+  @page {
+    margin: 16mm;
   }
 }
 
