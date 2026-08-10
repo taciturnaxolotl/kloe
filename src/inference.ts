@@ -393,7 +393,11 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
   // a content filter, or a reasoning model whose output arrives outside the text
   // stream). Surface why — finish reason, any warnings, and whether text landed
   // off-stream — so it isn't a silent empty turn.
-  if (textChunks === 0) {
+  // A cancelled run has no text because it was stopped, which is not a mystery
+  // worth explaining — and every promise on `result` rejects once the stream is
+  // aborted, so asking would only produce an AbortError dressed up as a
+  // diagnostic. The signal is the one place that knows the difference.
+  if (textChunks === 0 && !opts.abortSignal?.aborted) {
     try {
       const [finishReason, warnings, text, reasoning] = await Promise.all([
         result.finishReason,
@@ -402,12 +406,15 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
         Promise.resolve(result.reasoningText).catch(() => undefined),
       ]);
       console.warn(
-        `[run ${opts.runId}] streamed 0 text chunks — finishReason=${finishReason}, ` +
-          `text.length=${text?.length ?? 0}, reasoning.length=${reasoning?.length ?? 0}, ` +
-          `warnings=${JSON.stringify(warnings ?? [])}`,
+        `[run ${opts.runId}] streamed 0 text chunks — model=${opts.model}, ` +
+          `finishReason=${finishReason}, text.length=${text?.length ?? 0}, ` +
+          `reasoning.length=${reasoning?.length ?? 0}, warnings=${JSON.stringify(warnings ?? [])}`,
       );
     } catch (err) {
-      console.warn(`[run ${opts.runId}] streamed 0 text chunks; diagnostics failed:`, err);
+      // One line. This is a note about a note; a 25-field DOMException dumped
+      // into the terminal buries the run it was meant to describe.
+      const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      console.warn(`[run ${opts.runId}] streamed 0 text chunks; diagnostics unavailable (${msg})`);
     }
   }
 }

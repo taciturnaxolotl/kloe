@@ -405,10 +405,16 @@ export class LocalDockerExecutor implements Executor {
       await dockerControl(["rm", "-f", name], this.env);
       r = await dockerRun(argv, this.env);
     }
-    if (r.exitCode !== 0)
+    if (r.exitCode !== 0) {
+      // The invocation, not just the complaint. Docker answers a bad flag with a
+      // usage dump that names no flag ("See 'docker run --help'"), so the stderr
+      // alone leaves you guessing which argument the daemon disliked — and these
+      // argv are assembled from config and policy, so they DO change.
+      console.error(`[sandbox] docker ${argv.join(" ")}`);
       throw new Error(
         "sandbox container failed to start: " + (r.stderr.trim() || `exit ${r.exitCode}`),
       );
+    }
   }
 
   private ensureSession(session: string): Session {
