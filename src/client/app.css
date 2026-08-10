@@ -2439,7 +2439,13 @@ body.resizing {
   color: var(--ink-faint);
 }
 
+/* The composer row degrades by width in a set order rather than wrapping: the
+   context gauge goes first (it's the least load-bearing thing here), and the
+   model name gives up width after that. Queried against the row itself, not the
+   viewport — the document pane can take half the screen, so the window's width
+   says nothing about how much room the composer actually has. */
 .tools {
+  container-type: inline-size;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2450,6 +2456,12 @@ body.resizing {
   display: flex;
   align-items: center;
   gap: 4px;
+  min-width: 0; /* a flex item won't shrink below its content without this */
+}
+@container (max-width: 440px) {
+  .tools .ctx {
+    display: none;
+  }
 }
 .icon {
   display: inline-flex;
@@ -2512,6 +2524,7 @@ body.resizing {
 .pickwrap {
   position: relative;
   display: inline-flex;
+  min-width: 0;
 }
 .pill {
   font: inherit;
@@ -2525,6 +2538,17 @@ body.resizing {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
+}
+/* Truncate rather than wrap: a two-line model name shoves the send button down
+   and makes the whole row jump. The chevron keeps its size. */
+.pill .m {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pill svg {
+  flex: none;
 }
 .pill:hover {
   background: color-mix(in srgb, var(--ink) 9%, transparent);

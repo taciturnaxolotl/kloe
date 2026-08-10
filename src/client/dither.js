@@ -43,6 +43,11 @@ function accent() {
 // the column is inked, and how strongly. The pattern is constant down each
 // column, so it's evaluated once per x rather than once per pixel.
 function paint(canvas, cell, column) {
+  // A canvas with no layout box (display:none, or not yet laid out) would paint
+  // a 4px-wide bitmap that gets stretched across the real width the moment it's
+  // shown. Keep the last good pixels instead and let the caller repaint on
+  // resize.
+  if (!canvas.clientWidth || !canvas.clientHeight) return;
   const w = Math.max(4, Math.round(canvas.clientWidth / cell));
   const h = Math.max(3, Math.round(canvas.clientHeight / cell));
   if (canvas.width !== w || canvas.height !== h) {

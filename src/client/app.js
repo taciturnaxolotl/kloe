@@ -3213,6 +3213,15 @@ import { mountSidebar } from "./sidebar.js";
     };
     requestAnimationFrame(step);
   }
+  // The gauge is a bitmap sized to its box, so a box that changes size — the
+  // composer narrowing, the container query hiding and restoring it, the window
+  // resizing — leaves it stretched until something repaints it. Nothing else
+  // would: it only redraws when the token count moves.
+  if (window.ResizeObserver) {
+    new ResizeObserver(function () {
+      if (!ctx.classList.contains("hidden")) renderCtx(ctxDisplayed);
+    }).observe(ctxbar);
+  }
   // Keep the view pinned to the bottom while `atBottom` as the thread grows —
   // opening a large conversation, async enrich (code/math), and images all add
   // height AFTER the last scroll, which otherwise leaves us short of the end.
