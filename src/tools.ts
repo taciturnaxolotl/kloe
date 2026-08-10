@@ -1,4 +1,4 @@
-import { jsonSchema, type Tool, type ToolSet, tool } from "ai";
+import { jsonSchema, type LanguageModel, type Tool, type ToolSet, tool } from "ai";
 import { type Executor, formatExecResult, getExecutor } from "./executor";
 import { createFetchProvider, type FetchProvider } from "./fetch";
 import {
@@ -11,7 +11,9 @@ import {
   memoryRead,
   memoryWrite,
 } from "./lard";
+import { runResearch } from "./research";
 import { createSearchProvider, type SearchProvider } from "./search";
+import { getConfig } from "./settings";
 import type { Store } from "./store";
 
 /**
@@ -67,6 +69,48 @@ function fetchUrl(provider: FetchProvider) {
       additionalProperties: false,
     }),
     execute: async ({ url }) => provider.fetch(url),
+  });
+}
+
+/**
+ * Hand a whole question to a research subagent (research.ts) and get back one
+ * cited answer.
+ *
+ * The point is the context boundary. The subagent burns its own window on
+ * searches and full page text and returns a few hundred tokens of findings, so
+ * the conversation gets the conclusions of twenty pages without carrying twenty
+ * pages. That only pays off when the question is actually worth it, which is
+ * what the description spends its words on: a model that reaches for this to
+ * check one fact has bought a minute of latency for nothing.
+ */
+function deepResearch(model: LanguageModel, search: SearchProvider, fetcher: FetchProvider) {
+  return tool({
+    description:
+      "Hand off a question that needs real research — several searches, several " +
+      "pages read, findings reconciled across sources — to a subagent that does " +
+      "the whole job and returns a cited summary. It runs a bounded loop " +
+      "(search → read → find the gap → search again) and can take a few minutes. " +
+      "Use it for open questions where the answer has to be assembled: comparisons " +
+      "across vendors or papers, the current state of a moving topic, anything " +
+      "where one page won't settle it. Do NOT use it to look up a single fact or " +
+      "read a URL you already have — web_search and fetch_url are faster and " +
+      "cheaper for those. Ask ONE self-contained question, with the context the " +
+      "subagent needs: it cannot see this conversation.",
+    inputSchema: jsonSchema<{ question: string }>({
+      type: "object",
+      properties: {
+        question: {
+          type: "string",
+          description:
+            "The full research question, self-contained. Include any constraints " +
+            "that matter (timeframe, which alternatives to weigh, what it's for).",
+        },
+      },
+      required: ["question"],
+      additionalProperties: false,
+    }),
+    execute: async ({ question }, { abortSignal }) =>
+      runResearch({ question, model, search, fetcher, signal: abortSignal }),
   });
 }
 
@@ -126,6 +170,19 @@ const REGISTRY: Array<{
     create: () => {
       const p = createSearchProvider();
       return p ? webSearch(p) : null;
+    },
+  },
+  {
+    name: "deep_research",
+    executor: "in-proc",
+    create: (ctx) => {
+      // Needs a model to run on, and both halves of the search layer: discovery
+      // without extraction reads nothing, extraction without discovery finds
+      // nothing. Missing any of the three and the tool is simply not offered.
+      if (!ctx.model || !getConfig().research.enabled) return null;
+      const search = createSearchProvider();
+      const fetcher = createFetchProvider();
+      return search && fetcher ? deepResearch(ctx.model, search, fetcher) : null;
     },
   },
   {
@@ -219,6 +276,16 @@ export interface ToolContext {
   store?: Store;
   owner?: string;
   conversationId?: string;
+  /**
+   * The run's own model, already resolved. `deep_research` runs its subagent on
+   * it, so the research reasons as well as the conversation does.
+   *
+   * Passed down rather than re-resolved here on purpose: resolving needs the
+   * provider registry, which lives in inference.ts, which imports this module —
+   * so reaching for it would close an import cycle. The caller already has the
+   * model in hand.
+   */
+  model?: LanguageModel;
 }
 
 /**

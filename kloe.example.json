@@ -21,6 +21,12 @@
     "apiKey": "$CERAMIC_API_KEY",
     "maxResults": 5
   },
+  "research": {
+    "enabled": true,
+    "maxSteps": 24,
+    "maxSources": 12,
+    "timeoutMs": 240000
+  },
   "fetch": {
     "enabled": true,
     "maxBytes": 2097152,

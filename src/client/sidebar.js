@@ -17,7 +17,18 @@ import { installSpeculation } from "./prefetch.js";
 // wires it up and fills in the dynamic parts (recents, pfp/greet). Those inline
 // icons mirror icons.js (Lucide) — keep the two in sync.
 
-var RECENTS = 8;
+// Recents fills the rail rather than showing a fixed count: a tall monitor gets
+// twenty, a laptop gets ten, and neither ends up with dead space under the list
+// or a scrollbar inside a sidebar that already sits beside a scrolling thread.
+// The floor covers a window too short to fit even that, where .raillist's own
+// overflow takes over.
+var MIN_RECENTS = 5;
+// Only used before a real row has ever been measured; .conv is ~30px + the 1px
+// flex gap. Every later render uses the measurement.
+var ROW_H_FALLBACK = 31;
+// How many to keep in the cross-page cache — enough to fill a tall window on the
+// next page before its fetch lands.
+var CACHE_RECENTS = 60;
 
 /**
  * config:
@@ -41,7 +52,7 @@ function readRecents() {
 }
 function writeRecents(list) {
   try {
-    sessionStorage.setItem(CACHE_KEY, JSON.stringify((list || []).slice(0, RECENTS)));
+    sessionStorage.setItem(CACHE_KEY, JSON.stringify((list || []).slice(0, CACHE_RECENTS)));
   } catch (_) {}
 }
 
@@ -70,8 +81,35 @@ export function mountSidebar(config) {
     }
   }
 
+  // Measured from a real row the first time one is painted, so the fit follows
+  // the stylesheet rather than a number copied out of it.
+  var rowH = 0;
+  var lastList = null;
+  function fits() {
+    var h = railList.clientHeight;
+    if (!h) return MIN_RECENTS; // not laid out yet (hidden rail, first paint)
+    return Math.max(MIN_RECENTS, Math.floor(h / (rowH || ROW_H_FALLBACK)));
+  }
+
   function render(conversations) {
+    lastList = conversations;
     writeRecents(conversations);
+    paint(conversations, fits());
+    // Now that a row exists, measure it. If the real height changes the count,
+    // repaint once — `paint` doesn't affect .raillist's own height (it's flex:1),
+    // so this settles immediately rather than oscillating.
+    var first = railList.firstElementChild;
+    if (first && first.classList.contains("conv")) {
+      var measured = first.getBoundingClientRect().height + 1; // + the flex gap
+      if (measured > 0 && Math.abs(measured - rowH) > 0.5) {
+        rowH = measured;
+        var want = Math.min(fits(), conversations.length);
+        if (want !== railList.childElementCount) paint(conversations, want);
+      }
+    }
+  }
+
+  function paint(conversations, count) {
     railList.innerHTML = "";
     var active = config.activeId ? config.activeId() : null;
     if (!conversations.length) {
@@ -80,7 +118,7 @@ export function mountSidebar(config) {
       e.textContent = "No conversations yet";
       railList.appendChild(e);
     } else {
-      conversations.slice(0, RECENTS).forEach(function (c) {
+      conversations.slice(0, count).forEach(function (c) {
         var b = document.createElement("button");
         b.className = "conv";
         b.type = "button";
@@ -134,6 +172,16 @@ export function mountSidebar(config) {
   $("chatsBtn").addEventListener("click", openList);
   $("searchBtn").addEventListener("click", openList);
   if (config.active === "conversations") $("chatsBtn").classList.add("active");
+
+  // A taller window shows more recents, a shorter one fewer. Repaint only when
+  // the count actually changes, so a drag-resize isn't a rebuild per frame.
+  if (window.ResizeObserver) {
+    new ResizeObserver(function () {
+      if (!lastList || !lastList.length) return;
+      var want = Math.min(fits(), lastList.length);
+      if (want !== railList.childElementCount) paint(lastList, want);
+    }).observe(railList);
+  }
 
   installSpeculation(); // prerender cross-page nav on hover (Chromium)
 

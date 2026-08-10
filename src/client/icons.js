@@ -27,6 +27,7 @@ import {
   Search,
   Settings,
   SquareTerminal,
+  Telescope,
   Trash2,
   User,
   Users,
@@ -71,6 +72,7 @@ export var TOOL_ICON = icon(Wrench);
 export var PAGE_ICON = icon(FileText);
 export var EXT_ICON = icon(ArrowUpRight);
 export var SEARCH_ICON = icon(Search);
+export var RESEARCH_ICON = icon(Telescope, { "stroke-width": 1.8 });
 export var PANEL_ICON = icon(PanelLeft);
 export var NEWCHAT_ICON = icon(MessageCirclePlus, { "stroke-width": 1.8 });
 export var CHATS_ICON = icon(MessagesSquare, { "stroke-width": 1.8 });

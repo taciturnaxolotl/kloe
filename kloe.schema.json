@@ -102,6 +102,23 @@
       "required": [],
       "default": {}
     },
+    "agent": {
+      "type": "object",
+      "properties": {
+        "maxToolSteps": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "smallModel": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "default": {
+        "maxToolSteps": 0
+      }
+    },
     "search": {
       "type": "object",
       "properties": {
@@ -129,6 +146,37 @@
       "default": {
         "provider": "none",
         "maxResults": 5
+      }
+    },
+    "research": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "maxSteps": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 24
+        },
+        "maxSources": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 12
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "default": 240000
+        }
+      },
+      "required": [],
+      "default": {
+        "enabled": true,
+        "maxSteps": 24,
+        "maxSources": 12,
+        "timeoutMs": 240000
       }
     },
     "fetch": {
@@ -170,6 +218,55 @@
         "timeoutMs": 15000,
         "allowPrivate": false,
         "userAgent": "Mozilla/5.0 (compatible; kloe/1.0; +https://kloe.dunkirk.sh)"
+      }
+    },
+    "sandbox": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "backend": {
+          "enum": [
+            "docker"
+          ],
+          "type": "string",
+          "default": "docker"
+        },
+        "image": {
+          "type": "string",
+          "default": "alpine:3.20"
+        },
+        "runtime": {
+          "type": "string"
+        },
+        "dockerHost": {
+          "type": "string"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 30000
+        },
+        "idleMs": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 600000
+        },
+        "network": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [],
+      "default": {
+        "enabled": false,
+        "backend": "docker",
+        "image": "alpine:3.20",
+        "timeoutMs": 30000,
+        "idleMs": 600000,
+        "network": false
       }
     },
     "auth": {

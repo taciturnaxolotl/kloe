@@ -30,6 +30,7 @@ import {
   EXT_ICON as ICON_EXT,
   GLOBE_ICON as ICON_GLOBE,
   PAGE_ICON as ICON_PAGE,
+  RESEARCH_ICON as ICON_RESEARCH,
   TERMINAL_ICON as ICON_TERMINAL,
   TOOL_ICON as ICON_TOOL,
   SEND_ICON as SEND,
@@ -1134,6 +1135,10 @@ import { mountSidebar } from "./sidebar.js";
     };
     rec.toolSteps[data.toolCallId] = t;
     var entry = { name: data.toolName, input: data.input };
+    // The block's collapsed header summarizes from these entries, so a tool whose
+    // summary reports on its result (deep_research: pages read, seconds spent)
+    // needs the result to land back on the entry — see toolResult.
+    t.entry = entry;
     a.tools.push(entry);
     a.activeTool = entry;
     blockUpdateHead(a);
@@ -1148,6 +1153,7 @@ import { mountSidebar } from "./sidebar.js";
       t.row.classList.add("errored");
       errorResult(t, data.output); // errors render uniformly for every tool
     } else {
+      if (t.entry) t.entry.output = data.output;
       toolUI(t.toolName).result(t, data.output); // success rendering is per-tool
     }
     t.block.activeTool = null; // this tool finished
@@ -1172,6 +1178,12 @@ import { mountSidebar } from "./sidebar.js";
       c.textContent = results.length + (results.length === 1 ? " result" : " results");
       sum.insertBefore(c, sum.querySelector(".chev"));
     }
+    t.body.appendChild(resultsCard(results));
+  }
+  // The linked-favicon list, shared by search hits and research sources — each is
+  // a title, a domain and a URL, and they should look the same because they are
+  // the same thing at different stages.
+  function resultsCard(results) {
     var card = document.createElement("div");
     card.className = "results";
     results.forEach(function (r) {
@@ -1200,7 +1212,27 @@ import { mountSidebar } from "./sidebar.js";
       a.appendChild(dom);
       card.appendChild(a);
     });
-    t.body.appendChild(card);
+    return card;
+  }
+  // A research run: the findings as prose, then the sources it cites as a linked
+  // card (the same one web_search results use — a citation IS a search result the
+  // subagent thought was worth reading). `[n]` in the prose lines up with the nth
+  // row, because the server renumbered them to agree before sending.
+  function renderResearchResult(t, output) {
+    if (output.report) {
+      var body = document.createElement("div");
+      body.className = "tout research";
+      body.textContent = output.report;
+      t.body.appendChild(body);
+    }
+    if (Array.isArray(output.sources) && output.sources.length) {
+      var head = document.createElement("div");
+      head.className = "toutlabel";
+      head.textContent =
+        output.sources.length + (output.sources.length === 1 ? " source" : " sources");
+      t.body.appendChild(head);
+      t.body.appendChild(resultsCard(output.sources));
+    }
   }
   // Upgrade a fetched page's favicon from the default service .ico using what the
   // page actually declares (fetch.ts pageFavicons): prefer its own SVG favicon
@@ -1305,6 +1337,9 @@ import { mountSidebar } from "./sidebar.js";
   function lastInput(steps) {
     return steps.length ? steps[steps.length - 1].input || {} : {};
   }
+  function lastOutput(steps) {
+    return steps.length ? steps[steps.length - 1].output : null;
+  }
   var TOOL_UI = {
     web_search: {
       icon: ICON_GLOBE,
@@ -1368,6 +1403,26 @@ import { mountSidebar } from "./sidebar.js";
       },
       result: function (t, output) {
         if (output && output.content != null) renderFetchResult(t, output);
+        else defaultResult(t, output);
+      },
+    },
+    deep_research: {
+      icon: ICON_RESEARCH,
+      row: function (input) {
+        return (input && input.question) || "deep_research";
+      },
+      summary: function (steps, active) {
+        if (active) return "Researching";
+        // Once it lands, say what it cost: the shape of the work is the honest
+        // summary of a step that took minutes.
+        var out = lastOutput(steps);
+        var s = out && out.stats;
+        if (!s) return "Researched";
+        var read = s.read + (s.read === 1 ? " page" : " pages");
+        return "Researched · " + read + " in " + Math.round(s.ms / 1000) + "s";
+      },
+      result: function (t, output) {
+        if (output && (output.report || output.sources)) renderResearchResult(t, output);
         else defaultResult(t, output);
       },
     },

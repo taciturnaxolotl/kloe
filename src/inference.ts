@@ -256,6 +256,7 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
     store: opts.store,
     owner: opts.owner,
     conversationId: opts.conversationId,
+    model, // deep_research runs its subagent on the same model as the run
   });
   const hasTools = Object.keys(tools).length > 0;
   // Output cap: an explicit provider override wins; otherwise fall back to the

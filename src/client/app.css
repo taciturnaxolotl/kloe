@@ -1346,6 +1346,23 @@ body.selecting #selectBtn {
 .turn .body .stepper .step.tool .tout.err {
   color: var(--err);
 }
+/* deep_research: the findings are prose the subagent wrote for a reader, not a
+   tool dump, so they get the reading face rather than the mono one. */
+.turn .body .stepper .step.tool .tout.research {
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ink);
+  margin: 2px 0 10px;
+}
+.turn .body .stepper .step.tool .toutlabel {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--ink-faint);
+  margin: 8px 0 4px;
+}
 /* run_shell: a terminal card — the command on a prompt line, output below. */
 .turn .body .stepper .step.tool .term {
   margin: 4px 0;

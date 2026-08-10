@@ -144,6 +144,26 @@ const AgentSchema = v.object({
   smallModel: v.optional(v.string()),
 });
 
+/**
+ * The `deep_research` tool: a bounded research loop that runs beside the
+ * conversation (see research.ts). Needs both a search provider and a fetch
+ * provider; with either missing the tool is simply not offered.
+ *
+ * The budget is the whole safety story, so it is config rather than prompt. The
+ * defaults are sized for a question worth a few minutes: enough steps to search,
+ * read, notice a gap and go again, and a ceiling low enough that a runaway costs
+ * one page of tokens rather than a bill.
+ */
+const ResearchSchema = v.object({
+  enabled: v.optional(v.boolean(), true),
+  /** Provider round-trips in the loop. */
+  maxSteps: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 24),
+  /** Pages the loop may open. Each one is a citable source. */
+  maxSources: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 12),
+  /** Wall clock for the loop plus its citation pass. */
+  timeoutMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1_000)), 240_000),
+});
+
 /** Web-search backing for the `web_search` tool. Disabled by default. */
 const SearchSchema = v.object({
   provider: v.optional(v.picklist(["none", "ceramic"]), "none"),
@@ -239,6 +259,7 @@ export const ConfigSchema = v.object({
   catwalk: section(CatwalkSchema),
   agent: section(AgentSchema),
   search: section(SearchSchema),
+  research: section(ResearchSchema),
   fetch: section(FetchSchema),
   sandbox: section(SandboxSchema),
   auth: section(AuthSchema),
