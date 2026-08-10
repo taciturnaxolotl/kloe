@@ -541,10 +541,13 @@ import { mountSidebar } from "./sidebar.js";
     if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
     return Math.round(n / 1000) + "k";
   }
-  // Real context fill: the last completed turn's input + output tokens (that's
-  // what the provider actually counted, and the baseline the next turn sends).
+  // Real context fill: what the last completed turn left resident in the window.
+  // The server reports that as `contextTokens`; input+output is a fallback for
+  // turns recorded before it existed, and reads high on tool-heavy turns because
+  // it sums every step of the loop.
   function usedTokens(u) {
     if (!u) return null;
+    if (u.contextTokens != null) return u.contextTokens;
     if (u.inputTokens != null || u.outputTokens != null)
       return (u.inputTokens || 0) + (u.outputTokens || 0);
     if (u.totalTokens != null) return u.totalTokens;

@@ -30,17 +30,112 @@ function hasSignature(meta: Record<string, Record<string, unknown>>): boolean {
   return false;
 }
 
-/** Keeps only finite token fields; returns undefined if none reported. */
-function normalizeUsage(u: {
+interface RawUsage {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
-}): TokenUsage | undefined {
+  inputTokenDetails?: {
+    noCacheTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
+}
+
+function finite(n: number | undefined): number {
+  return Number.isFinite(n) ? n! : 0;
+}
+
+/**
+ * The prompt actually sent on a step, in tokens, per the provider.
+ *
+ * Endpoints disagree on whether their input count already includes a prompt
+ * cache hit. OpenAI's `prompt_tokens` does; the one behind hyper.charm.land does
+ * not, which is why a warm turn on a 250k conversation reports 650. Crush hits
+ * the same endpoint and adds the cache read back unconditionally
+ * (`updateSessionTokenCounters`), because its SDK normalizes to cache-exclusive.
+ *
+ * The AI SDK normalizes the other way, so adding unconditionally would double
+ * count on OpenAI. The tell is `noCacheTokens`, which the adapter derives as
+ * `input - cacheRead`: it can only go negative when the input was already net of
+ * the cache. That's the case, and the only case, where the read must be added.
+ */
+function promptTokens(u: RawUsage): number {
+  const input = finite(u.inputTokens);
+  const cacheRead = finite(u.inputTokenDetails?.cacheReadTokens);
+  const noCache = u.inputTokenDetails?.noCacheTokens;
+  const netOfCache = Number.isFinite(noCache) && noCache! < 0;
+  return netOfCache ? input + cacheRead : input;
+}
+
+/** Rough tokens-per-character for the estimator. Coarse on purpose — the gauge
+ *  is labelled approximate, and being within ~20% beats being wrong by 100x. */
+const CHARS_PER_TOKEN = 4;
+
+/**
+ * What one attached image or file is worth, in estimator characters (~1.5k
+ * tokens — the ballpark for a vision model's tiling of a screenshot).
+ *
+ * A binary part costs a flat handful of tokens, nothing like its byte length,
+ * and its `data` is a Uint8Array: serializing it would count `{"0":137,"1":80…}`
+ * at roughly six characters per BYTE, so a single screenshot would peg the gauge
+ * and — since occupancy takes the larger of the two sources — never let go.
+ */
+const FILE_PART_CHARS = 6_000;
+
+/** Size of a prompt as sent, in characters — text and tool traffic alike. */
+export function promptChars(messages: ModelMessage[]): number {
+  let n = 0;
+  for (const m of messages) {
+    if (typeof m.content === "string") {
+      n += m.content.length;
+      continue;
+    }
+    for (const part of m.content) {
+      const p = part as { type?: string; text?: string };
+      if (typeof p.text === "string") n += p.text.length;
+      else if (p.type === "file" || p.type === "image") n += FILE_PART_CHARS;
+      else n += JSON.stringify(part).length; // tool call/result: the JSON is the payload
+    }
+  }
+  return n;
+}
+
+/**
+ * The usage stamped onto message-end, from the run's total, its final step, and
+ * our own measurement of the conversation.
+ *
+ * Three numbers, because they answer three different questions:
+ *
+ * `total` sums every step of a tool loop, and each step re-sends the whole
+ * conversation — it's what the turn cost. `final` is the last prompt actually
+ * sent plus its reply. `chars` is what we handed the provider plus what came
+ * back, measured here.
+ *
+ * Occupancy prefers the provider — a real tokenizer beats any guess — and keeps
+ * the measurement as a floor. An endpoint that reports neither a usable input
+ * count nor a cache read still under-reports (caching only ever shrinks the
+ * number; nothing inflates a prompt beyond what was sent), so the larger of the
+ * two is right without having to sniff which endpoint we're on. When the floor
+ * wins, say so: `contextEstimated` earns the gauge a `~`.
+ */
+export function usageFor(
+  total: RawUsage,
+  final?: RawUsage,
+  chars?: number,
+): TokenUsage | undefined {
   const out: TokenUsage = {};
-  if (Number.isFinite(u.inputTokens)) out.inputTokens = u.inputTokens;
-  if (Number.isFinite(u.outputTokens)) out.outputTokens = u.outputTokens;
-  if (Number.isFinite(u.totalTokens)) out.totalTokens = u.totalTokens;
-  return Object.keys(out).length > 0 ? out : undefined;
+  if (Number.isFinite(total.inputTokens)) out.inputTokens = total.inputTokens;
+  if (Number.isFinite(total.outputTokens)) out.outputTokens = total.outputTokens;
+  if (Number.isFinite(total.totalTokens)) out.totalTokens = total.totalTokens;
+  if (Object.keys(out).length === 0) return undefined;
+  const reported = final ? promptTokens(final) + finite(final.outputTokens) : 0;
+  const measured = chars && chars > 0 ? Math.round(chars / CHARS_PER_TOKEN) : 0;
+  const occupancy = Math.max(reported, measured);
+  if (occupancy > 0) {
+    out.contextTokens = occupancy;
+    if (measured > reported) out.contextEstimated = true;
+  }
+  return out;
 }
 
 /**
@@ -208,6 +303,11 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
   // `error` parts are surfaced as throws so the actor records a run-error rather
   // than a silent stop.
   let textChunks = 0;
+  // Everything this run adds to the conversation, measured as it goes: the next
+  // prompt carries the prompt we sent PLUS this turn's answer and tool traffic,
+  // and on a tool-heavy turn the tool results dwarf both. The system prompt is
+  // sent on every request, so it's resident too.
+  let grownChars = system.length + promptChars(messages);
   // Per-reasoning-block provider metadata (keyed by the stream's block id). The
   // signature that must be echoed on replay arrives on the reasoning parts; we
   // accumulate it and, at the block's end, emit it so the actor can persist it.
@@ -215,6 +315,7 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
   for await (const part of result.fullStream) {
     if (part.type === "text-delta") {
       textChunks++;
+      grownChars += part.text.length;
       yield { kind: "text", chunk: part.text };
     } else if (part.type === "reasoning-delta") {
       if (part.providerMetadata)
@@ -232,6 +333,7 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
         reasoningMeta.get(part.id);
       if (meta && hasSignature(meta)) yield { kind: "reasoning-signature", providerOptions: meta };
     } else if (part.type === "tool-call") {
+      grownChars += JSON.stringify(part.input ?? "").length;
       yield {
         kind: "tool-call",
         toolCallId: part.toolCallId,
@@ -239,6 +341,7 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
         input: part.input,
       };
     } else if (part.type === "tool-result") {
+      grownChars += JSON.stringify(part.output ?? "").length;
       yield {
         kind: "tool-result",
         toolCallId: part.toolCallId,
@@ -268,7 +371,7 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
   // actor can stamp it onto message-end. Best-effort — a provider that reports
   // no usage simply yields nothing here.
   try {
-    const usage = normalizeUsage(await result.usage);
+    const usage = usageFor(await result.usage, (await result.finalStep)?.usage, grownChars);
     if (usage) yield { kind: "usage", usage };
   } catch {
     // provider didn't surface usage; leave message-end without it

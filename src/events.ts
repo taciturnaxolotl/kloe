@@ -124,6 +124,19 @@ export interface TokenUsage {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  /**
+   * Tokens resident in the model's window when the run ended: the final step's
+   * prompt plus what it generated.
+   *
+   * The fields above are summed over every step of a tool loop, and each step
+   * re-sends the whole conversation — so they measure how much work the turn
+   * took, not how full the window is. A ten-step turn bills several times the
+   * context it actually occupies, and the next one-step turn bills less than the
+   * last, which is why a gauge fed from them walks backwards.
+   */
+  contextTokens?: number;
+  /** `contextTokens` came from measuring the prompt, not from the provider. */
+  contextEstimated?: boolean;
 }
 
 export interface MessageEndData {
