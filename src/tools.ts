@@ -1,7 +1,7 @@
 import { jsonSchema, type LanguageModel, type Tool, type ToolSet, tool } from "ai";
 import type { BlobStore } from "./blobs";
 import type { ArtifactRef } from "./events";
-import { type Executor, formatExecResult, getExecutor } from "./executor";
+import { type Executor, formatExecResult, getExecutor, type SandboxInfo } from "./executor";
 import { createFetchProvider, type FetchProvider } from "./fetch";
 import {
   contextToText,
@@ -282,37 +282,85 @@ function getAttachment(store: Store, blobs: BlobStore, executor: Executor, conve
   });
 }
 
+/**
+ * Describe the sandbox the way it actually is.
+ *
+ * Everything the model knows about this environment it learns here, so the text
+ * is assembled from the executor's own `info` rather than written once and hoped
+ * over: a static "you can `apk add` things" is a lie under the default
+ * `network: false`, and a model that doesn't know its wall clock will keep
+ * writing commands that get killed at 30 seconds and reading the corpse as a bug.
+ *
+ * The other half is what is NOT claimed. The image is whatever the deployment
+ * configured, so promising an interpreter is guesswork; a base alpine has
+ * busybox and little else. Better to say so and point at `command -v` than to
+ * send the model chasing a python3 that isn't there.
+ */
+export function sandboxDescription(info: SandboxInfo, hasAttachments: boolean): string {
+  const secs = (ms: number) => Math.round(ms / 1000);
+  const net = info.network
+    ? "It HAS network access, so `apk add …` (or pip/npm) works and installed packages persist for the rest of the chat."
+    : "It has NO network access: downloads, package installs, and any command that reaches out will fail. Work with what is in the image and what you are given.";
+  return [
+    "Run a shell command in an isolated sandbox — a Linux container private to this conversation. " +
+      "Returns the exit code, stdout, and stderr. It is NOT the user's machine: it cannot reach their " +
+      "filesystem, their network, or any service they run, and it is torn down when the chat goes idle.",
+    "",
+    `Environment: the \`${info.image}\` image, ${info.cpus} cpu, ${info.memory} memory, no root outside the container. ` +
+      "Assume a minimal image — `sh` (busybox) and core utilities, not a full toolchain. " +
+      "Check with `command -v python3 || command -v node` before building on an interpreter rather than assuming one. " +
+      net,
+    "",
+    `Time: a command is killed at ${secs(info.defaultTimeoutMs)}s by default. If it will legitimately take longer ` +
+      `(a build, a large file), pass timeout_seconds — up to ${secs(info.maxTimeoutMs)}s. Long-running or interactive ` +
+      "commands have nowhere to go: nothing can answer a prompt, so pass `-y`/`--yes` and redirect input from /dev/null.",
+    "",
+    "State: /workspace is the working directory and it PERSISTS across calls in this chat, so build things up step by " +
+      "step rather than cramming a session into one command. It is still scratch — it dies with the container. " +
+      "To KEEP a file, write it to /workspace/outputs/ (already created): anything there is saved as a document the " +
+      "user can open and download, and is then removed from the directory, so do not expect to find it again — a " +
+      "second write of the same name becomes a new version." +
+      (hasAttachments
+        ? " Files the user attached, and documents from earlier turns, arrive at /workspace/inputs/ via get_attachment."
+        : ""),
+  ].join("\n");
+}
+
 // A shell command in the sandbox executor (docker locally, a spindle microVM on
 // the homelab later). Offered only when a sandbox is configured. Marked
 // `sandbox` so the (future) durable loop routes it to the executor rather than
 // running it in-process; today its `execute` calls the executor directly.
 function runShell(executor: Executor, ctx: ToolContext) {
   const session = ctx.conversationId;
+  const hasAttachments = Boolean(
+    ctx.store && ctx.conversationId && ctx.store.listFiles(ctx.conversationId).length,
+  );
+  const maxSeconds = Math.round(executor.info.maxTimeoutMs / 1000);
   return tool({
-    description:
-      "Run a shell command in an isolated sandbox — a Linux container private to this " +
-      "conversation. `/workspace` (the working directory) and anything you install " +
-      "(e.g. `apk add git`) PERSIST across calls in this chat, so you can build up state " +
-      "step by step. Returns the exit code, stdout, and stderr. No network unless the " +
-      "deployment enables it. It is NOT the user's machine — it can't reach their real " +
-      "filesystem or services, and it's torn down when the conversation ends.\n\n" +
-      "The workspace is scratch: it dies with the container. To KEEP a file, write it " +
-      "to /workspace/outputs/ — anything there is saved as a document the user can " +
-      "open and download, and is then removed from the directory. Files the user " +
-      "attached, and documents from earlier turns, arrive via get_attachment.",
-    inputSchema: jsonSchema<{ command: string }>({
+    description: sandboxDescription(executor.info, hasAttachments),
+    inputSchema: jsonSchema<{ command: string; timeout_seconds?: number }>({
       type: "object",
       properties: {
         command: {
           type: "string",
           description: "The shell command line to run (via sh -c), starting in /workspace.",
         },
+        timeout_seconds: {
+          type: "number",
+          description: `Wall-clock cap for this command, up to ${maxSeconds}. Omit for the default.`,
+        },
       },
       required: ["command"],
       additionalProperties: false,
     }),
-    execute: async ({ command }, { abortSignal }) => {
-      const result = formatExecResult(await executor.run({ command, session }, abortSignal));
+    execute: async ({ command, timeout_seconds }, { abortSignal }) => {
+      const timeoutMs =
+        typeof timeout_seconds === "number" && timeout_seconds > 0
+          ? Math.round(timeout_seconds * 1000)
+          : undefined;
+      const result = formatExecResult(
+        await executor.run({ command, session, timeoutMs }, abortSignal),
+      );
       const artifacts = session ? await promoteOutputs(executor, ctx, session, abortSignal) : [];
       // Shape only shifts when there IS something to carry, so the ordinary
       // command keeps returning the plain transcript it always did.

@@ -27,8 +27,26 @@ export interface ExecSpec {
   command: string;
   /** The conversation whose persistent sandbox to run in; omitted → one-off. */
   session?: string;
-  /** Wall-clock cap; falls back to the executor's configured default. */
+  /** Wall-clock cap; falls back to the configured default, clamped to the max. */
   timeoutMs?: number;
+}
+
+/**
+ * What the sandbox actually is, for whoever has to describe it.
+ *
+ * The model's only picture of the sandbox is the `run_shell` description, and a
+ * description that hardcodes what config decides is a description that lies:
+ * with `network: false` (the default) a cheerful "you can `apk add` things" sends
+ * the model to spend a turn on a command that cannot work. So the executor
+ * reports its own shape and the tool text is written from it.
+ */
+export interface SandboxInfo {
+  image: string;
+  network: boolean;
+  defaultTimeoutMs: number;
+  maxTimeoutMs: number;
+  memory: string;
+  cpus: string;
 }
 
 export interface ExecResult {
@@ -49,6 +67,8 @@ export interface HarvestedFile {
 export interface Executor {
   /** A short tag for logs/UI ("docker", "kata"). */
   readonly kind: string;
+  /** The shape of the sandbox, so tool text can describe it truthfully. */
+  readonly info: SandboxInfo;
   run(spec: ExecSpec, signal?: AbortSignal): Promise<ExecResult>;
   /**
    * Materialize bytes inside the sandbox, creating parent directories. This is
@@ -77,6 +97,28 @@ export interface Executor {
 /** Single-quote a path for `sh -c`, so a name can't break out of its command. */
 function shq(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+/** What a killed command reports back. coreutils `timeout` uses 124 already. */
+const TIMEOUT_EXIT = 124;
+
+/**
+ * Wrap a command so the container kills it on time.
+ *
+ * Two wrinkles, both from the image being the deployment's choice. `timeout` may
+ * not exist at all, and a missing binary must not turn every command into "not
+ * found" — so its absence falls back to running bare, with the client-side timer
+ * as the only cap. And the two implementations disagree on the exit code: GNU
+ * reports 124, busybox reports 143 (128 + SIGTERM). Normalizing here means the
+ * caller reads one number.
+ */
+function withTimeout(command: string, timeoutMs: number): string {
+  const secs = Math.max(1, Math.ceil(timeoutMs / 1000));
+  const inner = shq(command);
+  return (
+    `if command -v timeout >/dev/null 2>&1; then timeout ${secs} sh -c ${inner}; c=$?; ` +
+    `[ "$c" = 143 ] && c=${TIMEOUT_EXIT}; exit $c; else sh -c ${inner}; fi`
+  );
 }
 
 const MAX_OUTPUT = 100_000; // cap each stream so a runaway command can't flood the transcript
@@ -117,6 +159,15 @@ interface Session {
   lastUsed: number;
 }
 
+/** The sandbox section of config; `maxTimeoutMs` is optional for older callers. */
+type SandboxConfig = Omit<Config["sandbox"], "maxTimeoutMs"> & { maxTimeoutMs?: number };
+
+const MEMORY = "512m";
+const CPUS = "1";
+
+/** Created up front so writing to the outbox never needs a `mkdir -p` first. */
+const WORKSPACE_DIRS = ["/workspace", "/workspace/inputs", "/workspace/outputs"];
+
 /**
  * Runs commands in docker with cpu/memory/pids caps and (by default) no network.
  * A session-scoped call runs in a long-lived container per conversation — one
@@ -127,33 +178,37 @@ interface Session {
  */
 export class LocalDockerExecutor implements Executor {
   readonly kind: string;
+  readonly info: SandboxInfo;
   private readonly image: string;
   private readonly defaultTimeoutMs: number;
+  private readonly maxTimeoutMs: number;
   private readonly network: boolean;
   private readonly idleMs: number;
   private readonly runtime: string | undefined;
   private readonly env: DockerEnv;
   private readonly sessions = new Map<string, Session>();
 
-  constructor(
-    image: string,
-    defaultTimeoutMs: number,
-    network: boolean,
-    idleMs: number,
-    runtime?: string,
-    dockerHost?: string,
-  ) {
-    this.image = image;
-    this.defaultTimeoutMs = defaultTimeoutMs;
-    this.network = network;
-    this.idleMs = idleMs;
-    this.runtime = runtime;
+  constructor(cfg: SandboxConfig) {
+    this.image = cfg.image;
+    this.defaultTimeoutMs = cfg.timeoutMs;
+    this.maxTimeoutMs = Math.max(cfg.maxTimeoutMs ?? cfg.timeoutMs, cfg.timeoutMs);
+    this.network = cfg.network;
+    this.idleMs = cfg.idleMs;
+    this.runtime = cfg.runtime;
     // "kata" et al. are more informative in logs/UI than a bare "docker".
-    this.kind = runtime ?? "docker";
+    this.kind = cfg.runtime ?? "docker";
+    this.info = {
+      image: this.image,
+      network: this.network,
+      defaultTimeoutMs: this.defaultTimeoutMs,
+      maxTimeoutMs: this.maxTimeoutMs,
+      memory: MEMORY,
+      cpus: CPUS,
+    };
     // A remote daemon (e.g. a KVM box over the tailnet) is selected purely via
     // DOCKER_HOST; the rest of the env is inherited. Undefined → local daemon.
-    this.env = dockerHost
-      ? { ...(process.env as Record<string, string>), DOCKER_HOST: dockerHost }
+    this.env = cfg.dockerHost
+      ? { ...(process.env as Record<string, string>), DOCKER_HOST: cfg.dockerHost }
       : undefined;
     // Reap containers a prior run left behind (a crash skips teardown), then
     // sweep idle ones periodically. Both best-effort; unref'd so neither pins
@@ -177,9 +232,9 @@ export class LocalDockerExecutor implements Executor {
       "--network",
       this.network ? "bridge" : "none",
       "--cpus",
-      "1",
+      CPUS,
       "--memory",
-      "512m",
+      MEMORY,
       "--pids-limit",
       "512",
       "--workdir",
@@ -201,7 +256,7 @@ export class LocalDockerExecutor implements Executor {
       this.image,
       "sh",
       "-c",
-      "mkdir -p /workspace && exec tail -f /dev/null",
+      `mkdir -p ${WORKSPACE_DIRS.join(" ")} && exec tail -f /dev/null`,
     ];
     const r = await dockerRun(argv, this.env);
     if (r.exitCode !== 0)
@@ -323,8 +378,17 @@ export class LocalDockerExecutor implements Executor {
   }
 
   async run(spec: ExecSpec, signal?: AbortSignal): Promise<ExecResult> {
-    const timeoutMs = spec.timeoutMs ?? this.defaultTimeoutMs;
-    const t = this.timed(timeoutMs, signal);
+    // A caller may ask for longer than the default, never longer than the max —
+    // the ceiling belongs to the deployment, not to the command.
+    const timeoutMs = Math.min(spec.timeoutMs ?? this.defaultTimeoutMs, this.maxTimeoutMs);
+    // The client-side timer only ever abandons the docker CLI; the process it
+    // started keeps running inside the container, so a `while true` would burn
+    // the session's cpu until the container was swept. The cap is therefore
+    // enforced INSIDE, where something can actually kill it, and the outer timer
+    // stays on as a backstop for a hung daemon — a couple of seconds later, so
+    // the in-container kill is the one that normally fires.
+    const command = withTimeout(spec.command, timeoutMs);
+    const t = this.timed(timeoutMs + 2_000, signal);
     try {
       let argv: string[];
       if (spec.session) {
@@ -335,7 +399,7 @@ export class LocalDockerExecutor implements Executor {
           this.sessions.delete(spec.session); // let the next call retry a fresh container
           throw e;
         }
-        argv = ["exec", "--workdir", "/workspace", s.name, "sh", "-c", spec.command];
+        argv = ["exec", "--workdir", "/workspace", s.name, "sh", "-c", command];
       } else {
         argv = [
           "run",
@@ -348,15 +412,16 @@ export class LocalDockerExecutor implements Executor {
           this.image,
           "sh",
           "-c",
-          spec.command,
+          command,
         ];
       }
       const r = await dockerRun(argv, this.env, t.signal);
+      const timedOut = t.state.timedOut || r.exitCode === TIMEOUT_EXIT;
       return {
         stdout: clamp(r.stdout),
         stderr: clamp(r.stderr),
-        exitCode: t.state.timedOut ? -1 : r.exitCode,
-        timedOut: t.state.timedOut,
+        exitCode: timedOut ? -1 : r.exitCode,
+        timedOut,
       };
     } finally {
       t.cleanup();
@@ -376,20 +441,13 @@ export function resetExecutor(): void {
 }
 
 /** The configured executor, or null when the sandbox is disabled/unimplemented. */
-export function createExecutor(cfg: Config["sandbox"] = getConfig().sandbox): Executor | null {
+export function createExecutor(cfg: SandboxConfig = getConfig().sandbox): Executor | null {
   if (!cfg.enabled) return null;
   switch (cfg.backend) {
     case "docker":
       // Local dev or remote microVM — the difference is entirely config:
       // `dockerHost` (which daemon) and `runtime` (e.g. "kata" for a VM).
-      return new LocalDockerExecutor(
-        cfg.image,
-        cfg.timeoutMs,
-        cfg.network,
-        cfg.idleMs,
-        cfg.runtime,
-        cfg.dockerHost,
-      );
+      return new LocalDockerExecutor(cfg);
     default:
       return null;
   }
@@ -398,7 +456,13 @@ export function createExecutor(cfg: Config["sandbox"] = getConfig().sandbox): Ex
 /** Fold an exec result into the text a tool hands back to the model. */
 export function formatExecResult(r: ExecResult): string {
   const parts: string[] = [];
-  if (r.timedOut) parts.push("[command timed out]");
+  // A bare "[timed out]" reads as a failure of the sandbox; saying what to do
+  // about it turns a dead end into the next step.
+  if (r.timedOut)
+    parts.push(
+      "[command timed out and was killed — output above is partial. Re-run something " +
+        "smaller, or pass a larger timeout_seconds if it genuinely needs the time.]",
+    );
   parts.push(`exit code: ${r.exitCode}`);
   parts.push("stdout:\n" + (r.stdout.trim() || "(empty)"));
   if (r.stderr.trim()) parts.push("stderr:\n" + r.stderr.trim());

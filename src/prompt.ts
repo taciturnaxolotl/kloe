@@ -153,16 +153,26 @@ function formatDate(d: Date): string {
   });
 }
 
-/** The `<tools>` body: one line per exposed tool. Empty → the section is dropped. */
+/**
+ * The `<tools>` body: one line per exposed tool. Empty → the section is dropped.
+ *
+ * A summary, not a manual. The provider already sends each tool's full
+ * description alongside its schema, so repeating it here buys nothing and costs
+ * it twice — and the cost grows every time a description earns another paragraph
+ * (run_shell's runs to several). What the prompt needs is the inventory: what
+ * exists, so the model knows there is something to reach for.
+ */
 function toolsBlock(tools: ToolSet): string {
   const names = Object.keys(tools);
   if (names.length === 0) return "";
-  return names
-    .map((n) => {
-      const desc = (tools[n] as { description?: string }).description ?? "";
-      return `- ${n}: ${desc}`;
-    })
-    .join("\n");
+  return names.map((n) => `- ${n}: ${summarize(tools[n] as { description?: string })}`).join("\n");
+}
+
+/** A tool's first sentence, which by convention says what it is for. */
+function summarize(t: { description?: string }): string {
+  const first = (t.description ?? "").split("\n", 1)[0]!.trim();
+  const stop = first.search(/\.(\s|$)/);
+  return stop === -1 ? first : first.slice(0, stop + 1);
 }
 
 /** Reads the configured context files into `{Path, Content}` for the <memory> block. */
@@ -207,6 +217,7 @@ export function buildSystemPrompt(opts: {
     Boundaries: p.boundaries ?? "",
     Platform: p.platform ?? "",
     Tools: toolsBlock(opts.tools),
+    Sandbox: "run_shell" in opts.tools,
     ContextFiles: contextFiles(p.contextFiles).concat(projectFiles),
   };
   // Collapse the blank-line runs Go-style block actions leave behind (an

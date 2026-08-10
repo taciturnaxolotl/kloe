@@ -48,6 +48,30 @@ test("buildSystemPrompt includes the date and a tools section only when tools ex
   expect(withTools).toContain("web_search: Search the web.");
 });
 
+test("the tools section is an inventory: first sentence only, and no sandbox line without one", () => {
+  cfg({});
+  const now = new Date("2026-08-04T12:00:00Z");
+  // The provider already sends the full description next to the schema, so the
+  // prompt carries the summary and stops there.
+  const out = buildSystemPrompt({
+    tools: {
+      web_search: { description: "Search the web.\n\nA second paragraph of detail." },
+    } as unknown as ToolSet,
+    now,
+  });
+  expect(out).toContain("web_search: Search the web.");
+  expect(out).not.toContain("second paragraph");
+  expect(out).not.toContain("/workspace/outputs");
+
+  const sandboxed = buildSystemPrompt({
+    tools: {
+      run_shell: { description: "Run a shell command in an isolated sandbox — a container." },
+    } as unknown as ToolSet,
+    now,
+  });
+  expect(sandboxed).toContain("/workspace/outputs");
+});
+
 test("buildSystemPrompt injects a project's context files as <file> blocks", () => {
   cfg({});
   const out = buildSystemPrompt({

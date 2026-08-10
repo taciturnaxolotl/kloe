@@ -118,8 +118,15 @@ const SandboxSchema = v.object({
    * Omit to use the local daemon.
    */
   dockerHost: v.optional(v.string()),
-  /** Per-command wall-clock cap. */
+  /** Per-command wall-clock cap when the caller doesn't ask for one. */
   timeoutMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 30_000),
+  /**
+   * Ceiling on a command's own timeout request. The default is tight enough to
+   * keep an ordinary command honest, but installing a package or crunching a
+   * file legitimately takes minutes — so a command may ask for longer, up to
+   * here, and nothing may exceed it.
+   */
+  maxTimeoutMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 300_000),
   /** Idle time before a conversation's persistent sandbox is torn down. */
   idleMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 10 * 60_000),
   /** docker: give the container network access (off = `--network none`). */
