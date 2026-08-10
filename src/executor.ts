@@ -229,8 +229,6 @@ export class LocalDockerExecutor implements Executor {
   private readonly runtime: string | undefined;
   private readonly env: DockerEnv;
   private readonly sessions = new Map<string, Session>();
-  /** The startup sweep of orphaned containers; awaited before any session starts. */
-  private readonly reaped: Promise<void>;
 
   constructor(cfg: SandboxConfig) {
     this.image = cfg.image;
@@ -255,37 +253,78 @@ export class LocalDockerExecutor implements Executor {
     this.env = cfg.dockerHost
       ? { ...(process.env as Record<string, string>), DOCKER_HOST: cfg.dockerHost }
       : undefined;
-    // Reap containers a prior run left behind (a crash skips teardown), then
-    // sweep idle ones periodically. Both best-effort; unref'd so neither pins
-    // the process open.
-    // Reap what a previous process left running. `container prune` only removes
-    // STOPPED containers, and a sandbox is `tail -f /dev/null` — very much
-    // running — so pruning swept nothing and every restart walked into a name
-    // conflict with its own orphans. Force-remove by label instead.
+    // A previous process's containers are left running: they hold their
+    // conversations' workspaces, and a restart should not cost the user their
+    // files. `startContainer` adopts one when its policy still matches and
+    // replaces it when it doesn't, so nothing outlives a change to the sandbox's
+    // security posture. Genuinely abandoned ones are swept below.
     //
-    // Scoped by label, so this claims every kloe sandbox on the daemon: one kloe
-    // per daemon is the assumption, and two would already be fighting over these
-    // container names.
-    this.reaped = this.reapOrphans();
-    const sweeper = setInterval(() => this.evictIdle(), 60_000);
+    // Best-effort and unref'd, so neither pins the process open.
+    void this.sweepUnclaimed();
+    const sweeper = setInterval(() => {
+      this.evictIdle();
+      void this.sweepUnclaimed();
+    }, 60_000);
     if (typeof sweeper.unref === "function") sweeper.unref();
   }
 
   /**
-   * Force-remove every container this or a prior process labelled, and resolve
-   * once that has actually finished — a session started before the sweep lands
-   * would otherwise race it and lose its container mid-command.
+   * A fingerprint of everything that decides what the sandbox may do — image,
+   * runtime, network, capabilities, resource caps. Stamped on the container at
+   * creation and re-checked before adopting one, so a container outlives a
+   * restart but never outlives a change to its own security posture. Tightening
+   * the policy therefore replaces existing sandboxes on next use, rather than
+   * leaving a fleet of containers running yesterday's rules.
    */
-  private async reapOrphans(): Promise<void> {
-    const listed = await dockerRun(
-      ["ps", "-aq", "--filter", "label=kloe-sandbox=1"],
+  private policyHash(): string {
+    const h = new Bun.CryptoHasher("sha256");
+    h.update(JSON.stringify([this.image, this.runtimeArgs(), this.limits()]));
+    return h.digest("hex").slice(0, 16);
+  }
+
+  /**
+   * Reuse a still-valid container from a previous process, or say why not.
+   * Anything other than "running under today's policy" means recreate.
+   */
+  private async adoptable(name: string): Promise<boolean> {
+    const r = await dockerRun(
+      ["inspect", "-f", '{{.State.Running}} {{index .Config.Labels "kloe-policy"}}', name],
       this.env,
     ).catch(() => null);
-    const ids = (listed?.stdout ?? "")
-      .split("\n")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (ids.length) await dockerRun(["rm", "-f", ...ids], this.env).catch(() => null);
+    if (!r || r.exitCode !== 0) return false; // no such container
+    const [running, policy] = r.stdout.trim().split(/\s+/);
+    return running === "true" && policy === this.policyHash();
+  }
+
+  /**
+   * Remove labelled containers no live session claims and that have been up
+   * longer than the idle TTL.
+   *
+   * This is what collects a previous process's leftovers. Uptime stands in for
+   * idleness, which is only fair because a container the user comes back to is
+   * adopted and tracked from that moment — so "unclaimed and old" really does
+   * mean abandoned, and the TTL it answers to is the one already documented.
+   */
+  private async sweepUnclaimed(): Promise<void> {
+    const listed = await dockerRun(
+      ["ps", "-a", "--filter", "label=kloe-sandbox=1", "--format", "{{.Names}}\t{{.State}}"],
+      this.env,
+    ).catch(() => null);
+    if (!listed || listed.exitCode !== 0) return;
+    const live = new Set([...this.sessions.values()].map((s) => s.name));
+    for (const line of listed.stdout.split("\n")) {
+      const [name, state] = line.trim().split("\t");
+      if (!name || live.has(name)) continue;
+      if (state !== "running") {
+        dockerQuiet(["rm", "-f", name], this.env); // a stopped sandbox is dead weight
+        continue;
+      }
+      const started = await dockerRun(["inspect", "-f", "{{.State.StartedAt}}", name], this.env)
+        .then((r) => Date.parse(r.stdout.trim()))
+        .catch(() => Number.NaN);
+      if (Number.isFinite(started) && Date.now() - started > this.idleMs)
+        dockerQuiet(["rm", "-f", name], this.env);
+    }
   }
 
   /** `--runtime <name>` for container-creating commands; empty for the default. */
@@ -315,12 +354,13 @@ export class LocalDockerExecutor implements Executor {
   }
 
   private async startContainer(name: string): Promise<void> {
-    await this.reaped.catch(() => {}); // never start into a half-swept daemon
-    // AWAITED, unlike the fire-and-forget it replaces. Container names are
-    // deterministic per conversation, so a leftover container from a previous
-    // process is not an edge case, it is what every restart hits — and a `rm -f`
-    // racing its own `run` loses often enough to brick the session with
-    // "name is already in use", which is exactly what happened.
+    // Adopt the conversation's existing sandbox when it still runs under today's
+    // policy: a restart then costs nothing, and /workspace survives it.
+    if (await this.adoptable(name)) return;
+    // Otherwise clear whatever is in the way. AWAITED, unlike the
+    // fire-and-forget this replaces — container names are deterministic per
+    // conversation, so a `rm -f` racing its own `run` loses often enough to
+    // brick the session with "name is already in use".
     await dockerRun(["rm", "-f", name], this.env).catch(() => null);
     const argv = [
       "run",
@@ -329,6 +369,8 @@ export class LocalDockerExecutor implements Executor {
       name,
       "--label",
       "kloe-sandbox=1",
+      "--label",
+      `kloe-policy=${this.policyHash()}`,
       ...this.runtimeArgs(),
       ...this.limits(),
       this.image,

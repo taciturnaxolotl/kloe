@@ -145,6 +145,34 @@ liveTest(
 );
 
 liveTest(
+  "a restart adopts the conversation's sandbox, but a policy change replaces it",
+  async () => {
+    const session = "test-" + Math.random().toString(36).slice(2);
+    const first = new LocalDockerExecutor(SANDBOX);
+    try {
+      await first.run({ command: "echo kept > /workspace/notes.txt", session });
+      // A new executor over the same conversation is exactly what a server
+      // restart looks like: the workspace should still be there.
+      const restarted = new LocalDockerExecutor(SANDBOX);
+      expect(
+        (await restarted.run({ command: "cat /workspace/notes.txt", session })).stdout,
+      ).toContain("kept");
+      // Change what the sandbox is allowed to do and the old container is no
+      // longer fit to adopt, however convenient its contents.
+      const tightened = new LocalDockerExecutor({ ...SANDBOX, network: true });
+      const r = await tightened.run({
+        command: "cat /workspace/notes.txt 2>/dev/null || echo RECREATED",
+        session,
+      });
+      expect(r.stdout).toContain("RECREATED");
+    } finally {
+      first.disposeSession(session);
+    }
+  },
+  120_000,
+);
+
+liveTest(
   "a networked sandbox cannot reach the daemon host by its docker aliases",
   async () => {
     // The realistic path to the host is a model talked into fetching
