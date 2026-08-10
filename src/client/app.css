@@ -109,7 +109,8 @@ a {
   min-height: 0;
 }
 @media (max-width: 720px) {
-  .app {
+  .app,
+  .app.pane-full {
     grid-template-columns: 1fr;
   }
 }
@@ -145,7 +146,8 @@ a.icon {
    single column — with the rail display:none, a `0 1fr` grid would auto-place
    `main` into the empty 0 track and squash it to nothing. */
 @media (min-width: 721px) {
-  .app.rail-collapsed {
+  .app.rail-collapsed,
+  .app.pane-full.rail-collapsed {
     grid-template-columns: 1fr;
   }
   .app.rail-collapsed .rail {
@@ -1663,12 +1665,18 @@ body.selecting #selectBtn {
 .app.pane-open {
   grid-template-columns: 244px minmax(0, 1fr) var(--pane-w, 42vw);
 }
-/* Expanded: the document takes the window. Fixed rather than a grid change, so
-   it doesn't have to negotiate with the rail or the thread. */
+/* Expanded: the document takes the CONVERSATION's place, not the window's.
+   Covering everything left the rail underneath with its toggle still on screen
+   and pressing it doing nothing you could see. Now the sidebar keeps working —
+   collapse it too and the document really does fill the window. */
+.app.pane-full {
+  grid-template-columns: 244px minmax(0, 1fr);
+}
+.app.pane-full .main {
+  display: none;
+}
 .app.pane-full .pane {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
+  position: static;
   border-left: 0;
 }
 .app.pane-full .paneresize {
@@ -1704,11 +1712,14 @@ body.resizing {
   cursor: col-resize;
   user-select: none;
 }
+/* Same metrics as the conversation header, so the two line up across the seam
+   rather than nearly lining up. */
 .panehead {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px 10px 16px;
+  gap: 8px;
+  padding: 6px 14px;
+  min-height: 48px;
   border-bottom: 1px solid var(--rule);
 }
 .panetitle {
@@ -1816,17 +1827,17 @@ body.resizing {
   border-radius: 2px;
 }
 
-.paneback {
-  width: 28px;
-  height: 28px;
-  flex: none;
-}
-.paneback[hidden] {
+/* `.icon` sets display, which outranks the hidden attribute's UA display:none. */
+.panefull[hidden] {
   display: none;
 }
-.paneback svg {
-  width: 16px;
-  height: 16px;
+/* One button, two states: expand while inline, back-to-panel while full. */
+.panefull .ismall,
+.app.pane-full .panefull .ifull {
+  display: none;
+}
+.app.pane-full .panefull .ismall {
+  display: block;
 }
 /* The document list, in the same panel the documents open in. */
 .doclist {

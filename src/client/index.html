@@ -128,14 +128,12 @@
       <!-- Drag the seam between the conversation and the document. -->
       <button class="paneresize" id="paneResize" type="button" aria-label="Resize document" title="Drag to resize"></button>
       <header class="panehead">
-        <button class="icon paneback" id="paneBack" type="button" aria-label="Back to documents" title="Back to documents" hidden>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+        <button class="icon panefull" id="paneFull" type="button" aria-label="Expand document" title="Expand document">
+          <svg class="ifull" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/><path d="M9 21H3v-6"/></svg>
+          <svg class="ismall" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m14 10 7-7"/><path d="M20 10h-6V4"/><path d="m3 21 7-7"/><path d="M4 14h6v6"/></svg>
         </button>
         <span class="panetitle" id="paneTitle"></span>
         <div class="paneactions">
-          <button class="icon panefull" id="paneFull" type="button" aria-label="Expand document" title="Expand document">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
-          </button>
           <!-- Split button: Copy is the action, the chevron is everything else. -->
           <span class="split" id="paneDocActions">
             <button class="panebtn" id="paneCopy" type="button">Copy</button>

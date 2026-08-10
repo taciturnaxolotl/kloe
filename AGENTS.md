@@ -74,6 +74,7 @@ The built-in **`echo` model** (`createEchoModel` in `src/providers.ts`) is a det
 - Job params are parsed in exactly one place (`parseJobParams` in `src/store.ts`); a corrupt row is marked `failed` immediately rather than re-claimed forever. Don't re-parse `row.params` ad hoc.
 - Delta batching means resume granularity is the batch boundary (`BATCH_MAX_DELTAS` / `BATCH_FLUSH_MS`), not the token. The live tail between flushes is only in memory; that is intentional per the spec's write-amplification recipe.
 - `GET /api/conversations/:id/events` replays from seq 0 through the actor and will spin up an actor for any id, same as every other route; there is no auth yet (the `TODO(auth)` in `src/http.ts` is the only reference).
+- **`[hidden]` loses to any author `display`.** The attribute's `display: none` comes from the UA stylesheet, so a rule like `.split { display: inline-flex }` silently overrides it and `el.hidden = true` does nothing visible. Every element the client toggles via `.hidden` needs a paired explicit rule (`.split[hidden] { display: none }`); `.chatshell[hidden]` documents the same trap. It has bitten this codebase several times and always looks like a JS bug.
 - The frontend (`src/client/`) is intentionally framework-free vanilla JS with no build step; Bun's HTML route handling does the bundling. Keep it dependency-light (the one vendored lib is `streaming-markdown`) and don't introduce a bundler.
 
 ## Style
