@@ -1356,6 +1356,16 @@ body.selecting #selectBtn {
   color: var(--ink-muted);
   font-size: 0.9em;
 }
+/* A research panel is the step's whole content, not a snippet of its output, so
+   it isn't boxed: it grows to whatever the run needs. And its rail sits in the
+   step's OWN icon column rather than starting a second, inset one — one gutter
+   down the turn instead of two that nearly line up. */
+.turn .body .stepper .stepbody:has(.rsrch) {
+  max-height: none;
+  overflow: visible;
+  margin-left: 5px;
+}
+
 .turn .body .stepper .stepbody > :first-child {
   margin-top: 0;
 }
@@ -1382,7 +1392,27 @@ body.selecting #selectBtn {
    "Gathering", the findings and their sources off "Writing" — so the shape of
    the work reads top to bottom. */
 .rsrch {
-  margin: 2px 0 4px;
+  /*
+   * Lead: the air between the step's title row and the first dot.
+   *
+   * PADDING, not margin — `.stepbody > :first-child` zeroes a top margin, so a
+   * margin here silently does nothing while still looking like the knob that
+   * controls the gap.
+   *
+   * The rail's first segment reaches back up through this to the telescope, so
+   * the two are derived from one number rather than kept in sync by hand: change
+   * the lead and the line follows.
+   */
+  --rsrch-lead: 8px;
+  /* The milestone label's line box. The dot and the rail are both centred off
+     it, so a dot can't drift from its text the way a hardcoded offset does. */
+  --rsrch-row: 21px;
+  --rsrch-dot: 9px;
+  /* Title row centre to the panel's top edge: summary padding (4px) + half its
+     line box. Fixed by the summary's own type, not by anything here. */
+  --rsrch-icon: 12px;
+  padding-top: var(--rsrch-lead);
+  margin: 0 0 4px;
 }
 .rsrchstep {
   position: relative;
@@ -1394,7 +1424,8 @@ body.selecting #selectBtn {
   content: "";
   position: absolute;
   left: 4px;
-  top: 10px;
+  /* Starts just under the dot it hangs from. */
+  top: calc((var(--rsrch-row) + var(--rsrch-dot)) / 2 + 1px);
   bottom: -4px;
   width: 1px;
   background: var(--rule);
@@ -1402,12 +1433,20 @@ body.selecting #selectBtn {
 .rsrchstep:last-child::before {
   display: none;
 }
+/* The panel owns the whole rail, so it stops at the last dot on its own — the
+   step's connector can't, since CSS gives it no way to know where that dot is.
+   The first segment reaches UP instead, back through the lead to the telescope's
+   centre, so the icon heads one continuous line. Absolutely-positioned dots paint
+   over it, so it passes behind them cleanly. */
+.rsrchstep:first-child::before {
+  top: calc(-1 * (var(--rsrch-lead) + var(--rsrch-icon)));
+}
 .rsrchdot {
   position: absolute;
   left: 0;
-  top: 4px;
-  width: 9px;
-  height: 9px;
+  top: calc((var(--rsrch-row) - var(--rsrch-dot)) / 2);
+  width: var(--rsrch-dot);
+  height: var(--rsrch-dot);
   border-radius: 50%;
   background: var(--rule-strong);
 }
@@ -1424,7 +1463,9 @@ body.selecting #selectBtn {
   }
 }
 .rsrchlabel {
+  display: block;
   font-size: 13.5px;
+  line-height: var(--rsrch-row);
   color: var(--ink-muted);
 }
 .rsrchstep.active .rsrchlabel {
@@ -1585,18 +1626,6 @@ body.selecting #selectBtn {
   /* The page runs off the bottom of its window rather than stopping flat. */
   mask-image: linear-gradient(to bottom, #000 60%, transparent);
 }
-/* Once the document exists it says what the step was, and better — so the step's
-   own summary row stops competing with it. */
-.turn .body .stepper .step.finished > summary {
-  display: none;
-}
-.turn .body .stepper .step.finished::before {
-  display: none;
-}
-.turn .body .stepper .step.finished > .stepbody {
-  padding-left: 0;
-}
-
 /* ---- artifact pane ------------------------------------------------------ */
 /* A document opened out of the thread: beside the conversation when there's
    room, over it when there isn't. */
@@ -1685,6 +1714,79 @@ body.selecting #selectBtn {
   width: 16px;
   height: 16px;
 }
+/* A citation, as a source pill: small enough to sit inside a sentence without
+   breaking its rhythm, legible enough to be worth reading. */
+.cite {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 1px;
+  padding: 1px 6px 1px 4px;
+  vertical-align: baseline;
+  border-radius: var(--radius-pill);
+  background: var(--bg-sunk);
+  border: 1px solid var(--rule);
+  font-size: 0.78em;
+  line-height: 1.5;
+  color: var(--ink-muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.cite:hover {
+  color: var(--ink);
+  border-color: var(--rule-strong);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-sunk));
+}
+.citefav {
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+}
+
+.paneback {
+  width: 28px;
+  height: 28px;
+  flex: none;
+}
+.paneback[hidden] {
+  display: none;
+}
+.paneback svg {
+  width: 16px;
+  height: 16px;
+}
+/* The document list, in the same panel the documents open in. */
+.doclist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.docrow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 10px 12px;
+  font: inherit;
+  text-align: left;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  cursor: pointer;
+}
+.docrow:hover {
+  background: var(--bg-sunk);
+}
+.docname {
+  font-size: 14.5px;
+  color: var(--ink);
+}
+.docmeta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
 .panebody {
   flex: 1;
   min-height: 0;

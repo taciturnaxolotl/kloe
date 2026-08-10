@@ -126,10 +126,13 @@
          conversation on wide screens and over it on narrow ones. -->
     <aside class="pane" id="pane" hidden aria-label="Document">
       <header class="panehead">
+        <button class="icon paneback" id="paneBack" type="button" aria-label="Back to documents" title="Back to documents" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+        </button>
         <span class="panetitle" id="paneTitle"></span>
         <div class="paneactions">
           <!-- Split button: Copy is the action, the chevron is everything else. -->
-          <span class="split">
+          <span class="split" id="paneDocActions">
             <button class="panebtn" id="paneCopy" type="button">Copy</button>
             <button class="panebtn splitmore" id="paneMore" type="button" aria-haspopup="menu" aria-label="More document actions">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
