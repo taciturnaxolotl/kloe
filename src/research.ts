@@ -85,7 +85,6 @@ export interface ResearchResult {
  *   agent-done  — { agent } that worker filed its notes
  *   synthesis   — every worker is in; one model is writing the report
  *   report      — { title, filename } the report was filed
- *   citing      — the post-hoc attribution pass is running
  *   done        — { stats }
  */
 export type ProgressFn = (phase: string, data?: unknown) => void;
@@ -141,22 +140,28 @@ const SYNTH_SYSTEM = [
   "",
   "Merge rather than concatenate. The same fact will arrive from several workers; state it once. Where notes conflict, say so and say which is better supported. Structure the document around the question that was asked, not around who found what — the reader must not be able to tell that several workers were involved.",
   "",
-  "Call write_report exactly once with the whole document as markdown: a specific title, headings, and a lead that answers the question before the supporting detail. Close with what remains uncertain. Do not number or cite sources — citations are attached afterwards.",
+  "Cite as you write. You are given a numbered list of every page the workers read; put [n] at the end of each sentence a source supports, or [2][5] where several do. The workers noted the URL each fact came from, so match a fact to its number through that URL. A sentence nothing in the list supports gets no marker — that is a normal outcome, not a failure, and inventing a number is worse than leaving it bare.",
+  "",
+  "Call write_report exactly once with the whole document as markdown: a specific title, headings, and a lead that answers the question before the supporting detail. Close with what remains uncertain.",
   "",
   "The `summary` argument is separate and matters as much as the document. The assistant that receives it will NOT be given the report — the summary is all it has to answer with, so put the answer in it: the finding and the figures, in a few sentences, not a description of what the document contains.",
 ].join("\n");
 
-const CITE_SYSTEM = [
-  "You attach citations to a finished piece of research. You are given the text and the numbered sources it was written from.",
-  "",
-  "Return the SAME text, unchanged except for citation markers inserted at the end of the sentences they support, in the form [1] or [2][5] where several sources support one sentence.",
-  "",
-  "Rules:",
-  "- Change no wording, no ordering, no formatting. Insert markers, nothing else.",
-  "- Cite only from the numbered list, only where a source genuinely supports the claim.",
-  "- A sentence supported by nothing in the list gets no marker. That is a normal outcome, not a failure — leave it bare rather than reaching for the closest number.",
-  "- Return only the text. No preamble, no notes, no source list.",
-].join("\n");
+/*
+ * Citations are written by the synthesizer and validated here, rather than
+ * attached by a second pass over the finished text.
+ *
+ * The post-hoc pass was the better theory and lost to practice. Attaching
+ * markers afterwards means asking a model to re-emit the entire document
+ * verbatim with insertions — twenty thousand tokens reproduced exactly, on a
+ * task where any drift corrupts the report. Models decline in the most
+ * expensive way available: they return the text back unchanged. Every document
+ * this produced came out with zero citations and no bibliography.
+ *
+ * The part of post-hoc that actually mattered — that a citation cannot point at
+ * a page nobody read — was never the model's job anyway. It is `bindCitations`,
+ * below, and it works the same whoever wrote the marker.
+ */
 
 /**
  * A safe `*.md` name from whatever the model proposed.
@@ -462,11 +467,14 @@ export function bindCitations(
 export function linkCitations(report: string, sources: Source[]): string {
   if (!sources.length) return report;
   const byN = new Map(sources.map((s) => [s.n, s]));
-  // Balanced brackets inside link text are valid markdown, so the marker keeps
-  // its `[1]` shape and becomes clickable rather than turning into a bare "1".
+  // `[n](url)`, not `[[n]](url)`. Balanced brackets in link text are valid
+  // CommonMark, but streaming-markdown is a smaller parser: it reads the nested
+  // form as a link containing "[1" followed by a literal "](url)", which dumps
+  // raw URLs through the middle of every paragraph. The renderer restores the
+  // bracket shape — and the source's name — when it upgrades these to pills.
   const linked = report.replace(/\[(\d+)\]/g, (whole, digits: string) => {
     const src = byN.get(Number(digits));
-    return src ? `[[${digits}]](${src.url})` : whole;
+    return src ? `[${digits}](${src.url})` : whole;
   });
   const list = sources.map((s) => `${s.n}. [${s.title}](${s.url})`).join("\n");
   return `${linked}\n\n## Sources\n\n${list}\n`;
@@ -570,7 +578,7 @@ export async function runResearch(opts: {
     const synth = streamText({
       model: opts.model,
       system: SYNTH_SYSTEM,
-      prompt: `Question: ${opts.question}\n\nWorker notes:\n\n${brief}`,
+      prompt: `Question: ${opts.question}\n\nSources:\n${sourceList(st.ledger)}\n\nWorker notes:\n\n${brief}`,
       tools: reportTool(filed, progress),
       stopWhen: [stepCountIs(4), () => filed.report !== undefined],
       abortSignal: signal,
@@ -593,27 +601,9 @@ export async function runResearch(opts: {
   const firstHeading = /^#{1,3}\s+(.+?)\s*$/m.exec(draft);
   if (!filed.report && firstHeading) title = firstHeading[1]!;
 
-  // Post-hoc citation pass. Best-effort by design: a failure here costs the
-  // markers, not the findings, so the draft goes out uncited rather than not at
-  // all. Skipped when nothing was read, since there would be nothing to cite.
-  let cited = draft;
-  if (st.ledger.length) {
-    progress?.("citing", { sources: st.ledger.length });
-    try {
-      const pass = streamText({
-        model: opts.model,
-        system: CITE_SYSTEM,
-        prompt: `Sources:\n${sourceList(st.ledger)}\n\nText:\n${draft}`,
-        abortSignal: signal,
-      });
-      const out = (await pass.text).trim();
-      if (out) cited = out;
-    } catch {
-      /* uncited findings beat no findings */
-    }
-  }
-
-  const bound = bindCitations(cited, st.ledger);
+  // Whatever the synthesizer cited is now checked against what was actually
+  // read: invalid markers dropped, survivors renumbered from 1.
+  const bound = bindCitations(draft, st.ledger);
   const report = linkCitations(bound.report, bound.sources);
   const stats = {
     steps,

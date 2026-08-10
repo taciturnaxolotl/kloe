@@ -58,10 +58,11 @@ test("validated markers become links, and the document carries its sources", () 
     { n: 1, url: "https://a.test/x", title: "A page" },
     { n: 2, url: "https://b.test/y", title: "B page" },
   ]);
-  // Balanced brackets in link text are valid markdown, so the marker keeps its
-  // shape and becomes clickable rather than collapsing to a bare number.
-  expect(out).toContain("[[1]](https://a.test/x)");
-  expect(out).toContain("[[2]](https://b.test/y)");
+  // A plain `[n](url)` link: streaming-markdown mis-parses the nested `[[n]]`
+  // form and leaks the raw URL into the paragraph. The renderer puts the bracket
+  // shape back when it upgrades these to source pills.
+  expect(out).toContain("[1](https://a.test/x)");
+  expect(out).toContain("[2](https://b.test/y)");
   // And the file stands on its own once downloaded.
   expect(out).toContain("## Sources");
   expect(out).toContain("1. [A page](https://a.test/x)");
@@ -239,6 +240,29 @@ test("a synthesizer that files no summary still says something useful", async ()
     fetcher: stubFetch({}),
   });
   expect(out.summary).toContain("how does X work");
+});
+
+test("the synthesizer's citations survive into the document, validated", async () => {
+  // End to end, because this is the property that broke in the field: every
+  // document came out with zero citations and no bibliography. The synthesizer
+  // cites [n] against the read ledger; the harness drops what doesn't resolve
+  // and renumbers what does.
+  const out = await runResearch({
+    question: "what",
+    model: roleModel({
+      plan: [PLAN("a")],
+      worker: [{ calls: [["read_page", { url: "https://a.test/x" }]] }, NOTES("notes")],
+      // [1] is real; [4] points at a page nobody opened.
+      synth: [FILE("Revenue was $22M [1]. The moon is cheese [4].")],
+    }),
+    search: stubSearch([]),
+    fetcher: stubFetch({ "https://a.test/x": { title: "A page" } }),
+  });
+  expect(out.report).toContain("[1](https://a.test/x)"); // a real, clickable marker
+  expect(out.report).not.toContain("[4]"); // invented, so dropped
+  expect(out.report).toContain("## Sources");
+  expect(out.report).toContain("1. [A page](https://a.test/x)");
+  expect(out.sources).toEqual([{ n: 1, url: "https://a.test/x", title: "A page" }]);
 });
 
 test("the question is split across parallel workers", async () => {
