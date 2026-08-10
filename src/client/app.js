@@ -21,6 +21,8 @@
 import * as smd from "streaming-markdown";
 import { requireAuth, setPfp } from "./authguard.js";
 import { mountDialogs } from "./confirm.js";
+import { mountConn } from "./conn.js";
+import { ditherFill } from "./dither.js";
 import {
   CHEV_ICON as CHEV,
   FILE_ICON as FILE_SVG,
@@ -158,9 +160,12 @@ import { mountSidebar } from "./sidebar.js";
   var input = $("input"),
     send = $("send"),
     composer = $("composer");
-  var title = $("title"),
-    status = $("status"),
-    conn = $("conn");
+  var title = $("title");
+  var hat = mountConn($("hat"), {
+    onRetry: function () {
+      reconnectNow();
+    },
+  });
   var pill = $("pill"),
     pillModel = $("pillModel"),
     picker = $("picker");
@@ -560,27 +565,15 @@ import { mountSidebar } from "./sidebar.js";
       ctx.classList.add("hidden");
       return;
     }
-    // The real shade glyphs, with a ▒ boundary cell for partial fill — same look
-    // as the old ▓░ bar, quarter-block precision instead of full-blocks-only.
-    var n = 12,
-      exact = Math.max(0, Math.min(n, (used / selected.contextWindow) * n));
-    var full = Math.floor(exact),
-      rem = exact - full,
-      cells = full,
-      s = "▓".repeat(full);
-    if (full < n) {
-      if (rem >= 0.75) {
-        s += "▓";
-        cells++;
-      } else if (rem >= 0.25) {
-        s += "▒";
-        cells++;
-      }
-    }
-    ctxbar.textContent = s + "░".repeat(n - cells);
-    ctxpct.textContent = Math.round((used / selected.contextWindow) * 100) + "%";
-    ctx.classList.remove("hidden");
+    var frac = Math.max(0, Math.min(1, used / selected.contextWindow));
+    // A `~` when the count came from measuring the prompt rather than from the
+    // provider's tokenizer — the gauge should say which kind of number it is.
+    var approx = !!(lastUsage && lastUsage.contextEstimated);
+    ctx.classList.remove("hidden"); // unhide first: a display:none canvas measures 0
+    ditherFill(ctxbar, frac);
+    ctxpct.textContent = (approx ? "~" : "") + Math.round(frac * 100) + "%";
     ctx.title =
+      (approx ? "about " : "") +
       Math.round(used).toLocaleString() +
       " / " +
       selected.contextWindow.toLocaleString() +
@@ -1576,7 +1569,18 @@ import { mountSidebar } from "./sidebar.js";
   }
 
   // ---- SSE stream --------------------------------------------------------
-  var connTimer = null;
+  var connTimer = null; // debounce before admitting a gap is worth showing
+  var retryTimer = null; // pending automatic reconnect after a terminal failure
+  // A dropped socket is usually a blip, so the first retries come fast and the
+  // backoff widens gently. Only once a whole run of them has failed is the
+  // connection worth calling broken, and the hat allowed to go red.
+  var RETRY_MIN = 600,
+    RETRY_MAX = 20000,
+    RETRY_GROWTH = 1.6,
+    RETRIES_BEFORE_ERROR = 5;
+  var retryDelay = RETRY_MIN;
+  var retryCount = 0;
+  var lastSeenId = null; // newest event id received on the current stream
   var SSE_EVENTS = [
     "user-message",
     "queued-message",
@@ -1634,6 +1638,13 @@ import { mountSidebar } from "./sidebar.js";
       clearTimeout(connTimer);
       connTimer = null;
     }
+    // A deliberate switch starts clean: no stale retry for the old conversation,
+    // and no leftover hat claiming this one is degraded.
+    clearTimeout(retryTimer);
+    retryTimer = null;
+    retryDelay = RETRY_MIN;
+    retryCount = 0;
+    hat.set("live");
     convId = id;
     // Clear the previous conversation's thread synchronously, before the async
     // history load. Otherwise, when the chat shell is re-revealed after a detour
@@ -1763,10 +1774,14 @@ import { mountSidebar } from "./sidebar.js";
   function connectStream(id, afterId) {
     var url = "/api/conversations/" + encodeURIComponent(id) + "/stream";
     if (afterId) url += "?after=" + encodeURIComponent(afterId); // only the tail after the batch
+    lastSeenId = afterId || null;
     var es = new EventSource(url);
     source = es;
     SSE_EVENTS.forEach(function (nm) {
       es.addEventListener(nm, function (ev) {
+        // Remember the cursor ourselves: a manual retry builds a NEW EventSource,
+        // which starts with an empty Last-Event-ID, so ?after= has to carry it.
+        if (ev.lastEventId) lastSeenId = ev.lastEventId;
         var data;
         try {
           data = JSON.parse(ev.data);
@@ -1777,33 +1792,86 @@ import { mountSidebar } from "./sidebar.js";
       });
     });
     es.onopen = function () {
+      retryDelay = RETRY_MIN;
+      retryCount = 0;
       setConn("connected");
     };
     es.onerror = function () {
-      // readyState 2 (CLOSED) is terminal; 0 (CONNECTING) is the browser already
-      // auto-reconnecting — usually done within a second. Only surface
-      // "reconnecting" if the gap actually lingers, so a quick reconnect doesn't
-      // flash the header. (On reconnect the browser sends Last-Event-ID, which
-      // the server prefers over the initial ?after cursor.)
-      if (es.readyState === 2) {
+      if (source !== es) return; // a stale socket we already replaced
+      if (!navigator.onLine) {
         setConn("offline");
+        return;
+      }
+      // readyState 0 (CONNECTING) is the browser's own auto-reconnect on the
+      // `retry:` interval the stream sets — fast, and silent, because a blip
+      // should heal before it's worth mentioning. readyState 2 (CLOSED) is
+      // terminal. Either way, once a gap outlives the debounce we take the
+      // schedule over: the browser's interval is flat, and a real outage wants a
+      // widening one with something to look at.
+      if (es.readyState === 2 || retryCount > 0) {
+        takeOver();
         return;
       }
       if (!connTimer)
         connTimer = setTimeout(function () {
           connTimer = null;
-          setConn("reconnecting");
-        }, 1500);
+          takeOver();
+        }, 1200);
     };
   }
-  function setConn(s) {
-    if (s === "connected" && connTimer) {
+  // Stop the browser retrying on its own cadence and put the gap on ours. Red is
+  // only reached once a run of our own attempts has failed.
+  function takeOver() {
+    if (source) source.close();
+    setConn(retryCount < RETRIES_BEFORE_ERROR ? "reconnecting" : "error", true);
+  }
+  // Rebuild the stream from the last event we actually saw. Used by the hat's
+  // Retry, by the backoff timer, and by the browser coming back online.
+  function reconnectNow() {
+    if (!convId) return;
+    clearTimeout(retryTimer);
+    retryTimer = null;
+    if (source) source.close();
+    setConn("reconnecting");
+    connectStream(convId, lastSeenId);
+  }
+  // Book the next attempt and hand back when it lands, so the hat can count it
+  // down. Early attempts come back fast; the delay widens gently from there.
+  function scheduleRetry() {
+    clearTimeout(retryTimer);
+    var at = Date.now() + retryDelay;
+    retryTimer = setTimeout(reconnectNow, retryDelay);
+    retryDelay = Math.min(RETRY_MAX, retryDelay * RETRY_GROWTH);
+    retryCount++;
+    return at;
+  }
+  // `retry` marks the states where WE own the next attempt (a terminal close),
+  // as opposed to the ones where the browser or the network does.
+  function setConn(s, retry) {
+    if (s !== "reconnecting" && connTimer) {
       clearTimeout(connTimer);
       connTimer = null;
     }
-    status.dataset.state = s;
-    conn.textContent = s === "reconnecting" ? "reconnecting…" : s;
+    if (!retry) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    if (s === "connected") {
+      // Only celebrate a return if something was actually shown to be wrong;
+      // the first connect of a conversation goes straight to live.
+      hat.set(hat.state === "live" ? "live" : "resumed");
+      return;
+    }
+    hat.set(s, retry ? { retryAt: scheduleRetry() } : null);
   }
+  // The browser knows about the network before a socket times out: trust it for
+  // the offline branch, and take "online" as permission to try again at once.
+  addEventListener("offline", function () {
+    if (source) setConn("offline");
+  });
+  addEventListener("online", function () {
+    if (source && hat.state !== "live") reconnectNow();
+  });
 
   // ---- composer / sending ------------------------------------------------
   function autosize() {

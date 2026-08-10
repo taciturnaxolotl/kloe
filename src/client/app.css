@@ -908,23 +908,6 @@ body.selecting #selectBtn {
   width: 16px;
   height: 16px;
 }
-/* Connection status: silent when healthy; a quiet mono caption (like the other
-   meta labels) appears only when the stream is degraded. */
-.head .connstat {
-  margin-left: auto;
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  color: var(--ink-faint);
-}
-.head .connstat .conn {
-  display: none;
-}
-.head .connstat[data-state="reconnecting"] .conn,
-.head .connstat[data-state="offline"] .conn {
-  display: inline;
-}
-
 .scroll {
   flex: 1;
   overflow-y: auto;
@@ -1593,21 +1576,6 @@ body.selecting #selectBtn {
   padding: 8px 16px 16px;
 }
 
-.banner {
-  display: none;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--warn);
-  padding: 8px 12px;
-  margin-bottom: 10px;
-  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--rule));
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--warn) 8%, var(--bg));
-}
-body:has(.connstat[data-state="offline"]) .banner {
-  display: block;
-}
-
 .card {
   border: 1px solid var(--rule-strong);
   border-radius: var(--radius-xl);
@@ -1615,12 +1583,181 @@ body:has(.connstat[data-state="offline"]) .banner {
   padding: 0 12px 8px;
   display: flex;
   flex-direction: column;
-  transition: border-color 0.12s ease;
+  transition: border-color 0.28s ease;
 }
 .card:hover,
 .card:focus-within {
   border-color: color-mix(in srgb, var(--accent) 15%, var(--rule-strong));
 }
+
+/* ---- connection hat ----------------------------------------------------- */
+/* A strip that grows out of the composer's top edge when the stream isn't live.
+   Full-bleed, so it cancels the card's own inline padding and rounds into the
+   card's top corners. Height is the animated property; live is height 0. */
+.hat {
+  position: relative;
+  overflow: hidden;
+  margin: 0 -12px;
+  height: 0;
+  padding: 0 12px;
+  opacity: 0;
+  border-bottom: 1px solid transparent;
+  border-radius: calc(var(--radius-xl) - 1px) calc(var(--radius-xl) - 1px) 0 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-muted);
+  transition:
+    height 0.24s cubic-bezier(0.2, 0.7, 0.2, 1),
+    opacity 0.16s ease,
+    color 0.28s ease,
+    border-bottom-color 0.28s ease;
+}
+.card:not([data-conn="live"]) .hat {
+  height: 24px;
+  opacity: 1;
+}
+.hatwash {
+  position: absolute;
+  inset: 0;
+  transition: background 0.28s ease;
+}
+.hatsweep {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+  image-rendering: pixelated;
+}
+.hat[data-state="resumed"] .hatsweep {
+  display: block;
+}
+.hatrow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 100%;
+}
+.hattxt {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.hatsay {
+  color: var(--ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hatgrow {
+  flex: 1;
+}
+.hatind {
+  flex: none;
+}
+.hatind.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.85;
+}
+.hatind.comet {
+  width: 12px;
+  height: 12px;
+}
+.hatind.comet svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  animation: hatspin 1s linear infinite;
+}
+.hatind.comet .track {
+  stroke: currentColor;
+  opacity: 0.16;
+  fill: none;
+  stroke-width: 1.4;
+}
+.hatind.comet .head {
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+}
+@keyframes hatspin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.hatretry {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 3px 7px;
+  cursor: pointer;
+  opacity: 0.88;
+}
+.hatretry svg {
+  width: 11px;
+  height: 11px;
+}
+.hatretry:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+}
+
+/* Per-state dress. Quiet by default; error is the only one that escalates the
+   card border, because it's the only one the user has to act on. */
+.hat[data-state="reconnecting"] {
+  border-bottom-color: color-mix(in srgb, var(--warn) 26%, var(--rule));
+  color: color-mix(in srgb, var(--warn) 70%, var(--ink));
+}
+.hat[data-state="reconnecting"] .hatwash {
+  background: color-mix(in srgb, var(--warn) 8%, var(--bg-raise));
+}
+.hat[data-state="resumed"] {
+  border-bottom-color: color-mix(in srgb, var(--accent) 26%, var(--rule));
+  color: color-mix(in srgb, var(--accent) 60%, var(--ink));
+}
+.hat[data-state="resumed"] .hatwash {
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-raise));
+}
+.hat[data-state="offline"] {
+  border-bottom: 1px dashed var(--rule-strong);
+  color: var(--ink-muted);
+}
+.hat[data-state="offline"] .hatwash {
+  background: var(--bg-sunk);
+}
+.hat[data-state="error"] {
+  border-bottom-color: color-mix(in srgb, var(--err) 34%, var(--rule));
+  color: color-mix(in srgb, var(--err) 85%, var(--ink));
+}
+.hat[data-state="error"] .hatwash {
+  background: color-mix(in srgb, var(--err) 16%, var(--bg-sunk));
+}
+.card[data-conn="error"] {
+  border-color: color-mix(in srgb, var(--err) 45%, var(--rule-strong));
+}
+.card[data-conn="error"]:hover,
+.card[data-conn="error"]:focus-within {
+  border-color: color-mix(in srgb, var(--err) 60%, var(--rule-strong));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hat,
+  .hatind.comet svg,
+  .hatwash {
+    transition: none;
+    animation: none;
+  }
+}
+
 .card textarea {
   width: 100%;
   resize: none;
@@ -1677,7 +1814,7 @@ body:has(.connstat[data-state="offline"]) .banner {
   height: 18px;
 }
 
-/* context window — unicode shaded bar, next to the model selector (~approximate) */
+/* context window — dithered fill bar, next to the model selector (~approximate) */
 .ctx {
   font-family: var(--mono);
   font-size: 12px;
@@ -1695,11 +1832,18 @@ body:has(.connstat[data-state="offline"]) .banner {
 .ctx.hidden {
   display: none;
 }
-.ctx .bar {
-  letter-spacing: 0.5px;
-  font-size: 15px;
-  line-height: 1;
-  color: color-mix(in srgb, var(--accent) 55%, var(--ink-muted));
+.ctx .ctxtrack {
+  width: 96px;
+  height: 13px;
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+  background: var(--bg-sunk);
+}
+.ctx canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
 }
 .ctx .pct {
   color: var(--ink-faint);

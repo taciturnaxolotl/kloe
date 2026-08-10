@@ -61,7 +61,6 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>
         </button>
         <span class="title" id="title">New conversation</span>
-        <span class="connstat" id="status" data-state="connected" role="status" aria-live="polite"><span class="conn" id="conn"></span></span>
       </header>
 
       <div class="scroll" id="scroll">
@@ -71,8 +70,6 @@
 
       <div class="dock">
         <div class="dockinner">
-          <div class="banner">offline — the stream dropped. Reconnecting; your place is kept and replays on return.</div>
-
           <div class="queue hidden" id="queue" aria-live="polite">
             <div class="qhead">
               <span class="qtitle">Queued</span>
@@ -81,7 +78,9 @@
             <ul class="qitems" id="queueItems"></ul>
           </div>
 
-          <form class="card" id="composer">
+          <form class="card" id="composer" data-conn="live">
+            <!-- Connection hat: collapsed to nothing while live; conn.js fills it. -->
+            <div class="hat" id="hat" data-state="live" role="status" aria-live="polite"></div>
             <div class="staged hidden" id="staged" aria-label="Attachments"></div>
             <textarea id="input" rows="1" placeholder="Reply, or ask something new…" aria-label="Message"></textarea>
             <div class="tools">
@@ -90,7 +89,7 @@
               </button>
               <div class="right">
                 <span class="ctx hidden" id="ctx" title="Approximate context window used">
-                  <span class="bar" id="ctxbar"></span>
+                  <span class="ctxtrack"><canvas id="ctxbar" aria-hidden="true"></canvas></span>
                   <span class="pct" id="ctxpct"></span>
                 </span>
                 <span class="pickwrap">
