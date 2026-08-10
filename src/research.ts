@@ -44,10 +44,22 @@ export interface Source {
 export interface ReportDraft {
   title: string;
   filename: string;
+  /** A few sentences for the assistant to relay — see ResearchResult.summary. */
+  summary: string;
   content: string;
 }
 
 export interface ResearchResult {
+  /**
+   * What the answer was, in a few sentences.
+   *
+   * This, not `report`, is what goes back to the conversation. A finished report
+   * can run to thousands of tokens and it would sit in the context of every
+   * later turn — which is the opposite of why the research runs in a subagent at
+   * all. The document reaches the UI through the progress channel, which is
+   * durable and rendered but never sent to a model.
+   */
+  summary: string;
   /** A title for the document, from the subagent. */
   title: string;
   /** A safe `*.md` name to save it under. */
@@ -130,6 +142,8 @@ const SYNTH_SYSTEM = [
   "Merge rather than concatenate. The same fact will arrive from several workers; state it once. Where notes conflict, say so and say which is better supported. Structure the document around the question that was asked, not around who found what — the reader must not be able to tell that several workers were involved.",
   "",
   "Call write_report exactly once with the whole document as markdown: a specific title, headings, and a lead that answers the question before the supporting detail. Close with what remains uncertain. Do not number or cite sources — citations are attached afterwards.",
+  "",
+  "The `summary` argument is separate and matters as much as the document. The assistant that receives it will NOT be given the report — the summary is all it has to answer with, so put the answer in it: the finding and the figures, in a few sentences, not a description of what the document contains.",
 ].join("\n");
 
 const CITE_SYSTEM = [
@@ -298,7 +312,12 @@ function reportTool(filed: { report?: ReportDraft }, progress?: ProgressFn): Too
       description:
         "File the finished report. Call this exactly once. This call IS the " +
         "deliverable — anything written outside it is discarded.",
-      inputSchema: jsonSchema<{ title: string; filename: string; content: string }>({
+      inputSchema: jsonSchema<{
+        title: string;
+        filename: string;
+        summary: string;
+        content: string;
+      }>({
         type: "object",
         properties: {
           title: {
@@ -309,15 +328,23 @@ function reportTool(filed: { report?: ReportDraft }, progress?: ProgressFn): Too
             type: "string",
             description: "A short kebab-case name, e.g. 'hack-club-funding'. No extension needed.",
           },
+          summary: {
+            type: "string",
+            description:
+              "Two to four sentences answering the question, for the assistant to relay to the " +
+              "user. It will NOT see the full document, so lead with the actual answer and the " +
+              "figures that matter, not a description of what the report covers.",
+          },
           content: { type: "string", description: "The whole report as markdown, with headings." },
         },
-        required: ["title", "filename", "content"],
+        required: ["title", "filename", "summary", "content"],
         additionalProperties: false,
       }),
-      execute: async ({ title, filename, content }) => {
+      execute: async ({ title, filename, summary, content }) => {
         const draft: ReportDraft = {
           title: title.trim() || "Research findings",
           filename: reportFilename(filename || title),
+          summary: summary.trim(),
           content,
         };
         filed.report = draft;
@@ -421,6 +448,28 @@ export function bindCitations(
   });
   // Dropping a marker can leave a double space or a space before punctuation.
   return { report: report.replace(/ {2,}/g, " ").replace(/ ([.,;:)])/g, "$1"), sources };
+}
+
+/**
+ * Turn validated `[n]` markers into links, and append the source list.
+ *
+ * Runs after bindCitations, not inside it: that step's job is deciding which
+ * markers are real, and it's easier to trust when what it returns is still plain
+ * text. This one is presentation — every marker becomes a link to the page it
+ * points at, and the document ends with the list, so a downloaded `.md` carries
+ * its own bibliography instead of a trail of bare numbers.
+ */
+export function linkCitations(report: string, sources: Source[]): string {
+  if (!sources.length) return report;
+  const byN = new Map(sources.map((s) => [s.n, s]));
+  // Balanced brackets inside link text are valid markdown, so the marker keeps
+  // its `[1]` shape and becomes clickable rather than turning into a bare "1".
+  const linked = report.replace(/\[(\d+)\]/g, (whole, digits: string) => {
+    const src = byN.get(Number(digits));
+    return src ? `[[${digits}]](${src.url})` : whole;
+  });
+  const list = sources.map((s) => `${s.n}. [${s.title}](${s.url})`).join("\n");
+  return `${linked}\n\n## Sources\n\n${list}\n`;
 }
 
 /** Budget from config, with the per-call override the tool exposes. */
@@ -565,12 +614,19 @@ export async function runResearch(opts: {
   }
 
   const bound = bindCitations(cited, st.ledger);
+  const report = linkCitations(bound.report, bound.sources);
   const stats = {
     steps,
     read: st.ledger.length,
     searches: st.searches,
     ms: Date.now() - started,
   };
-  progress?.("done", { stats, sources: bound.sources, title, filename });
-  return { title, filename, report: bound.report, sources: bound.sources, stats };
+  // The document travels on the progress channel, which the client renders and
+  // the log keeps, but which no model is ever shown. The return value below is
+  // what the conversation actually carries.
+  progress?.("done", { stats, sources: bound.sources, title, filename, report });
+  const summary =
+    filed.report?.summary ||
+    `Researched "${opts.question}" across ${st.ledger.length} sources; see the attached document.`;
+  return { summary, title, filename, report, sources: bound.sources, stats };
 }

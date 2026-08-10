@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import type { FetchProvider, FetchResult } from "../src/fetch";
 import {
   bindCitations,
+  linkCitations,
   reportFilename,
   researchBudget,
   runResearch,
@@ -50,6 +51,24 @@ test("an uncited report keeps its text and lists no sources", () => {
   const out = bindCitations("Nothing here is attributed.", ledger("a", "b"));
   expect(out.report).toBe("Nothing here is attributed.");
   expect(out.sources).toEqual([]);
+});
+
+test("validated markers become links, and the document carries its sources", () => {
+  const out = linkCitations("Water is wet [1]. So is rain [2].", [
+    { n: 1, url: "https://a.test/x", title: "A page" },
+    { n: 2, url: "https://b.test/y", title: "B page" },
+  ]);
+  // Balanced brackets in link text are valid markdown, so the marker keeps its
+  // shape and becomes clickable rather than collapsing to a bare number.
+  expect(out).toContain("[[1]](https://a.test/x)");
+  expect(out).toContain("[[2]](https://b.test/y)");
+  // And the file stands on its own once downloaded.
+  expect(out).toContain("## Sources");
+  expect(out).toContain("1. [A page](https://a.test/x)");
+});
+
+test("an uncited document gains no sources section", () => {
+  expect(linkCitations("Nothing attributed.", [])).toBe("Nothing attributed.");
 });
 
 test("the budget comes from config, and a caller may tighten one field", () => {
@@ -136,8 +155,13 @@ function roleModel(roles: { plan?: Turn[]; worker?: Turn[]; synth?: Turn[] }) {
 
 const PLAN = (...angles: string[]): Turn => ({ calls: [["plan", { angles }]] });
 const NOTES = (notes: string): Turn => ({ calls: [["submit_findings", { notes }]] });
-const FILE = (content: string, title = "T", filename = "f"): Turn => ({
-  calls: [["write_report", { title, filename, content }]],
+const FILE = (
+  content: string,
+  title = "T",
+  filename = "f",
+  summary = "The short answer.",
+): Turn => ({
+  calls: [["write_report", { title, filename, summary, content }]],
 });
 /** The common shape: one angle, one worker that reads nothing, one report. */
 function simpleRun(over: Partial<Parameters<typeof runResearch>[0]> = {}) {
@@ -177,12 +201,44 @@ test("the filed report is the deliverable, and workers never write it", async ()
     search: stubSearch([]),
     fetcher: stubFetch({}),
   });
-  expect(out.report).toBe("# Real report\n\nBody.");
+  expect(out.report).toBe("# Real report\n\nBody."); // no sources read, so nothing appended
   expect(out.title).toBe("How X works");
   expect(out.filename).toBe("how-x.md");
   // The worker's narration and its raw notes are both upstream of the document.
   expect(out.report).not.toContain("thinking out loud");
   expect(out.report).not.toContain("raw notes");
+});
+
+test("the document travels on the progress channel, not in the result", async () => {
+  // A tool result is permanent conversation context, re-sent on every later
+  // turn. The report can run to thousands of tokens, so it goes to the UI over
+  // progress — durable and rendered, never shown to a model — and the run hands
+  // back a summary instead.
+  const seen: Array<{ phase: string; data?: unknown }> = [];
+  const out = await runResearch({
+    question: "what",
+    model: roleModel({
+      plan: [PLAN("a")],
+      worker: [NOTES("notes")],
+      synth: [FILE("# Long report\n\nMany paragraphs.", "T", "f", "Two sentences of answer.")],
+    }),
+    search: stubSearch([]),
+    fetcher: stubFetch({}),
+    onProgress: (phase, data) => seen.push({ phase, data }),
+  });
+  expect(out.summary).toBe("Two sentences of answer.");
+  const done = seen.find((p) => p.phase === "done")?.data as { report?: string } | undefined;
+  expect(done?.report).toContain("Many paragraphs.");
+});
+
+test("a synthesizer that files no summary still says something useful", async () => {
+  const out = await runResearch({
+    question: "how does X work",
+    model: roleModel({ plan: [PLAN("a")], worker: [NOTES("notes")], synth: [{ text: "nope" }] }),
+    search: stubSearch([]),
+    fetcher: stubFetch({}),
+  });
+  expect(out.summary).toContain("how does X work");
 });
 
 test("the question is split across parallel workers", async () => {

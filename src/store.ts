@@ -718,6 +718,56 @@ export class Store {
     return parts.length ? parts.join("\n\n") : null;
   }
 
+  /**
+   * Documents produced by this conversation's tools, newest first.
+   *
+   * Derived from the event log rather than stored in a table of its own, because
+   * the log already holds them: `deep_research` emits its finished report on the
+   * progress channel (see ConversationActor.toolProgress), deliberately keeping
+   * it out of the tool result and so out of every later model prompt. That makes
+   * the log the one copy, and this the read side of it.
+   */
+  listArtifacts(conversationId: string): Array<{ filename: string; title: string; at: number }> {
+    const rows = this.db
+      .prepare(
+        `SELECT json_extract(data, '$.data.filename') AS filename,
+                json_extract(data, '$.data.title')    AS title,
+                created_at
+           FROM events
+          WHERE conversation_id = ?
+            AND event = 'tool-progress'
+            AND json_extract(data, '$.phase') = 'done'
+            AND json_extract(data, '$.data.filename') IS NOT NULL
+          ORDER BY seq DESC`,
+      )
+      .all(conversationId) as Array<{ filename: string; title: string; created_at: number }>;
+    // A document rewritten under the same name is one document at its newest.
+    const seen = new Set<string>();
+    const out: Array<{ filename: string; title: string; at: number }> = [];
+    for (const r of rows) {
+      if (seen.has(r.filename)) continue;
+      seen.add(r.filename);
+      out.push({ filename: r.filename, title: r.title ?? r.filename, at: r.created_at });
+    }
+    return out;
+  }
+
+  /** The newest version of one document's markdown, or null if there isn't one. */
+  readArtifact(conversationId: string, filename: string): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT json_extract(data, '$.data.report') AS report
+           FROM events
+          WHERE conversation_id = ?
+            AND event = 'tool-progress'
+            AND json_extract(data, '$.phase') = 'done'
+            AND json_extract(data, '$.data.filename') = ?
+          ORDER BY seq DESC LIMIT 1`,
+      )
+      .get(conversationId, filename) as { report: string | null } | null;
+    return row?.report ?? null;
+  }
+
   /** Set the title only if none is set yet (auto-title never clobbers a rename).
    *  Returns whether it actually set one. */
   setTitleIfEmpty(id: string, title: string): boolean {

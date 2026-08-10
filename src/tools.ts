@@ -102,7 +102,11 @@ function deepResearch(
       "where one page won't settle it. Do NOT use it to look up a single fact or " +
       "read a URL you already have — web_search and fetch_url are faster and " +
       "cheaper for those. Ask ONE self-contained question, with the context the " +
-      "subagent needs: it cannot see this conversation.",
+      "subagent needs: it cannot see this conversation. You get back a summary and " +
+      "the name of a document that is shown to the user directly — relay the summary " +
+      "and point at the document rather than trying to reproduce it. If a later " +
+      "question needs detail the summary doesn't carry, read the document back with " +
+      "read_artifact.",
     inputSchema: jsonSchema<{ question: string }>({
       type: "object",
       properties: {
@@ -116,8 +120,8 @@ function deepResearch(
       required: ["question"],
       additionalProperties: false,
     }),
-    execute: async ({ question }, { toolCallId, abortSignal }) =>
-      runResearch({
+    execute: async ({ question }, { toolCallId, abortSignal }) => {
+      const out = await runResearch({
         question,
         model,
         search,
@@ -126,7 +130,65 @@ function deepResearch(
         onProgress: onProgress
           ? (phase, data) => onProgress({ toolCallId, toolName: "deep_research", phase, data })
           : undefined,
-      }),
+      });
+      // The summary, not the report. A finished document runs to thousands of
+      // tokens and a tool result is permanent context — it would be re-sent on
+      // every later turn of the conversation, which is precisely the cost the
+      // subagent exists to avoid. The document itself reached the UI over the
+      // progress channel, which is durable and rendered but never shown to a
+      // model, so nothing is lost by leaving it out here.
+      return {
+        summary: out.summary,
+        document: out.filename,
+        title: out.title,
+        sources: out.sources.length,
+        stats: out.stats,
+      };
+    },
+  });
+}
+
+/**
+ * Read back a document this conversation produced.
+ *
+ * `deep_research` hands the assistant a summary and a filename, never the report
+ * — a finished document is thousands of tokens and a tool result is permanent
+ * context. That's the right default and a bad absolute: sooner or later someone
+ * asks "what did it say about the donors?", and the answer is sitting in the
+ * event log.
+ *
+ * So the full text is available on request rather than by default. The cost is
+ * paid once, in the turn that needs it, by the model that asked.
+ */
+function readArtifact(store: Store, conversationId: string) {
+  return tool({
+    description:
+      "Read the full text of a document produced earlier in this conversation " +
+      "(e.g. a report from deep_research, by its filename). Use it when the user " +
+      "asks about something a document covers in more detail than the summary you " +
+      "were given. The user can already see the document, so answer from it rather " +
+      "than reproducing it wholesale.",
+    inputSchema: jsonSchema<{ filename: string }>({
+      type: "object",
+      properties: {
+        filename: {
+          type: "string",
+          description: "The document's name, e.g. 'hack-club-funding.md'.",
+        },
+      },
+      required: ["filename"],
+      additionalProperties: false,
+    }),
+    execute: async ({ filename }) => {
+      const doc = store.readArtifact(conversationId, filename);
+      if (doc) return doc;
+      // A wrong name is worth answering with the right ones — the model named it
+      // from memory of a tool result several turns back.
+      const have = store.listArtifacts(conversationId);
+      return have.length
+        ? `No document named "${filename}". This conversation has: ${have.map((a) => a.filename).join(", ")}.`
+        : "No documents have been produced in this conversation yet.";
+    },
   });
 }
 
@@ -200,6 +262,17 @@ const REGISTRY: Array<{
       const fetcher = createFetchProvider();
       return search && fetcher ? deepResearch(ctx.model, search, fetcher, ctx.onProgress) : null;
     },
+  },
+  {
+    name: "read_artifact",
+    executor: "in-proc",
+    // Offered only once this conversation HAS a document. A tool that can only
+    // answer "there aren't any" is prompt weight in every chat that never
+    // researched anything.
+    create: (ctx) =>
+      ctx.store && ctx.conversationId && ctx.store.listArtifacts(ctx.conversationId).length
+        ? readArtifact(ctx.store, ctx.conversationId)
+        : null,
   },
   {
     name: "run_shell",

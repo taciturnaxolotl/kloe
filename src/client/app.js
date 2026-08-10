@@ -1326,7 +1326,7 @@ import { mountSidebar } from "./sidebar.js";
         rsrchState(p.gather, "done");
         rsrchLabel(p.gather, "Gathered " + p.read + (p.read === 1 ? " source" : " sources"));
         rsrchState(p.write, "active");
-        rsrchLabel(p.write, "Merging findings into one report");
+        rsrchLabel(p.write, "Writing the report");
         break;
       case "report":
         rsrchState(p.write, "active");
@@ -1335,9 +1335,17 @@ import { mountSidebar } from "./sidebar.js";
       case "citing":
         rsrchLabel(p.write, "Attaching citations");
         break;
+      // The document arrives here rather than in the tool result: the result is
+      // permanent conversation context, so it carries only a summary, and the
+      // report rides the progress channel instead — durable, rendered, and never
+      // sent to a model. Replay rebuilds the card from this same event.
       case "done":
         rsrchState(p.write, "done");
-        rsrchLabel(p.write, "Report written");
+        rsrchLabel(p.write, d.title ? "Created \u201c" + d.title + "\u201d" : "Report written");
+        if (d.report && !t.artifacted) {
+          t.artifacted = true;
+          addArtifact(t.block.rec, researchArtifact(t, d));
+        }
         break;
     }
     autoScroll();
@@ -1575,9 +1583,11 @@ import { mountSidebar } from "./sidebar.js";
     rec.artifacts.appendChild(el);
   }
   function renderResearchResult(t, output) {
-    // The document leaves the gutter, but the work stays: the run's shape — its
-    // angles, and where the reading actually went — is what the step is for now,
-    // and it's the part a document can't tell you.
+    // The `done` progress event already built the card (it carries the document;
+    // this result deliberately doesn't). This is the fallback for a run whose
+    // progress never landed, and for events logged before the split.
+    if (t.artifacted) return;
+    t.artifacted = true;
     if (t.panel) {
       rsrchState(t.panel.write, "done");
       rsrchLabel(
@@ -1585,7 +1595,7 @@ import { mountSidebar } from "./sidebar.js";
         output.title ? "Created \u201c" + output.title + "\u201d" : "Report written",
       );
     }
-    addArtifact(t.block.rec, researchArtifact(t, output));
+    if (output.report) addArtifact(t.block.rec, researchArtifact(t, output));
   }
   // Upgrade a fetched page's favicon from the default service .ico using what the
   // page actually declares (fetch.ts pageFavicons): prefer its own SVG favicon
@@ -1777,6 +1787,16 @@ import { mountSidebar } from "./sidebar.js";
       result: function (t, output) {
         if (output && (output.report || output.sources)) renderResearchResult(t, output);
         else defaultResult(t, output);
+      },
+    },
+    read_artifact: {
+      icon: ICON_RESEARCH,
+      row: function (input) {
+        return (input && input.filename) || "read_artifact";
+      },
+      summary: function (steps, active) {
+        var f = lastInput(steps).filename;
+        return (active ? "Reading " : "Read ") + (f || "a document");
       },
     },
     run_shell: {
