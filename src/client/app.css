@@ -1650,6 +1650,7 @@ body.selecting #selectBtn {
 /* A document opened out of the thread: beside the conversation when there's
    room, over it when there isn't. */
 .pane {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1660,7 +1661,48 @@ body.selecting #selectBtn {
   display: none;
 }
 .app.pane-open {
-  grid-template-columns: 244px minmax(0, 1fr) minmax(0, 42vw);
+  grid-template-columns: 244px minmax(0, 1fr) var(--pane-w, 42vw);
+}
+/* Expanded: the document takes the window. Fixed rather than a grid change, so
+   it doesn't have to negotiate with the rail or the thread. */
+.app.pane-full .pane {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  border-left: 0;
+}
+.app.pane-full .paneresize {
+  display: none;
+}
+/* The seam. It straddles the pane's own edge so the target is comfortable
+   without eating into the text, and widens on hover to say it's draggable. */
+.paneresize {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: col-resize;
+  z-index: 2;
+}
+.paneresize::after {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+.paneresize:hover::after,
+.paneresize:focus-visible::after {
+  background: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+/* While dragging, nothing else should be selecting text or fighting the cursor. */
+body.resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 .panehead {
   display: flex;
@@ -1732,9 +1774,14 @@ body.selecting #selectBtn {
   position: relative;
   z-index: 1;
 }
+.panefull,
 .panex {
   width: 30px;
   height: 30px;
+}
+.panefull svg {
+  width: 15px;
+  height: 15px;
 }
 .panex svg {
   width: 16px;

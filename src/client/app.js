@@ -1477,6 +1477,17 @@ import { mountSidebar } from "./sidebar.js";
    * you just read, and "propublica.org" tells you a great deal. Titles come from
    * the document's own bibliography, so this needs nothing the file doesn't have.
    */
+  /**
+   * The bibliography is for the file, not the screen.
+   *
+   * A downloaded document needs its sources listed — that's why the generator
+   * appends them. On screen the pills already carry the source of every claim,
+   * so the block at the bottom is a second copy of what you just read past.
+   * Stripped for rendering only: copy and download still get the whole file.
+   */
+  function stripSources(md) {
+    return md.replace(/\n#{1,3}\s+Sources\s*\n[\s\S]*$/, "\n");
+  }
   function parseSources(md) {
     var out = {};
     var re = /^(\d+)\.\s+\[([^\]]*)\]\(([^)\s]+)\)/gm;
@@ -1543,7 +1554,7 @@ import { mountSidebar } from "./sidebar.js";
         if (!paneDoc || paneDoc.sha256 !== want) return; // opened something else meanwhile
         paneDoc.content = text;
         body.innerHTML = "";
-        renderStaticMd(body, text);
+        renderStaticMd(body, stripSources(text));
         enhanceCitations(body, parseSources(text));
         body.scrollTop = 0;
       })
@@ -1556,7 +1567,7 @@ import { mountSidebar } from "./sidebar.js";
     paneDoc = null;
     $("pane").hidden = true;
     $("paneBody").innerHTML = "";
-    $("app").classList.remove("pane-open");
+    $("app").classList.remove("pane-open", "pane-full");
   }
   // The blob endpoint sets Content-Disposition from `?name`, so the browser
   // saves it under its real filename without the app re-encoding the bytes.
@@ -1620,8 +1631,58 @@ import { mountSidebar } from "./sidebar.js";
       else openPaneList();
     });
   }
+  // How wide the document sits, remembered across sessions. A reader who widens
+  // it for one long report means it for the next one too.
+  var PANE_W_KEY = "kloe:panew";
+  var PANE_MIN = 320;
+  function setPaneWidth(px) {
+    var max = Math.max(PANE_MIN, window.innerWidth - 420); // never crowd the thread out
+    var w = Math.round(Math.min(max, Math.max(PANE_MIN, px)));
+    document.documentElement.style.setProperty("--pane-w", w + "px");
+    try {
+      localStorage.setItem(PANE_W_KEY, String(w));
+    } catch (_) {}
+  }
+  function mountPaneResize() {
+    var saved = Number(localStorage.getItem(PANE_W_KEY) || 0);
+    if (saved) setPaneWidth(saved);
+    var handle = $("paneResize");
+    handle.addEventListener("pointerdown", function (e) {
+      // Capture on the handle so the drag survives the pointer outrunning it,
+      // and suppress selection while the seam moves.
+      handle.setPointerCapture(e.pointerId);
+      document.body.classList.add("resizing");
+      var move = function (ev) {
+        setPaneWidth(window.innerWidth - ev.clientX);
+      };
+      var up = function () {
+        handle.releasePointerCapture(e.pointerId);
+        document.body.classList.remove("resizing");
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", up);
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", up);
+    });
+    // Keyboard: a separator should be movable without a pointer.
+    handle.addEventListener("keydown", function (e) {
+      var cur = $("pane").getBoundingClientRect().width;
+      if (e.key === "ArrowLeft") setPaneWidth(cur + 40);
+      else if (e.key === "ArrowRight") setPaneWidth(cur - 40);
+      else return;
+      e.preventDefault();
+    });
+  }
+  function togglePaneFull() {
+    var full = $("app").classList.toggle("pane-full");
+    var btn = $("paneFull");
+    btn.setAttribute("aria-label", full ? "Restore document" : "Expand document");
+    btn.title = full ? "Restore document" : "Expand document";
+  }
   function mountPane() {
     mountDocsButton();
+    mountPaneResize();
+    $("paneFull").addEventListener("click", togglePaneFull);
     $("paneBack").addEventListener("click", openPaneList);
     $("paneClose").addEventListener("click", closePane);
     $("paneCopy").addEventListener("click", function () {
@@ -2243,6 +2304,9 @@ import { mountSidebar } from "./sidebar.js";
     retryCount = 0;
     hat.set("live");
     convId = id;
+    // The open document belongs to the conversation being left, so it goes with
+    // it rather than hanging over the next one.
+    closePane();
     refreshArtifacts(id);
     // Clear the previous conversation's thread synchronously, before the async
     // history load. Otherwise, when the chat shell is re-revealed after a detour
