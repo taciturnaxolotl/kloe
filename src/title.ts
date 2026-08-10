@@ -1,5 +1,6 @@
-import { generateText } from "ai";
+import { type JSONValue, streamText } from "ai";
 import { getRegistry, resolveModel } from "./inference";
+import { isEchoModel } from "./providers";
 import { getConfig } from "./settings";
 import type { Store } from "./store";
 
@@ -14,34 +15,61 @@ function enabledModels(store: Store) {
 /**
  * The model for utility work (titles): `agent.smallModel` when it's set AND
  * enabled, otherwise the cheapest enabled model (least in+out cost per 1M) — so
- * a configured ref that no longer exists gracefully falls back. Null only when
- * no model is enabled at all.
+ * a configured ref that no longer exists gracefully falls back. Null when no
+ * model is enabled at all.
+ *
+ * Two exclusions, both because "cheapest" rewards missing metadata. The echo
+ * mock costs nothing, so it won outright whenever it was visible. A model with
+ * no context window is one nothing is known about — the catalog coerces absent
+ * pricing to zero, so an unlisted model would win the same way. A genuinely free
+ * local model still wins, because discovery gives it a real window.
+ *
+ * An explicitly configured `agent.smallModel` skips both checks: naming it is a
+ * choice, inheriting it isn't.
  */
 export function resolveSmallModel(store: Store): string | null {
   const enabled = enabledModels(store);
   if (!enabled.length) return null;
   const configured = getConfig().agent.smallModel;
   if (configured && enabled.some((m) => m.ref === configured)) return configured;
-  return enabled.reduce((a, b) =>
+  const usable = enabled.filter((m) => !isEchoModel(m.ref) && m.contextWindow > 0);
+  if (!usable.length) return null;
+  return usable.reduce((a, b) =>
     b.costPer1MIn + b.costPer1MOut < a.costPer1MIn + a.costPer1MOut ? b : a,
   ).ref;
 }
 
 /**
- * A short conversation title from the first user message, via a small/cheap
- * model (config `agent.smallModel`). Best-effort — any failure returns null and
- * the caller leaves the title as the truncated first message.
+ * A short conversation title from the opening exchange, via a small/cheap model
+ * (config `agent.smallModel`). Best-effort — any failure returns null and the
+ * caller leaves the title as the truncated first message.
  */
 
 const SYSTEM =
-  "You write a short, specific title for a conversation from the user's first message. " +
+  "You write a short, specific title for a conversation from how it opens. " +
   "Reply with ONLY the title: 3 to 6 words, no surrounding quotes, no trailing punctuation, " +
   "no preamble or explanation.";
 
-function sanitize(raw: string): string {
+/**
+ * Six words is about ten tokens; the rest of this budget is headroom to think.
+ *
+ * Reasoning models spend the output budget before the first answer token, and
+ * some endpoints reason on everything (Hyper does — see discover.ts). The old
+ * 24-token cap was exhausted mid-thought, so the call came back `length` with
+ * empty text: no title, no error, nothing in the log.
+ */
+const MAX_OUTPUT_TOKENS = 1_024;
+
+/** A title is never worth stalling on, and nothing else is waiting on it. */
+const TIMEOUT_MS = 20_000;
+
+/** Strip what a small model wraps around the title it was asked for. */
+export function sanitize(raw: string): string {
   let t = raw.trim().split("\n")[0]!.trim();
-  t = t.replace(/^["'`*_]+|["'`*_]+$/g, "").trim(); // strip wrapping quotes/markdown
-  t = t.replace(/[.]+$/, "").trim(); // drop a trailing period
+  const unwrap = (s: string) => s.replace(/^["'`*_]+|["'`*_]+$/g, "").trim();
+  // Small models like to label their answer, inside or outside the quotes.
+  t = unwrap(t).replace(/^title\s*[:–-]\s*/i, "");
+  t = unwrap(t).replace(/[.]+$/, "").trim();
   if (t.length > 70) t = t.slice(0, 70).trimEnd() + "…";
   return t;
 }
@@ -51,17 +79,36 @@ export async function generateTitle(
   conversationId: string,
   modelRef: string,
 ): Promise<string | null> {
-  const first = store.firstUserMessage(conversationId);
-  if (!first || !first.trim()) return null;
+  const seed = store.titleSeed(conversationId);
+  if (!seed) return null;
+  // Whatever the operator tuned for this endpoint (a thinking toggle, an effort
+  // level) applies here too — the utility call shouldn't be the one request that
+  // ignores the config and runs at the model's own default effort.
+  const slash = modelRef.indexOf("/");
+  const providerId = slash > 0 ? modelRef.slice(0, slash) : modelRef;
+  const providerOptions = getRegistry().getConfig(providerId)?.providerOptions;
   try {
-    const { text } = await generateText({
+    // streamText, not generateText: a stream-only model (the echo mock, and any
+    // endpoint that implements only the streaming half) has no `doGenerate` and
+    // threw on every title. Everything that serves chat can stream.
+    const result = streamText({
       model: resolveModel(modelRef),
       system: SYSTEM,
-      prompt: first.slice(0, 2000), // enough to title from without feeding a whole essay
-      maxOutputTokens: 24,
-      temperature: 0.3,
+      prompt: seed,
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
+      abortSignal: AbortSignal.timeout(TIMEOUT_MS),
+      // No temperature: some endpoints reject it outright when reasoning is on,
+      // and a title doesn't need the knob.
+      ...(providerOptions
+        ? { providerOptions: { [providerId]: providerOptions as Record<string, JSONValue> } }
+        : {}),
     });
-    return sanitize(text) || null;
+    const title = sanitize(await result.text);
+    if (title) return title;
+    // Empty text is a real outcome (a budget spent on reasoning, a filter), and
+    // it used to vanish silently — the caller just saw "no title".
+    console.warn(`[title] ${modelRef} produced no title (finish: ${await result.finishReason})`);
+    return null;
   } catch (e) {
     console.warn("[title] generation failed:", (e as Error).message);
     return null;

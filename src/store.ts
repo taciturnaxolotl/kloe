@@ -141,6 +141,11 @@ export interface ConversationSearchResult extends ConversationSummary {
   snippet: string | null;
 }
 
+// How much of the opening exchange `titleSeed` hands the model. Enough to name
+// the subject, nowhere near enough to be worth paying for.
+const TITLE_OPENER_CHARS = 1_200;
+const TITLE_REPLY_CHARS = 800;
+
 // The conversation-list SELECT (owner + optional project filters are appended
 // as a WHERE by listConversations). `last_activity` is the newest event time,
 // falling back to createdAt; the LEFT JOIN carries the project name for the
@@ -656,6 +661,61 @@ export class Store {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * The opening exchange, as text to title from: the first user message plus the
+   * start of the first reply.
+   *
+   * The user's opener alone is often nothing to work with — a conversation that
+   * starts "hi" has no subject in it yet, and one that starts with only an image
+   * has no text at all. The reply is where the subject actually surfaces, so it
+   * comes along, capped: a title needs the gist, not the essay.
+   */
+  titleSeed(id: string): string | null {
+    const row = this.db
+      .prepare(
+        "SELECT data FROM events WHERE conversation_id = ? AND event = 'user-message' ORDER BY seq ASC LIMIT 1",
+      )
+      .get(id) as { data: string } | null;
+    if (!row) return null;
+    let opener = "";
+    try {
+      const d = JSON.parse(row.data) as {
+        content?: string;
+        attachments?: Array<{ name?: string }>;
+      };
+      opener = (d.content ?? "").trim();
+      // An attachments-only opener still names its files, which is a subject.
+      if (!opener && d.attachments?.length) {
+        opener = d.attachments
+          .map((a) => a.name)
+          .filter(Boolean)
+          .join(", ");
+      }
+    } catch {
+      return null;
+    }
+    // Deltas arrive in seq order and the first run's are the first ones logged,
+    // so reading until the cap never reaches a later turn.
+    const deltas = this.db
+      .prepare(
+        "SELECT data FROM events WHERE conversation_id = ? AND event = 'text-delta' ORDER BY seq ASC LIMIT 400",
+      )
+      .all(id) as Array<{ data: string }>;
+    let reply = "";
+    for (const d of deltas) {
+      try {
+        reply += (JSON.parse(d.data) as { delta?: string }).delta ?? "";
+      } catch {
+        /* a malformed delta is not worth abandoning the title over */
+      }
+      if (reply.length >= TITLE_REPLY_CHARS) break;
+    }
+    const parts: string[] = [];
+    if (opener) parts.push(`User: ${opener.slice(0, TITLE_OPENER_CHARS)}`);
+    if (reply.trim()) parts.push(`Assistant: ${reply.slice(0, TITLE_REPLY_CHARS).trim()}`);
+    return parts.length ? parts.join("\n\n") : null;
   }
 
   /** Set the title only if none is set yet (auto-title never clobbers a rename).

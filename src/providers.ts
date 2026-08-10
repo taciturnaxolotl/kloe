@@ -91,6 +91,11 @@ export interface ModelInfo {
   supportsImages: boolean;
 }
 
+/** The built-in offline mock, by ref. It streams and nothing else. */
+export function isEchoModel(modelRef: string): boolean {
+  return modelRef === "echo" || modelRef.startsWith("echo/");
+}
+
 const ECHO_MODEL: ModelInfo = {
   ref: "echo",
   providerId: "echo",
@@ -260,7 +265,7 @@ export class ProviderRegistry {
    * model, both must be enabled/known, or this throws.
    */
   resolveModel(modelRef: string): LanguageModel {
-    if (modelRef === "echo" || modelRef.startsWith("echo/")) {
+    if (isEchoModel(modelRef)) {
       return createEchoModel();
     }
 
