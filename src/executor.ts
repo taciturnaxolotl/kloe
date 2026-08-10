@@ -229,6 +229,8 @@ export class LocalDockerExecutor implements Executor {
   private readonly runtime: string | undefined;
   private readonly env: DockerEnv;
   private readonly sessions = new Map<string, Session>();
+  /** The startup sweep of orphaned containers; awaited before any session starts. */
+  private readonly reaped: Promise<void>;
 
   constructor(cfg: SandboxConfig) {
     this.image = cfg.image;
@@ -256,9 +258,34 @@ export class LocalDockerExecutor implements Executor {
     // Reap containers a prior run left behind (a crash skips teardown), then
     // sweep idle ones periodically. Both best-effort; unref'd so neither pins
     // the process open.
-    dockerQuiet(["container", "prune", "-f", "--filter", "label=kloe-sandbox=1"], this.env);
+    // Reap what a previous process left running. `container prune` only removes
+    // STOPPED containers, and a sandbox is `tail -f /dev/null` — very much
+    // running — so pruning swept nothing and every restart walked into a name
+    // conflict with its own orphans. Force-remove by label instead.
+    //
+    // Scoped by label, so this claims every kloe sandbox on the daemon: one kloe
+    // per daemon is the assumption, and two would already be fighting over these
+    // container names.
+    this.reaped = this.reapOrphans();
     const sweeper = setInterval(() => this.evictIdle(), 60_000);
     if (typeof sweeper.unref === "function") sweeper.unref();
+  }
+
+  /**
+   * Force-remove every container this or a prior process labelled, and resolve
+   * once that has actually finished — a session started before the sweep lands
+   * would otherwise race it and lose its container mid-command.
+   */
+  private async reapOrphans(): Promise<void> {
+    const listed = await dockerRun(
+      ["ps", "-aq", "--filter", "label=kloe-sandbox=1"],
+      this.env,
+    ).catch(() => null);
+    const ids = (listed?.stdout ?? "")
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (ids.length) await dockerRun(["rm", "-f", ...ids], this.env).catch(() => null);
   }
 
   /** `--runtime <name>` for container-creating commands; empty for the default. */
@@ -288,7 +315,13 @@ export class LocalDockerExecutor implements Executor {
   }
 
   private async startContainer(name: string): Promise<void> {
-    dockerQuiet(["rm", "-f", name], this.env); // clear a stale same-named container first
+    await this.reaped.catch(() => {}); // never start into a half-swept daemon
+    // AWAITED, unlike the fire-and-forget it replaces. Container names are
+    // deterministic per conversation, so a leftover container from a previous
+    // process is not an edge case, it is what every restart hits — and a `rm -f`
+    // racing its own `run` loses often enough to brick the session with
+    // "name is already in use", which is exactly what happened.
+    await dockerRun(["rm", "-f", name], this.env).catch(() => null);
     const argv = [
       "run",
       "-d",
@@ -303,7 +336,15 @@ export class LocalDockerExecutor implements Executor {
       "-c",
       `mkdir -p ${WORKSPACE_DIRS.join(" ")} && exec tail -f /dev/null`,
     ];
-    const r = await dockerRun(argv, this.env);
+    let r = await dockerRun(argv, this.env);
+    // A name conflict is the one failure that is always recoverable and never
+    // recovers on its own: the name is deterministic, so every later attempt
+    // hits the same wall until something removes the container. Clear it and
+    // retry once rather than leaving the conversation with a dead sandbox.
+    if (r.exitCode !== 0 && /already in use/i.test(r.stderr)) {
+      await dockerRun(["rm", "-f", name], this.env).catch(() => null);
+      r = await dockerRun(argv, this.env);
+    }
     if (r.exitCode !== 0)
       throw new Error(
         "sandbox container failed to start: " + (r.stderr.trim() || `exit ${r.exitCode}`),

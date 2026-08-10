@@ -175,12 +175,18 @@ liveTest(
     const e = new LocalDockerExecutor(SANDBOX);
     const session = "test-" + Math.random().toString(36).slice(2);
     try {
-      // CAP_SYS_ADMIN is gone, so a mount fails...
-      const mounted = await e.run({
-        command: "mount -t tmpfs none /mnt 2>/dev/null && echo ALLOWED || echo DENIED",
+      // The effective capability set, read straight from the kernel, so this
+      // asserts what the drop actually changed. Docker's default set is
+      // 0xa80425fb; ours is 0xdb — chown, dac_override, fowner, fsetid, setgid,
+      // setuid and nothing else. (An earlier version of this test asserted that
+      // `mount` fails, which proved nothing: CAP_SYS_ADMIN was never in the
+      // default set, so it failed before the hardening too.)
+      const caps = await e.run({
+        command: "grep -E 'CapEff|NoNewPrivs' /proc/self/status",
         session,
       });
-      expect(mounted.stdout).toContain("DENIED");
+      expect(caps.stdout).toContain("00000000000000db");
+      expect(caps.stdout).toMatch(/NoNewPrivs:\s*1/);
       // ...while the file-ownership caps a package manager needs survive, which
       // is the whole reason the drop isn't a blanket one.
       const unpacked = await e.run({
