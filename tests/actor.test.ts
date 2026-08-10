@@ -93,6 +93,42 @@ test("tool progress reaches subscribers while the tool is still running", async 
   expect(store.replay("t-prog", 0).some((e) => e.event === Event.ToolProgress)).toBe(true);
 });
 
+test("a tool's artifacts are promoted: refcounted, versioned, lifted onto the event", async () => {
+  const a = new ConversationActor("t-art", store);
+  const events: WireEvent[] = [];
+  a.follow({ push: (e) => events.push(e), closed: false });
+  const ref = {
+    sha256: "c".repeat(64),
+    name: "report.md",
+    title: "A report",
+    mime: "text/markdown",
+    size: 42,
+  };
+
+  await a.runText("r-a", "m-a", async function* (_signal) {
+    yield {
+      kind: "tool-result",
+      toolCallId: "call-1",
+      toolName: "deep_research",
+      output: { summary: "short", artifacts: [ref] },
+    };
+  });
+
+  // Lifted onto the event, so a client reads documents off the tool-result
+  // rather than digging through one tool's payload shape.
+  const result = events.find((e) => e.event === Event.ToolResult)!.data as {
+    artifacts?: Array<{ name: string; version: number }>;
+  };
+  expect(result.artifacts).toEqual([{ ...ref, version: 1 }]);
+  // Listable and readable without scanning the log.
+  expect(store.listArtifacts("t-art")).toHaveLength(1);
+  expect(store.getArtifact("t-art", "report.md")?.sha256).toBe(ref.sha256);
+  // And refcounted, so the orphan sweep knows the blob is live rather than
+  // reclaiming a document someone is still reading.
+  store.recordBlob(ref.sha256, ref.mime, ref.size);
+  expect(store.findOrphanBlobs(Date.now() + 1000)).not.toContain(ref.sha256);
+});
+
 test("message-end omits usage when no usage step is yielded", async () => {
   const a = new ConversationActor("t-nousage", store);
   const events: WireEvent[] = [];

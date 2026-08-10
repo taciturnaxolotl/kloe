@@ -1,4 +1,6 @@
 import { jsonSchema, type LanguageModel, type Tool, type ToolSet, tool } from "ai";
+import type { BlobStore } from "./blobs";
+import type { ArtifactRef } from "./events";
 import { type Executor, formatExecResult, getExecutor } from "./executor";
 import { createFetchProvider, type FetchProvider } from "./fetch";
 import {
@@ -87,8 +89,9 @@ function deepResearch(
   model: LanguageModel,
   search: SearchProvider,
   fetcher: FetchProvider,
-  onProgress?: ToolContext["onProgress"],
+  ctx: ToolContext,
 ) {
+  const onProgress = ctx.onProgress;
   return tool({
     description:
       "Hand off a question that needs real research — several searches, several " +
@@ -131,19 +134,41 @@ function deepResearch(
           ? (phase, data) => onProgress({ toolCallId, toolName: "deep_research", phase, data })
           : undefined,
       });
-      // The summary, not the report. A finished document runs to thousands of
-      // tokens and a tool result is permanent context — it would be re-sent on
-      // every later turn of the conversation, which is precisely the cost the
-      // subagent exists to avoid. The document itself reached the UI over the
-      // progress channel, which is durable and rendered but never shown to a
-      // model, so nothing is lost by leaving it out here.
-      return {
+      // The report becomes a blob and the result carries a REFERENCE — never the
+      // bytes. A finished document is thousands of tokens and a tool result is
+      // permanent context, re-sent on every later turn; the reference is a
+      // handful of tokens and is also the handle everything else works from,
+      // since agent output shares the content-addressed store with user uploads
+      // (read it back, download it, feed it to a later tool by sha256).
+      const result: {
+        summary: string;
+        document: string;
+        title: string;
+        sources: number;
+        stats: unknown;
+        artifacts?: ArtifactRef[];
+      } = {
         summary: out.summary,
         document: out.filename,
         title: out.title,
         sources: out.sources.length,
         stats: out.stats,
       };
+      if (ctx.blobs) {
+        const bytes = new TextEncoder().encode(out.report);
+        const ref = await ctx.blobs.put(bytes);
+        ctx.store?.recordBlob(ref.sha256, "text/markdown", ref.size);
+        result.artifacts = [
+          {
+            sha256: ref.sha256,
+            name: out.filename,
+            title: out.title,
+            mime: "text/markdown",
+            size: ref.size,
+          },
+        ];
+      }
+      return result;
     },
   });
 }
@@ -160,34 +185,42 @@ function deepResearch(
  * So the full text is available on request rather than by default. The cost is
  * paid once, in the turn that needs it, by the model that asked.
  */
-function readArtifact(store: Store, conversationId: string) {
+function readArtifact(store: Store, blobs: BlobStore, conversationId: string) {
   return tool({
     description:
       "Read the full text of a document produced earlier in this conversation " +
       "(e.g. a report from deep_research, by its filename). Use it when the user " +
       "asks about something a document covers in more detail than the summary you " +
       "were given. The user can already see the document, so answer from it rather " +
-      "than reproducing it wholesale.",
-    inputSchema: jsonSchema<{ filename: string }>({
+      "than reproducing it wholesale. Pass a version to read an older revision; " +
+      "the newest is used by default.",
+    inputSchema: jsonSchema<{ name: string; version?: number }>({
       type: "object",
       properties: {
-        filename: {
-          type: "string",
-          description: "The document's name, e.g. 'hack-club-funding.md'.",
+        name: { type: "string", description: "The document's name, e.g. 'hack-club-funding.md'." },
+        version: {
+          type: "number",
+          description: "An earlier revision to read. Omit for the newest.",
         },
       },
-      required: ["filename"],
+      required: ["name"],
       additionalProperties: false,
     }),
-    execute: async ({ filename }) => {
-      const doc = store.readArtifact(conversationId, filename);
-      if (doc) return doc;
-      // A wrong name is worth answering with the right ones — the model named it
-      // from memory of a tool result several turns back.
-      const have = store.listArtifacts(conversationId);
-      return have.length
-        ? `No document named "${filename}". This conversation has: ${have.map((a) => a.filename).join(", ")}.`
-        : "No documents have been produced in this conversation yet.";
+    execute: async ({ name, version }) => {
+      const doc = store.getArtifact(conversationId, name, version);
+      if (!doc) {
+        // A wrong name is worth answering with the right ones — the model named
+        // it from memory of a tool result several turns back.
+        const have = store.listArtifacts(conversationId);
+        return have.length
+          ? `No document named "${name}"${version ? ` at version ${version}` : ""}. This conversation has: ${have
+              .map((a) => `${a.name} (v${a.version})`)
+              .join(", ")}.`
+          : "No documents have been produced in this conversation yet.";
+      }
+      const blob = await blobs.get(doc.sha256);
+      if (!blob) return `The bytes for "${name}" are missing from the blob store.`;
+      return await blob.text();
     },
   });
 }
@@ -260,7 +293,7 @@ const REGISTRY: Array<{
       if (!ctx.model || !getConfig().research.enabled) return null;
       const search = createSearchProvider();
       const fetcher = createFetchProvider();
-      return search && fetcher ? deepResearch(ctx.model, search, fetcher, ctx.onProgress) : null;
+      return search && fetcher ? deepResearch(ctx.model, search, fetcher, ctx) : null;
     },
   },
   {
@@ -270,8 +303,11 @@ const REGISTRY: Array<{
     // answer "there aren't any" is prompt weight in every chat that never
     // researched anything.
     create: (ctx) =>
-      ctx.store && ctx.conversationId && ctx.store.listArtifacts(ctx.conversationId).length
-        ? readArtifact(ctx.store, ctx.conversationId)
+      ctx.store &&
+      ctx.blobs &&
+      ctx.conversationId &&
+      ctx.store.listArtifacts(ctx.conversationId).length
+        ? readArtifact(ctx.store, ctx.blobs, ctx.conversationId)
         : null,
   },
   {
@@ -375,6 +411,8 @@ export interface ToolContext {
    * model in hand.
    */
   model?: LanguageModel;
+  /** Where a tool's output files go: agent artifacts share the user-upload store. */
+  blobs?: BlobStore;
   /**
    * Report from inside a long-running tool, so the UI can show the work as it
    * happens rather than a spinner that lasts minutes. Absent when nothing is

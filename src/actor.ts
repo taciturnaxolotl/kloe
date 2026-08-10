@@ -8,6 +8,7 @@ import {
   TOOL_OUTPUT_MAX,
 } from "./config";
 import {
+  type ArtifactRef,
   type AttachmentRef,
   Event,
   type EventData,
@@ -673,6 +674,11 @@ export class ConversationActor {
             input: step.input,
           });
         } else if (step.kind === "tool-result") {
+          // Documents the tool produced come out of its result and become
+          // first-class: refcounted so GC can reclaim them, versioned so a
+          // rerun under the same name builds history, and lifted onto the event
+          // itself so a client never has to dig them out of a tool's payload.
+          const artifacts = this.promoteArtifacts(step.output, messageId);
           this.persist(Event.ToolResult, {
             runId,
             threadId: this.conversationId,
@@ -680,6 +686,7 @@ export class ConversationActor {
             toolCallId: step.toolCallId,
             toolName: step.toolName,
             output: capToolOutput(step.output),
+            ...(artifacts.length ? { artifacts } : {}),
             isError: step.isError,
           });
         } else if (step.kind === "usage") {
@@ -723,6 +730,36 @@ export class ConversationActor {
       reasoningMs,
     });
     this.currentRunId = null;
+  }
+
+  /**
+   * Record a tool's `artifacts[]` and hand back the refs, version stamped.
+   *
+   * Bytes are already in the blob store by the time this runs — the tool put
+   * them there. This is the bookkeeping: a `blob_refs` row so the orphan sweep
+   * knows the blob is live, and an `artifacts` row so the document can be listed
+   * and read back without scanning the log.
+   */
+  private promoteArtifacts(output: unknown, messageId: string): ArtifactRef[] {
+    if (!output || typeof output !== "object") return [];
+    const raw = (output as { artifacts?: unknown }).artifacts;
+    if (!Array.isArray(raw)) return [];
+    const out: ArtifactRef[] = [];
+    for (const a of raw as ArtifactRef[]) {
+      if (!a?.sha256 || !a.name) continue;
+      this.store.addBlobRef(a.sha256, this.conversationId);
+      const version = this.store.recordArtifact({
+        conversationId: this.conversationId,
+        name: a.name,
+        sha256: a.sha256,
+        title: a.title,
+        mime: a.mime || "application/octet-stream",
+        size: a.size ?? 0,
+        messageId,
+      });
+      out.push({ ...a, version });
+    }
+    return out;
   }
 
   /**

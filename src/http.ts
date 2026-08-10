@@ -670,6 +670,16 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     },
 
     // Content-addressed blobs: upload (raw body) → sha256; fetch by sha256.
+    // Documents this conversation's tools produced — newest version of each, for
+    // the header list and the artifact pane. Bytes come from /api/blobs/:sha256.
+    "/api/conversations/:id/artifacts": {
+      GET: (req: Bun.BunRequest<"/api/conversations/:id/artifacts">) => {
+        const denied = guardConv(req, req.params.id);
+        if (denied) return denied;
+        return Response.json({ artifacts: store.listArtifacts(req.params.id) });
+      },
+    },
+
     "/api/blobs": {
       POST: (req: Bun.BunRequest<"/api/blobs">) => uploadBlob(req, store, blobs),
     },

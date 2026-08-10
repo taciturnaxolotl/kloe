@@ -1,5 +1,6 @@
 import { type JSONValue, type LanguageModel, type ModelMessage, stepCountIs, streamText } from "ai";
 import type { RunStep } from "./actor";
+import type { BlobStore } from "./blobs";
 import { type LoadCatalogOptions, loadCatalog } from "./catalog";
 import type { TokenUsage } from "./events";
 import { contextToText, getContext, lardConnected, lardEnabled } from "./lard";
@@ -235,6 +236,8 @@ export interface RunOptions {
   temperature?: number;
   /** For per-user lard: the run's store + the conversation owner's `sub`. */
   store?: Store;
+  /** Where a tool's output files land (agent artifacts share the upload store). */
+  blobs?: BlobStore;
   owner?: string;
   /** The conversation, so the sandbox binds to its persistent per-chat container. */
   conversationId?: string;
@@ -263,6 +266,7 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
     store: opts.store,
     owner: opts.owner,
     conversationId: opts.conversationId,
+    blobs: opts.blobs,
     model, // deep_research runs its subagent on the same model as the run
     onProgress: opts.onProgress,
   });

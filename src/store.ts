@@ -135,6 +135,23 @@ export interface ContextFileMeta {
   createdAt: number;
 }
 
+/** One stored version of a document a tool produced. */
+export interface ArtifactVersion {
+  name: string;
+  version: number;
+  sha256: string;
+  title: string | null;
+  mime: string;
+  size: number;
+  messageId: string | null;
+  createdAt: number;
+}
+
+/** A document at its newest version, with a count of how many exist. */
+export interface ArtifactSummary extends ArtifactVersion {
+  versions: number;
+}
+
 /** A search hit: a conversation plus an excerpt of the matching message. */
 export interface ConversationSearchResult extends ConversationSummary {
   /** Text around the match (title match → excerpt of the first message). */
@@ -295,6 +312,29 @@ CREATE TABLE IF NOT EXISTS blob_refs (
   PRIMARY KEY (sha256, conversation_id)
 );
 CREATE INDEX IF NOT EXISTS idx_blob_refs_conv ON blob_refs (conversation_id);
+
+-- Documents a conversation's tools produced (see spec "Artifacts — the promotion
+-- path"). A PROJECTION of the log, like blob_refs: the tool-result event stays
+-- authoritative, this is the index that makes "list this chat's documents" and
+-- "read the newest report.md" cheap instead of a scan.
+--
+-- (conversation_id, name) is the document; version is its revision, so a rerun
+-- into the same filename builds history rather than shadowing what came before.
+-- The bytes are the blob, addressed by sha256 and shared with every other file
+-- in the system.
+CREATE TABLE IF NOT EXISTS artifacts (
+  conversation_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  title TEXT,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  message_id TEXT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (conversation_id, name, version)
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_conv ON artifacts (conversation_id, created_at DESC);
 
 -- Auth sessions (indiko OAuth). The cookie holds an opaque high-entropy id; the
 -- row carries the user's identity (sub) and cached profile JSON. Expired rows
@@ -719,56 +759,100 @@ export class Store {
   }
 
   /**
-   * Documents produced by this conversation's tools, newest first.
+   * Record a document a tool produced, as a new version of its name.
    *
-   * Derived from the event log rather than stored in a table of its own, because
-   * the log already holds them: `deep_research` emits its finished report on the
-   * progress channel (see ConversationActor.toolProgress), deliberately keeping
-   * it out of the tool result and so out of every later model prompt. That makes
-   * the log the one copy, and this the read side of it.
+   * Content addressing makes the no-op case free: bytes identical to the current
+   * version aren't a new version, they're the same document written twice. That
+   * matters because a rerun with the same answer shouldn't manufacture history.
+   *
+   * Returns the version it landed on, so the caller can say "v3" without a
+   * second query.
    */
-  listArtifacts(conversationId: string): Array<{ filename: string; title: string; at: number }> {
-    const rows = this.db
+  recordArtifact(a: {
+    conversationId: string;
+    name: string;
+    sha256: string;
+    title?: string;
+    mime: string;
+    size: number;
+    messageId?: string;
+  }): number {
+    const latest = this.db
       .prepare(
-        `SELECT json_extract(data, '$.data.filename') AS filename,
-                json_extract(data, '$.data.title')    AS title,
-                created_at
-           FROM events
-          WHERE conversation_id = ?
-            AND event = 'tool-progress'
-            AND json_extract(data, '$.phase') = 'done'
-            AND json_extract(data, '$.data.filename') IS NOT NULL
-          ORDER BY seq DESC`,
+        "SELECT version, sha256 FROM artifacts WHERE conversation_id = ? AND name = ? ORDER BY version DESC LIMIT 1",
       )
-      .all(conversationId) as Array<{ filename: string; title: string; created_at: number }>;
-    // A document rewritten under the same name is one document at its newest.
-    const seen = new Set<string>();
-    const out: Array<{ filename: string; title: string; at: number }> = [];
-    for (const r of rows) {
-      if (seen.has(r.filename)) continue;
-      seen.add(r.filename);
-      out.push({ filename: r.filename, title: r.title ?? r.filename, at: r.created_at });
-    }
-    return out;
+      .get(a.conversationId, a.name) as { version: number; sha256: string } | null;
+    if (latest?.sha256 === a.sha256) return latest.version; // same bytes, same document
+    const version = (latest?.version ?? 0) + 1;
+    this.db
+      .prepare(
+        `INSERT INTO artifacts
+           (conversation_id, name, version, sha256, title, mime, size, message_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        a.conversationId,
+        a.name,
+        version,
+        a.sha256,
+        a.title ?? null,
+        a.mime,
+        a.size,
+        a.messageId ?? null,
+        Date.now(),
+      );
+    return version;
   }
 
-  /** The newest version of one document's markdown, or null if there isn't one. */
-  readArtifact(conversationId: string, filename: string): string | null {
-    const row = this.db
+  /** Every version of every document in a conversation, newest first. */
+  artifactVersions(conversationId: string, name: string): ArtifactVersion[] {
+    return this.db
       .prepare(
-        `SELECT json_extract(data, '$.data.report') AS report
-           FROM events
-          WHERE conversation_id = ?
-            AND event = 'tool-progress'
-            AND json_extract(data, '$.phase') = 'done'
-            AND json_extract(data, '$.data.filename') = ?
-          ORDER BY seq DESC LIMIT 1`,
+        `SELECT name, version, sha256, title, mime, size, message_id AS messageId, created_at AS createdAt
+           FROM artifacts WHERE conversation_id = ? AND name = ? ORDER BY version DESC`,
       )
-      .get(conversationId, filename) as { report: string | null } | null;
-    return row?.report ?? null;
+      .all(conversationId, name) as ArtifactVersion[];
   }
 
-  /** Set the title only if none is set yet (auto-title never clobbers a rename).
+  /**
+   * One row per document — its newest version, plus how many there are. This is
+   * what the header list and the artifact pane read.
+   */
+  listArtifacts(conversationId: string): ArtifactSummary[] {
+    return this.db
+      .prepare(
+        `SELECT a.name, a.version, a.sha256, a.title, a.mime, a.size,
+                a.message_id AS messageId, a.created_at AS createdAt,
+                (SELECT COUNT(*) FROM artifacts v
+                  WHERE v.conversation_id = a.conversation_id AND v.name = a.name) AS versions
+           FROM artifacts a
+          WHERE a.conversation_id = ?
+            AND a.version = (SELECT MAX(v.version) FROM artifacts v
+                              WHERE v.conversation_id = a.conversation_id AND v.name = a.name)
+          ORDER BY a.created_at DESC`,
+      )
+      .all(conversationId) as ArtifactSummary[];
+  }
+
+  /** One document by name — its newest version, or a specific one. */
+  getArtifact(conversationId: string, name: string, version?: number): ArtifactVersion | null {
+    const row = version
+      ? this.db
+          .prepare(
+            `SELECT name, version, sha256, title, mime, size, message_id AS messageId, created_at AS createdAt
+               FROM artifacts WHERE conversation_id = ? AND name = ? AND version = ?`,
+          )
+          .get(conversationId, name, version)
+      : this.db
+          .prepare(
+            `SELECT name, version, sha256, title, mime, size, message_id AS messageId, created_at AS createdAt
+               FROM artifacts WHERE conversation_id = ? AND name = ? ORDER BY version DESC LIMIT 1`,
+          )
+          .get(conversationId, name);
+    return (row as ArtifactVersion | null) ?? null;
+  }
+
+  /** Set the title only if none is set yet  /** Set the title only if none is set yet (auto-title never clobbers a rename).
    *  Returns whether it actually set one. */
   setTitleIfEmpty(id: string, title: string): boolean {
     const t = title.trim();

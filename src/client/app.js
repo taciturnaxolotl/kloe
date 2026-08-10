@@ -1318,7 +1318,7 @@ import { mountSidebar } from "./sidebar.js";
           p.order.push(host);
         }
         p.domains[host]++;
-        rsrchLabel(p.gather, "Gathering " + p.read + " sources and counting\u2026");
+        rsrchLabel(p.gather, "Gathering " + p.read + (p.read === 1 ? " source" : " sources"));
         rsrchTally(p);
         break;
       }
@@ -1335,17 +1335,13 @@ import { mountSidebar } from "./sidebar.js";
       case "citing":
         rsrchLabel(p.write, "Attaching citations");
         break;
-      // The document arrives here rather than in the tool result: the result is
-      // permanent conversation context, so it carries only a summary, and the
-      // report rides the progress channel instead — durable, rendered, and never
-      // sent to a model. Replay rebuilds the card from this same event.
       case "done":
         rsrchState(p.write, "done");
         rsrchLabel(p.write, d.title ? "Created \u201c" + d.title + "\u201d" : "Report written");
-        if (d.report && !t.artifacted) {
-          t.artifacted = true;
-          addArtifact(t.block.rec, researchArtifact(t, d));
-        }
+        // The card comes from the tool-result's artifacts[]; this copy of the
+        // text is kept only so its preview can render without waiting on a fetch
+        // during the run that produced it.
+        if (d.report) t.liveReport = d.report;
         break;
     }
     autoScroll();
@@ -1429,15 +1425,32 @@ import { mountSidebar } from "./sidebar.js";
   // with copy and download. One pane, reused — opening a second artifact
   // replaces the first rather than stacking.
   var paneDoc = null;
+  // Artifacts are blob references, so the pane fetches the bytes rather than the
+  // event carrying them: content-addressed and immutable, which is exactly the
+  // cache the browser is good at (one GET per sha, then never again).
   function openPane(doc) {
     paneDoc = doc;
-    $("paneTitle").textContent = doc.title;
+    $("paneTitle").textContent = doc.title || doc.name;
     var body = $("paneBody");
     body.innerHTML = "";
-    renderStaticMd(body, doc.content);
-    body.scrollTop = 0;
     $("pane").hidden = false;
     $("app").classList.add("pane-open");
+    var want = doc.sha256;
+    fetch("/api/blobs/" + encodeURIComponent(doc.sha256))
+      .then(function (r) {
+        return r.ok ? r.text() : Promise.reject(new Error("HTTP " + r.status));
+      })
+      .then(function (text) {
+        if (!paneDoc || paneDoc.sha256 !== want) return; // opened something else meanwhile
+        paneDoc.content = text;
+        body.innerHTML = "";
+        renderStaticMd(body, text);
+        body.scrollTop = 0;
+      })
+      .catch(function () {
+        if (!paneDoc || paneDoc.sha256 !== want) return;
+        body.textContent = "This document could not be loaded.";
+      });
   }
   function closePane() {
     paneDoc = null;
@@ -1447,14 +1460,18 @@ import { mountSidebar } from "./sidebar.js";
   }
   // The report is already markdown text, so a blob URL saves it without a round
   // trip to the server; it's revoked as soon as the click is dispatched.
+  // The blob endpoint sets Content-Disposition from `?name`, so the browser
+  // saves it under its real filename without the app re-encoding the bytes.
   function downloadMd() {
     if (!paneDoc) return;
-    var url = URL.createObjectURL(new Blob([paneDoc.content], { type: "text/markdown" }));
     var a = document.createElement("a");
-    a.href = url;
-    a.download = paneDoc.filename || "document.md";
+    a.href =
+      "/api/blobs/" +
+      encodeURIComponent(paneDoc.sha256) +
+      "?name=" +
+      encodeURIComponent(paneDoc.name);
+    a.download = paneDoc.name;
     a.click();
-    URL.revokeObjectURL(url);
   }
   // PDF via the browser's own print pipeline rather than a bundled generator:
   // the pane is already the rendered document, so print CSS hides everything
@@ -1472,7 +1489,53 @@ import { mountSidebar } from "./sidebar.js";
     window.addEventListener("afterprint", restore);
     window.print();
   }
+  // ---- the documents button ----------------------------------------------
+  // What this chat has produced, listed from the artifacts projection rather
+  // than by walking the thread. It appears only once there IS a document, so a
+  // chat that never made one carries no chrome for it.
+  var artifactList = [];
+  function refreshArtifacts(id) {
+    var btn = $("docsBtn");
+    if (!id) {
+      artifactList = [];
+      btn.hidden = true;
+      return;
+    }
+    fetch("/api/conversations/" + encodeURIComponent(id) + "/artifacts")
+      .then(function (r) {
+        return r.ok ? r.json() : { artifacts: [] };
+      })
+      .then(function (d) {
+        if (convId !== id) return; // switched chats while it was in flight
+        artifactList = d.artifacts || [];
+        btn.hidden = artifactList.length === 0;
+        $("docsCount").textContent = artifactList.length || "";
+      })
+      .catch(function () {});
+  }
+  function mountDocsButton() {
+    var btn = $("docsBtn");
+    btn.addEventListener("click", function (e) {
+      if (!artifactList.length) return;
+      e.stopPropagation();
+      var r = btn.getBoundingClientRect();
+      showContextMenu(
+        r.right,
+        r.bottom + 6,
+        artifactList.map(function (a) {
+          return {
+            label: (a.title || a.name) + (a.versions > 1 ? " · v" + a.version : ""),
+            onClick: function () {
+              openPane(a);
+            },
+          };
+        }),
+        { align: "right", trigger: btn },
+      );
+    });
+  }
   function mountPane() {
+    mountDocsButton();
     $("paneClose").addEventListener("click", closePane);
     $("paneCopy").addEventListener("click", function () {
       if (!paneDoc) return;
@@ -1508,27 +1571,13 @@ import { mountSidebar } from "./sidebar.js";
   // live panel (timeline, tally, streaming text) is scaffolding for work in
   // progress; once the work is done it's replaced by a card that names the thing
   // and opens it in the pane.
-  function researchArtifact(t, output) {
-    var report = output.report || "";
-    // The subagent names its own document (write_report). The report's own H1 and
-    // then the question are fallbacks for a run that ended before it filed.
-    var heading = /^#{1,3}\s+(.+?)\s*$/m.exec(report);
-    var title =
-      output.title ||
-      (heading && heading[1]) ||
-      (t.input && t.input.question) ||
-      "Research findings";
-    var doc = {
-      title: title,
-      filename: output.filename || "research-findings.md",
-      content: report,
-    };
-
+  function artifactCard(ref, peekText) {
+    var title = ref.title || ref.name;
     var wrap = document.createElement("button");
     wrap.type = "button";
     wrap.className = "artifact";
     wrap.addEventListener("click", function () {
-      openPane(doc);
+      openPane(ref);
     });
 
     var text = document.createElement("span");
@@ -1538,11 +1587,9 @@ import { mountSidebar } from "./sidebar.js";
     h.textContent = title;
     var kind = document.createElement("span");
     kind.className = "artifactkind";
-    kind.textContent =
-      "Document" +
-      (output.sources && output.sources.length
-        ? " \u00b7 " + output.sources.length + " sources"
-        : "");
+    // Version only once there IS history — "v1" on a document written once is
+    // noise about a thing that hasn't happened.
+    kind.textContent = "Document" + (ref.version > 1 ? " \u00b7 v" + ref.version : "");
     text.appendChild(h);
     text.appendChild(kind);
 
@@ -1552,50 +1599,44 @@ import { mountSidebar } from "./sidebar.js";
     peek.className = "artifactpeek";
     var paper = document.createElement("span");
     paper.className = "artifactpaper";
-    paper.textContent = report
+    peek.appendChild(paper);
+    if (peekText) paper.textContent = peekPreview(peekText);
+    // No live copy (a replayed log): pull just enough of the blob to preview.
+    else
+      fetch("/api/blobs/" + encodeURIComponent(ref.sha256))
+        .then(function (r) {
+          return r.ok ? r.text() : "";
+        })
+        .then(function (body) {
+          paper.textContent = peekPreview(body);
+        })
+        .catch(function () {});
+
+    wrap.appendChild(text);
+    wrap.appendChild(peek);
+    return wrap;
+  }
+  function peekPreview(body) {
+    return String(body || "")
       .split("\n")
       .filter(function (l) {
         return l.trim();
       })
       .slice(0, 14)
       .join("\n");
-    peek.appendChild(paper);
-
-    wrap.appendChild(text);
-    wrap.appendChild(peek);
-    return wrap;
   }
-  // Artifacts belong to the message, not to the step that happened to make them:
-  // a document produced halfway through a turn shouldn't be buried in a tool
-  // gutter above three more paragraphs of reply.
-  //
-  // They hang off the TURN, after `.body`, rather than inside it. Inside, the
-  // best we could do is move the container to the end each time one lands — and
-  // the reply is still streaming, so the next prose block appends after it and
-  // the document ends up in the middle again. Outside the body it has nothing to
-  // race: `.body` is the turn's last child, so anything after it is last, always.
-  function addArtifact(rec, el) {
-    if (!rec.artifacts) {
-      rec.artifacts = document.createElement("div");
-      rec.artifacts.className = "artifacts";
-      rec.turn.appendChild(rec.artifacts);
-    }
-    rec.artifacts.appendChild(el);
-  }
-  function renderResearchResult(t, output) {
-    // The `done` progress event already built the card (it carries the document;
-    // this result deliberately doesn't). This is the fallback for a run whose
-    // progress never landed, and for events logged before the split.
+  // Any tool's documents, off the event itself. `artifacts[]` is on tool-result
+  // for every tool (see spec, "Artifacts — the promotion path"), so this is not a
+  // research feature — a sandbox step that promotes an output file renders the
+  // same card by the same path.
+  function renderArtifacts(rec, t, data) {
+    if (!Array.isArray(data.artifacts) || !data.artifacts.length) return;
     if (t.artifacted) return;
     t.artifacted = true;
-    if (t.panel) {
-      rsrchState(t.panel.write, "done");
-      rsrchLabel(
-        t.panel.write,
-        output.title ? "Created \u201c" + output.title + "\u201d" : "Report written",
-      );
+    for (const ref of data.artifacts) {
+      addArtifact(rec, artifactCard(ref, t.liveReport));
     }
-    if (output.report) addArtifact(t.block.rec, researchArtifact(t, output));
+    refreshArtifacts(convId); // the header list just gained one
   }
   // Upgrade a fetched page's favicon from the default service .ico using what the
   // page actually declares (fetch.ts pageFavicons): prefer its own SVG favicon
@@ -1784,10 +1825,9 @@ import { mountSidebar } from "./sidebar.js";
         var read = s.read + (s.read === 1 ? " page" : " pages");
         return "Researched · " + read + " in " + Math.round(s.ms / 1000) + "s";
       },
-      result: function (t, output) {
-        if (output && (output.report || output.sources)) renderResearchResult(t, output);
-        else defaultResult(t, output);
-      },
+      // The document renders from the event's artifacts[], the same path any
+      // tool's output files take — nothing tool-specific left to draw here.
+      result: function () {},
     },
     read_artifact: {
       icon: ICON_RESEARCH,
@@ -2078,6 +2118,7 @@ import { mountSidebar } from "./sidebar.js";
     retryCount = 0;
     hat.set("live");
     convId = id;
+    refreshArtifacts(id);
     // Clear the previous conversation's thread synchronously, before the async
     // history load. Otherwise, when the chat shell is re-revealed after a detour
     // through a satellite view, it briefly shows the old conversation (a full

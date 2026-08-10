@@ -908,6 +908,37 @@ body.selecting #selectBtn {
   width: 16px;
   height: 16px;
 }
+/* Documents this chat produced. Sits at the right of the header, and only when
+   there is something to list. */
+.docsbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 4px 8px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+.docsbtn[hidden] {
+  display: none;
+}
+.docsbtn:hover {
+  color: var(--ink);
+  background: var(--bg-sunk);
+  border-color: var(--rule-strong);
+}
+.docsbtn svg {
+  width: 15px;
+  height: 15px;
+}
+.docscount {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
 .scroll {
   flex: 1;
   overflow-y: auto;

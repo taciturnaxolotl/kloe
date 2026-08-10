@@ -244,6 +244,7 @@ export class JobDriver {
       model: spec.model,
       abortSignal: signal,
       store: this.store,
+      blobs: this.blobs,
       owner,
       conversationId: actor.conversationId,
       project,

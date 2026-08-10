@@ -24,6 +24,27 @@ export const Event = {
 } as const;
 export type EventName = (typeof Event)[keyof typeof Event];
 
+/**
+ * A document a tool produced: a reference, never bytes (spec, "Artifacts — the
+ * promotion path"). Agent-made files use the same content-addressed blob store
+ * as user uploads — one mechanism — so an artifact can be downloaded, fed back
+ * into a later tool, or materialized into the sandbox by its sha256.
+ *
+ * `name` is the document's identity within a conversation; writing it again
+ * makes a new version rather than a new document.
+ */
+export interface ArtifactRef {
+  sha256: string;
+  /** Filename, e.g. "hack-club-funding.md". */
+  name: string;
+  /** Human title for the card; falls back to the name. */
+  title?: string;
+  mime: string;
+  size: number;
+  /** Assigned by the store when the reference is recorded. */
+  version?: number;
+}
+
 /** A blob referenced by a message (bytes in the BlobStore, keyed by sha256). */
 export interface AttachmentRef {
   sha256: string;
@@ -139,6 +160,8 @@ export interface ToolResultData {
   toolCallId: string;
   toolName: string;
   output: unknown;
+  /** Documents this tool produced. References only — bytes live in the blob store. */
+  artifacts?: ArtifactRef[];
   /** True when the tool threw / errored rather than returning a result. */
   isError?: boolean;
 }
