@@ -80,13 +80,27 @@ export function ditherFill(canvas, frac) {
   });
 }
 
-// A compact band trailing a front at `progress` (0..1) — the gap draining.
+/** How far the band trails behind its own front, as a fraction of the width. */
+const TRAIL = 0.34;
+
+/**
+ * A compact band travelling left to right — the gap draining.
+ *
+ * `progress` runs 0..1 but the front runs past the right edge, because the band
+ * is what you watch and the band is BEHIND the front. Stopping the front at the
+ * edge left a bright band parked there for the whole hold, looking stalled a
+ * hair short of done. The front leads by its own trail length, so at progress 1
+ * the tail has cleared the edge too. The faint baseline fades out with it, so
+ * what's left is nothing rather than a residue.
+ */
 export function ditherSweep(canvas, progress) {
+  const front = progress * (1 + TRAIL);
+  const base = 0.03 * (1 - progress);
   paint(canvas, 3, (p) => [
-    0.03 +
+    base +
       0.3 *
-        ((1 - smoothstep(progress - 0.02, progress + 0.1, p)) *
-          smoothstep(progress - 0.34, progress - 0.02, p)),
+        ((1 - smoothstep(front - 0.02, front + 0.1, p)) *
+          smoothstep(front - TRAIL, front - 0.02, p)),
     170,
   ]);
 }
