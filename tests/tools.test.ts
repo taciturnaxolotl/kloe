@@ -45,11 +45,29 @@ const INFO = {
 test("sandboxDescription tells the truth about the network, both ways", () => {
   const off = sandboxDescription(INFO, false);
   expect(off).toContain("NO network access");
-  expect(off).not.toContain("apk add …");
+  expect(off).not.toContain("package installs work");
 
   const on = sandboxDescription({ ...INFO, network: true }, false);
-  expect(on).toContain("apk add");
+  expect(on).toContain("package installs work");
   expect(on).not.toContain("NO network access");
+});
+
+test("sandboxDescription claims isolation only where the sandbox actually has it", () => {
+  // With networking on it reaches whatever the daemon's host can route to, so
+  // any promise about the user's network or services is a lie the model would
+  // act on. The filesystem claim is the one that survives.
+  const d = sandboxDescription({ ...INFO, network: true }, false);
+  expect(d).toContain("cannot see their files");
+  expect(d).not.toMatch(/cannot reach their.*network/);
+});
+
+test("sandboxDescription asserts nothing about what the image ships", () => {
+  // It is pointed at whatever image config names — bare alpine or a Debian
+  // image with python and git already in it — so naming a shell or a package
+  // manager as fact is drift waiting to happen.
+  const d = sandboxDescription(INFO, false);
+  expect(d).not.toContain("busybox) and core utilities");
+  expect(d).toContain("command -v python3");
 });
 
 test("sandboxDescription states the image and both timeouts in seconds", () => {

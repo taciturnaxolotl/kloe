@@ -299,16 +299,17 @@ function getAttachment(store: Store, blobs: BlobStore, executor: Executor, conve
 export function sandboxDescription(info: SandboxInfo, hasAttachments: boolean): string {
   const secs = (ms: number) => Math.round(ms / 1000);
   const net = info.network
-    ? "It HAS network access, so `apk add …` (or pip/npm) works and installed packages persist for the rest of the chat."
+    ? "It HAS network access, so package installs work and persist for the rest of the chat — use the image's own " +
+      "package manager (`apt-get install -y …`, `apk add …`, whichever it has). Reach only for what the task needs."
     : "It has NO network access: downloads, package installs, and any command that reaches out will fail. Work with what is in the image and what you are given.";
   return [
     "Run a shell command in an isolated sandbox — a Linux container private to this conversation. " +
-      "Returns the exit code, stdout, and stderr. It is NOT the user's machine: it cannot reach their " +
-      "filesystem, their network, or any service they run, and it is torn down when the chat goes idle.",
+      "Returns the exit code, stdout, and stderr. It is NOT the user's machine: it cannot see their files, " +
+      "and it is torn down when the chat goes idle.",
     "",
     `Environment: the \`${info.image}\` image, ${info.cpus} cpu, ${info.memory} memory, no root outside the container. ` +
-      "Assume a minimal image — `sh` (busybox) and core utilities, not a full toolchain. " +
-      "Check with `command -v python3 || command -v node` before building on an interpreter rather than assuming one. " +
+      "Do not assume what is installed, in either direction — the image may be a bare busybox or may already carry " +
+      "a language runtime and a toolchain. `command -v python3` costs one call and settles it. " +
       net,
     "",
     `Time: a command is killed at ${secs(info.defaultTimeoutMs)}s by default. If it will legitimately take longer ` +
