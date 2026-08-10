@@ -1356,6 +1356,7 @@ import { mountSidebar } from "./sidebar.js";
     } else {
       if (t.entry) t.entry.output = data.output;
       toolUI(t.toolName).result(t, data.output); // success rendering is per-tool
+      renderArtifacts(rec, t, data); // documents, whichever tool made them
     }
     t.block.activeTool = null; // this tool finished
     blockUpdateHead(t.block);
@@ -1425,16 +1426,113 @@ import { mountSidebar } from "./sidebar.js";
   // with copy and download. One pane, reused — opening a second artifact
   // replaces the first rather than stacking.
   var paneDoc = null;
+  // The pane has two modes and one frame: the conversation's documents, and one
+  // of them open. Same panel either way — a list that behaved like a dropdown
+  // while the document behaved like a panel would be two idioms for one thing.
+  var paneMode = "doc";
+  function showPane() {
+    $("pane").hidden = false;
+    $("app").classList.add("pane-open");
+  }
+  function paneChrome(mode) {
+    paneMode = mode;
+    $("paneBack").hidden = mode !== "doc" || !artifactList.length;
+    $("paneDocActions").hidden = mode !== "doc";
+  }
+  /** The conversation's documents, newest first. */
+  function openPaneList() {
+    paneDoc = null;
+    paneChrome("list");
+    $("paneTitle").textContent =
+      artifactList.length + (artifactList.length === 1 ? " document" : " documents");
+    var body = $("paneBody");
+    body.innerHTML = "";
+    var list = document.createElement("div");
+    list.className = "doclist";
+    artifactList.forEach(function (a) {
+      var row = document.createElement("button");
+      row.type = "button";
+      row.className = "docrow";
+      var name = document.createElement("span");
+      name.className = "docname";
+      name.textContent = a.title || a.name;
+      var meta = document.createElement("span");
+      meta.className = "docmeta";
+      meta.textContent =
+        a.name + (a.versions > 1 ? " · v" + a.version : "") + " · " + fmtBytes(a.size);
+      row.appendChild(name);
+      row.appendChild(meta);
+      row.addEventListener("click", function () {
+        openPane(a);
+      });
+      list.appendChild(row);
+    });
+    body.appendChild(list);
+    body.scrollTop = 0;
+    showPane();
+  }
+  /**
+   * Citation markers, upgraded to source pills.
+   *
+   * The markdown keeps plain `[1]` links and a numbered Sources list, because a
+   * downloaded file has to read correctly on its own. The pill is the renderer's
+   * job: a bare number tells you nothing about whether to believe the sentence
+   * you just read, and "propublica.org" tells you a great deal. Titles come from
+   * the document's own bibliography, so this needs nothing the file doesn't have.
+   */
+  function parseSources(md) {
+    var out = {};
+    var re = /^(\d+)\.\s+\[([^\]]*)\]\(([^)\s]+)\)/gm;
+    var m = re.exec(md);
+    while (m) {
+      out[Number(m[1])] = { title: m[2], url: m[3] };
+      m = re.exec(md);
+    }
+    return out;
+  }
+  function enhanceCitations(root, sources) {
+    root.querySelectorAll("a").forEach(function (a) {
+      var m = /^\[(\d+)\]$/.exec((a.textContent || "").trim());
+      if (!m) return;
+      var src = sources[Number(m[1])];
+      var host = domainOf(a.href) || "source";
+      a.className = "cite";
+      a.target = "_blank";
+      a.rel = "noopener noreferrer nofollow";
+      // Native tooltip: the page title and its URL, which is what you want to
+      // know before deciding whether to follow it.
+      a.title = (src && src.title ? src.title + "\n" : "") + a.href;
+      a.textContent = "";
+      var img = document.createElement("img");
+      img.className = "citefav";
+      img.alt = "";
+      img.loading = "lazy";
+      img.src = "https://icons.duckduckgo.com/ip3/" + host + ".ico";
+      img.onerror = function () {
+        img.remove();
+      };
+      var label = document.createElement("span");
+      label.textContent = host;
+      a.appendChild(img);
+      a.appendChild(label);
+    });
+  }
+  function fmtBytes(n) {
+    if (!n) return "0 B";
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return Math.round(n / 1024) + " KB";
+    return (n / (1024 * 1024)).toFixed(1) + " MB";
+  }
   // Artifacts are blob references, so the pane fetches the bytes rather than the
   // event carrying them: content-addressed and immutable, which is exactly the
   // cache the browser is good at (one GET per sha, then never again).
   function openPane(doc) {
     paneDoc = doc;
+    paneChrome("doc");
     $("paneTitle").textContent = doc.title || doc.name;
     var body = $("paneBody");
     body.innerHTML = "";
-    $("pane").hidden = false;
-    $("app").classList.add("pane-open");
+    showPane();
     var want = doc.sha256;
     fetch("/api/blobs/" + encodeURIComponent(doc.sha256))
       .then(function (r) {
@@ -1445,6 +1543,7 @@ import { mountSidebar } from "./sidebar.js";
         paneDoc.content = text;
         body.innerHTML = "";
         renderStaticMd(body, text);
+        enhanceCitations(body, parseSources(text));
         body.scrollTop = 0;
       })
       .catch(function () {
@@ -1458,8 +1557,6 @@ import { mountSidebar } from "./sidebar.js";
     $("paneBody").innerHTML = "";
     $("app").classList.remove("pane-open");
   }
-  // The report is already markdown text, so a blob URL saves it without a round
-  // trip to the server; it's revoked as soon as the click is dispatched.
   // The blob endpoint sets Content-Disposition from `?name`, so the browser
   // saves it under its real filename without the app re-encoding the bytes.
   function downloadMd() {
@@ -1514,28 +1611,17 @@ import { mountSidebar } from "./sidebar.js";
       .catch(function () {});
   }
   function mountDocsButton() {
-    var btn = $("docsBtn");
-    btn.addEventListener("click", function (e) {
+    // Toggling: a second press on an open list closes it, the way a panel
+    // toggle should behave.
+    $("docsBtn").addEventListener("click", function () {
       if (!artifactList.length) return;
-      e.stopPropagation();
-      var r = btn.getBoundingClientRect();
-      showContextMenu(
-        r.right,
-        r.bottom + 6,
-        artifactList.map(function (a) {
-          return {
-            label: (a.title || a.name) + (a.versions > 1 ? " · v" + a.version : ""),
-            onClick: function () {
-              openPane(a);
-            },
-          };
-        }),
-        { align: "right", trigger: btn },
-      );
+      if (paneMode === "list" && !$("pane").hidden) closePane();
+      else openPaneList();
     });
   }
   function mountPane() {
     mountDocsButton();
+    $("paneBack").addEventListener("click", openPaneList);
     $("paneClose").addEventListener("click", closePane);
     $("paneCopy").addEventListener("click", function () {
       if (!paneDoc) return;
@@ -1564,13 +1650,15 @@ import { mountSidebar } from "./sidebar.js";
       );
     });
     document.addEventListener("keydown", function (e) {
-      if (e.key === "Escape" && paneDoc) closePane();
+      if (e.key !== "Escape" || $("pane").hidden) return;
+      // Escape unwinds one level: a document returns to the list it came from.
+      if (paneMode === "doc" && artifactList.length) openPaneList();
+      else closePane();
     });
   }
-  // A finished report is a document, so it stops looking like a running job. The
-  // live panel (timeline, tally, streaming text) is scaffolding for work in
-  // progress; once the work is done it's replaced by a card that names the thing
-  // and opens it in the pane.
+  // A document, as a card: it names the thing, shows a scrap of it, and opens it
+  // in the pane. Built from a blob reference, so this is not research-specific —
+  // any tool's promoted file renders the same way.
   function artifactCard(ref, peekText) {
     var title = ref.title || ref.name;
     var wrap = document.createElement("button");
@@ -1629,6 +1717,23 @@ import { mountSidebar } from "./sidebar.js";
   // for every tool (see spec, "Artifacts — the promotion path"), so this is not a
   // research feature — a sandbox step that promotes an output file renders the
   // same card by the same path.
+  // Artifacts belong to the message, not to the step that happened to make them:
+  // a document produced halfway through a turn shouldn't be buried in a tool
+  // gutter above three more paragraphs of reply.
+  //
+  // They hang off the TURN, after `.body`, rather than inside it. Inside, the
+  // best we could do is move the container to the end each time one lands — and
+  // the reply is still streaming, so the next prose block appends after it and
+  // the document ends up in the middle again. Outside the body it has nothing to
+  // race: `.body` is the turn's last child, so anything after it is last, always.
+  function addArtifact(rec, el) {
+    if (!rec.artifacts) {
+      rec.artifacts = document.createElement("div");
+      rec.artifacts.className = "artifacts";
+      rec.turn.appendChild(rec.artifacts);
+    }
+    rec.artifacts.appendChild(el);
+  }
   function renderArtifacts(rec, t, data) {
     if (!Array.isArray(data.artifacts) || !data.artifacts.length) return;
     if (t.artifacted) return;
@@ -1830,9 +1935,13 @@ import { mountSidebar } from "./sidebar.js";
         var read = s.read + (s.read === 1 ? " page" : " pages");
         return "Researched · " + read + " in " + Math.round(s.ms / 1000) + "s";
       },
-      // The document renders from the event's artifacts[], the same path any
-      // tool's output files take — nothing tool-specific left to draw here.
-      result: function () {},
+      // The document renders from the event's artifacts[] like any other tool's
+      // output files, so there's nothing left to draw here — just fold the panel
+      // away. It opened itself to show the work; the work is over, and the step
+      // summary ("Researched · 35 pages in 214s") says what happened.
+      result: function (t) {
+        if (t.row.tagName === "DETAILS") t.row.open = false;
+      },
     },
     get_attachment: {
       icon: FILE_SVG,
