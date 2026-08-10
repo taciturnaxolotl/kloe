@@ -65,11 +65,14 @@
 
       <div class="scroll" id="scroll">
         <div class="thread" id="thread"></div>
-        <button class="jump" id="jump" aria-label="Scroll to latest" title="Scroll to latest"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
       </div>
 
       <div class="dock">
+        <!-- The jump button anchors to the composer, not to the thread: inside
+             .scroll it was absolutely positioned against a scrolling box, so it
+             drifted up into the middle of the text as you scrolled. -->
         <div class="dockinner">
+          <button class="jump" id="jump" type="button" title="Scroll to latest"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>Jump to bottom</button>
           <div class="queue hidden" id="queue" aria-live="polite">
             <div class="qhead">
               <span class="qtitle">Queued</span>

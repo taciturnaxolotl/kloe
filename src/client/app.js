@@ -2455,12 +2455,58 @@ import { mountSidebar } from "./sidebar.js";
   });
   scroll.addEventListener("scroll", function () {
     atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;
-    jump.style.display = atBottom ? "none" : "flex";
+    jump.classList.toggle("show", !atBottom);
   });
+  // Glide to the end rather than teleporting, so it's clear the thread moved
+  // rather than swapped — but on our clock, not the browser's. Native smooth
+  // scrolling paces itself by distance and takes well over a second down a long
+  // conversation. Streaming's own autoScroll stays instant; a tween per flush
+  // would fight itself.
+  // Snappy off the line, and distance barely lengthens it: a screen away and a
+  // hundred screens away should both feel like one flick.
+  var JUMP_BASE_MS = 80;
+  var JUMP_MS_PER_PX = 0.06;
+  var JUMP_MAX_MS = 500;
+  var jumpAnim = null;
+  function glideToBottom() {
+    if (jumpAnim) cancelAnimationFrame(jumpAnim);
+    jumpAnim = null;
+    var from = scroll.scrollTop;
+    var dist = scroll.scrollHeight - scroll.clientHeight - from;
+    if (dist <= 0 || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      scroll.scrollTop = scroll.scrollHeight;
+      return;
+    }
+    // Short hops shouldn't take as long as long ones, but nothing takes longer
+    // than the ceiling.
+    var ms = Math.min(JUMP_MAX_MS, JUMP_BASE_MS + dist * JUMP_MS_PER_PX);
+    var t0 = null;
+    jumpAnim = requestAnimationFrame(function step(now) {
+      if (t0 === null) t0 = now;
+      var p = Math.min(1, (now - t0) / ms);
+      var eased = 1 - (1 - p) ** 3; // easeOutCubic, same as the context gauge
+      // Re-read the end each frame: a live run can extend the thread mid-flight.
+      scroll.scrollTop = from + (scroll.scrollHeight - scroll.clientHeight - from) * eased;
+      if (p < 1) jumpAnim = requestAnimationFrame(step);
+      else {
+        jumpAnim = null;
+        scroll.scrollTop = scroll.scrollHeight;
+      }
+    });
+  }
+  // Our own scrollTop writes fire `scroll`, so a wheel/touch is how we tell that
+  // the user changed their mind. Give way immediately when they do.
+  function cancelGlide() {
+    if (!jumpAnim) return;
+    cancelAnimationFrame(jumpAnim);
+    jumpAnim = null;
+  }
+  scroll.addEventListener("wheel", cancelGlide, { passive: true });
+  scroll.addEventListener("touchstart", cancelGlide, { passive: true });
   jump.addEventListener("click", function () {
     atBottom = true;
-    jump.style.display = "none";
-    scroll.scrollTop = scroll.scrollHeight;
+    jump.classList.remove("show");
+    glideToBottom();
   });
   // Keep the view pinned to the bottom while `atBottom` as the thread grows —
   // opening a large conversation, async enrich (code/math), and images all add
