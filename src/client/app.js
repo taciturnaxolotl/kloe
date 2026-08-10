@@ -3051,9 +3051,17 @@ import { mountSidebar } from "./sidebar.js";
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") closePicker();
   });
+  // How far from the end before the jump button is worth offering, in viewport
+  // heights. Two separate thresholds on purpose: `atBottom` decides whether a
+  // streaming reply keeps the view pinned, so it has to mean "essentially at the
+  // end" — while the button is only useful once scrolling back is a chore.
+  // Sharing one number would either unpin the stream early or offer a shortcut
+  // to somewhere already on screen.
+  var JUMP_AFTER_SCREENS = 2.5;
   scroll.addEventListener("scroll", function () {
-    atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;
-    jump.classList.toggle("show", !atBottom);
+    var gap = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight;
+    atBottom = gap < 40;
+    jump.classList.toggle("show", gap > scroll.clientHeight * JUMP_AFTER_SCREENS);
   });
   // Glide to the end rather than teleporting, so it's clear the thread moved
   // rather than swapped — but on our clock, not the browser's. Native smooth
