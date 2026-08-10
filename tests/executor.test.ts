@@ -101,3 +101,58 @@ liveTest(
   },
   90_000,
 );
+
+liveTest(
+  "a blob written in comes back out byte-identical, including binary",
+  async () => {
+    const e = new LocalDockerExecutor("alpine:3.20", 30_000, false, 600_000);
+    const session = "test-" + Math.random().toString(36).slice(2);
+    // Bytes that would not survive a text round-trip: NUL, high bytes, a lone
+    // 0xff. `docker exec -i` pipes stdin through untouched, which is the whole
+    // reason this path uses `cat >` rather than a tar or a base64 hop.
+    const bytes = new Uint8Array([0, 1, 2, 255, 254, 10, 13, 0, 65, 66]);
+    try {
+      await e.putFile(session, "/workspace/inputs/blob.bin", bytes);
+      const r = await e.run({ command: "wc -c < /workspace/inputs/blob.bin", session });
+      expect(r.stdout.trim()).toBe(String(bytes.length));
+
+      // Promotion: the outbox is drained, not merely read.
+      await e.run({
+        command:
+          "mkdir -p /workspace/outputs && cp /workspace/inputs/blob.bin /workspace/outputs/out.bin",
+        session,
+      });
+      const got = await e.harvest(session, "/workspace/outputs", {
+        maxFiles: 10,
+        maxBytes: 1_000_000,
+      });
+      expect(got).toHaveLength(1);
+      expect(got[0]!.path).toBe("out.bin");
+      expect(Array.from(got[0]!.bytes)).toEqual(Array.from(bytes));
+      // Drained: a second harvest finds nothing, so a later step can't re-promote it.
+      expect(
+        await e.harvest(session, "/workspace/outputs", { maxFiles: 10, maxBytes: 1e6 }),
+      ).toEqual([]);
+    } finally {
+      e.disposeSession(session);
+    }
+  },
+  120_000,
+);
+
+liveTest(
+  "harvesting a workspace with no outbox is empty, not an error",
+  async () => {
+    const e = new LocalDockerExecutor("alpine:3.20", 30_000, false, 600_000);
+    const session = "test-" + Math.random().toString(36).slice(2);
+    try {
+      await e.run({ command: "true", session });
+      expect(
+        await e.harvest(session, "/workspace/outputs", { maxFiles: 5, maxBytes: 1e6 }),
+      ).toEqual([]);
+    } finally {
+      e.disposeSession(session);
+    }
+  },
+  90_000,
+);

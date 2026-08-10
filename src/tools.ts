@@ -225,11 +225,69 @@ function readArtifact(store: Store, blobs: BlobStore, conversationId: string) {
   });
 }
 
+/**
+ * A safe single path segment. The model picks the name; it never picks the
+ * directory, so a name can carry no separators, no traversal and no leading dot.
+ */
+function safeSegment(name: string): string {
+  const base = name.replace(/[\\/]/g, "-").replace(/^\.+/, "").trim();
+  return base.slice(0, 80) || "file";
+}
+
+/**
+ * Pull a file into the sandbox so a tool can operate on it.
+ *
+ * The spec's universal invariant: every attachment and every artifact is
+ * addressable by a stable handle and can be materialized into the workspace on
+ * demand — independent of whether it ever appeared in context. An image the
+ * model already saw can still be pulled in to be resized; a 200MB archive it
+ * never saw can be pulled in and unpacked. Inlining is a convenience for what
+ * fits in a prompt; this is how the bytes are actually worked with.
+ */
+function getAttachment(store: Store, blobs: BlobStore, executor: Executor, conversationId: string) {
+  return tool({
+    description:
+      "Copy a file from this conversation — something the user attached, or a " +
+      "document produced earlier — into the sandbox at /workspace/inputs/<name>, " +
+      "so you can run commands against it. Works for any file of any size and " +
+      "any type, including ones you were never shown the contents of. Name it " +
+      "exactly as it appears in the conversation.",
+    inputSchema: jsonSchema<{ name: string }>({
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The file's name, e.g. 'budget.csv'." },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    }),
+    execute: async ({ name }, { abortSignal }) => {
+      const files = store.listFiles(conversationId);
+      const hit = files.find((f) => f.name === name) ?? files.find((f) => f.sha256 === name);
+      if (!hit) {
+        return files.length
+          ? `No file named "${name}" in this conversation. Available: ${files.map((f) => f.name).join(", ")}.`
+          : "This conversation has no files to pull in.";
+      }
+      const blob = await blobs.get(hit.sha256);
+      if (!blob) return `The bytes for "${name}" are missing from the blob store.`;
+      const path = `/workspace/inputs/${safeSegment(hit.name)}`;
+      await executor.putFile(
+        conversationId,
+        path,
+        new Uint8Array(await blob.arrayBuffer()),
+        abortSignal,
+      );
+      return `Copied ${hit.name} (${blob.size} bytes, ${hit.mime}) to ${path}.`;
+    },
+  });
+}
+
 // A shell command in the sandbox executor (docker locally, a spindle microVM on
 // the homelab later). Offered only when a sandbox is configured. Marked
 // `sandbox` so the (future) durable loop routes it to the executor rather than
 // running it in-process; today its `execute` calls the executor directly.
-function runShell(executor: Executor, session?: string) {
+function runShell(executor: Executor, ctx: ToolContext) {
+  const session = ctx.conversationId;
   return tool({
     description:
       "Run a shell command in an isolated sandbox — a Linux container private to this " +
@@ -237,7 +295,11 @@ function runShell(executor: Executor, session?: string) {
       "(e.g. `apk add git`) PERSIST across calls in this chat, so you can build up state " +
       "step by step. Returns the exit code, stdout, and stderr. No network unless the " +
       "deployment enables it. It is NOT the user's machine — it can't reach their real " +
-      "filesystem or services, and it's torn down when the conversation ends.",
+      "filesystem or services, and it's torn down when the conversation ends.\n\n" +
+      "The workspace is scratch: it dies with the container. To KEEP a file, write it " +
+      "to /workspace/outputs/ — anything there is saved as a document the user can " +
+      "open and download, and is then removed from the directory. Files the user " +
+      "attached, and documents from earlier turns, arrive via get_attachment.",
     inputSchema: jsonSchema<{ command: string }>({
       type: "object",
       properties: {
@@ -249,9 +311,78 @@ function runShell(executor: Executor, session?: string) {
       required: ["command"],
       additionalProperties: false,
     }),
-    execute: async ({ command }, { abortSignal }) =>
-      formatExecResult(await executor.run({ command, session }, abortSignal)),
+    execute: async ({ command }, { abortSignal }) => {
+      const result = formatExecResult(await executor.run({ command, session }, abortSignal));
+      const artifacts = session ? await promoteOutputs(executor, ctx, session, abortSignal) : [];
+      // Shape only shifts when there IS something to carry, so the ordinary
+      // command keeps returning the plain transcript it always did.
+      return artifacts.length ? { output: result, artifacts } : result;
+    },
   });
+}
+
+/**
+ * Drain /workspace/outputs into blobs after a command.
+ *
+ * The spec's promotion rule, in one place: if it wasn't promoted, it was
+ * scratch. Auto-harvesting means a model that writes a chart to the outbox gets
+ * a real document without having to know about a save tool — and the actor takes
+ * it from here, refcounting and versioning it like any other artifact.
+ */
+async function promoteOutputs(
+  executor: Executor,
+  ctx: ToolContext,
+  session: string,
+  signal?: AbortSignal,
+): Promise<ArtifactRef[]> {
+  if (!ctx.blobs) return [];
+  const cfg = getConfig();
+  let files: Awaited<ReturnType<Executor["harvest"]>>;
+  try {
+    files = await executor.harvest(
+      session,
+      "/workspace/outputs",
+      { maxFiles: MAX_PROMOTED_FILES, maxBytes: cfg.blobs.maxBytes },
+      signal,
+    );
+  } catch (e) {
+    // A failed harvest costs the files, not the command's result.
+    console.warn("[sandbox] harvest failed:", (e as Error).message);
+    return [];
+  }
+  const out: ArtifactRef[] = [];
+  for (const f of files) {
+    const ref = await ctx.blobs.put(f.bytes);
+    const name = safeSegment(f.path.split("/").pop() ?? f.path);
+    const mime = mimeForName(name);
+    ctx.store?.recordBlob(ref.sha256, mime, ref.size);
+    out.push({ sha256: ref.sha256, name, mime, size: ref.size });
+  }
+  return out;
+}
+
+/** Cap on files promoted from one command, so a runaway loop can't blob a tree. */
+const MAX_PROMOTED_FILES = 20;
+
+/** A coarse mime from a filename — enough for rendering and Content-Type. */
+function mimeForName(name: string): string {
+  const ext = name.slice(name.lastIndexOf(".") + 1).toLowerCase();
+  const table: Record<string, string> = {
+    md: "text/markdown",
+    txt: "text/plain",
+    csv: "text/csv",
+    json: "application/json",
+    html: "text/html",
+    svg: "image/svg+xml",
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    pdf: "application/pdf",
+    zip: "application/zip",
+  };
+  return table[ext] ?? "application/octet-stream";
 }
 
 /**
@@ -311,11 +442,27 @@ const REGISTRY: Array<{
         : null,
   },
   {
+    name: "get_attachment",
+    executor: "in-proc",
+    // Needs a sandbox to put the file INTO; without one there's nowhere for it
+    // to go, and without files there's nothing to fetch.
+    create: (ctx) => {
+      const e = getExecutor();
+      return e &&
+        ctx.store &&
+        ctx.blobs &&
+        ctx.conversationId &&
+        ctx.store.listFiles(ctx.conversationId).length
+        ? getAttachment(ctx.store, ctx.blobs, e, ctx.conversationId)
+        : null;
+    },
+  },
+  {
     name: "run_shell",
     executor: "sandbox",
     create: (ctx) => {
       const e = getExecutor();
-      return e ? runShell(e, ctx.conversationId) : null;
+      return e ? runShell(e, ctx) : null;
     },
   },
 ];

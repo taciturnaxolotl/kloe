@@ -89,3 +89,36 @@ test("different names in one conversation are different documents", () => {
       .sort(),
   ).toEqual(["a.md", "b.md"]);
 });
+
+test("the sandbox sees one list of files: attachments and documents alike", () => {
+  // The spec's rule is that agent output shares the store with user uploads, so
+  // "open the PDF from turn 1" and "reuse the report from turn 3" are the same
+  // operation on the same kind of handle.
+  const store = fresh();
+  const db = (
+    store as unknown as { db: { query: (s: string) => { run: (...a: unknown[]) => void } } }
+  ).db;
+  db.query("INSERT INTO conversations (id, created_at, last_seq) VALUES ('c1', ?, 0)").run(
+    Date.now(),
+  );
+  db.query(
+    "INSERT INTO events (id, conversation_id, seq, event, data, created_at) VALUES ('c1:1','c1',1,'user-message',?,?)",
+  ).run(
+    JSON.stringify({
+      content: "have a look",
+      attachments: [{ sha256: "d".repeat(64), name: "budget.csv", mime: "text/csv", kind: "file" }],
+    }),
+    Date.now(),
+  );
+  record(store, "c1", "report.md", "e".repeat(64));
+
+  const files = store.listFiles("c1");
+  expect(files).toEqual([
+    { name: "budget.csv", sha256: "d".repeat(64), mime: "text/csv", kind: "attachment" },
+    { name: "report.md", sha256: "e".repeat(64), mime: "text/markdown", kind: "document" },
+  ]);
+});
+
+test("a conversation with no files lists none", () => {
+  expect(fresh().listFiles("c1")).toEqual([]);
+});

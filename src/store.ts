@@ -804,6 +804,49 @@ export class Store {
     return version;
   }
 
+  /**
+   * Every file this conversation can hand to the sandbox: what the user
+   * attached, and what its tools produced.
+   *
+   * One list because the sandbox doesn't care which is which — the spec's rule
+   * is that agent output shares the content-addressed store with user uploads,
+   * so "reuse an artifact from turn 3" and "open the PDF from turn 1" are the
+   * same operation on the same kind of handle. `kind` is only there so a wrong
+   * name can be answered with a useful list.
+   */
+  listFiles(conversationId: string): Array<{
+    name: string;
+    sha256: string;
+    mime: string;
+    kind: "attachment" | "document";
+  }> {
+    const attachments = this.db
+      .prepare(
+        `SELECT DISTINCT json_extract(a.value, '$.sha256') AS sha256,
+                json_extract(a.value, '$.name')   AS name,
+                json_extract(a.value, '$.mime')   AS mime
+           FROM events e, json_each(json_extract(e.data, '$.attachments')) a
+          WHERE e.conversation_id = ?
+            AND e.event IN ('user-message', 'queued-message')`,
+      )
+      .all(conversationId) as Array<{ sha256: string; name: string; mime: string }>;
+    const docs = this.listArtifacts(conversationId);
+    return [
+      ...attachments.map((a) => ({
+        name: a.name,
+        sha256: a.sha256,
+        mime: a.mime || "application/octet-stream",
+        kind: "attachment" as const,
+      })),
+      ...docs.map((d) => ({
+        name: d.name,
+        sha256: d.sha256,
+        mime: d.mime,
+        kind: "document" as const,
+      })),
+    ];
+  }
+
   /** Every version of every document in a conversation, newest first. */
   artifactVersions(conversationId: string, name: string): ArtifactVersion[] {
     return this.db

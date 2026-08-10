@@ -1712,6 +1712,11 @@ import { mountSidebar } from "./sidebar.js";
     return i < 0 ? s : s.slice(0, i) + " …";
   }
   function renderShellResult(t, output) {
+    // A command that promoted files returns { output, artifacts } instead of the
+    // bare transcript; the documents render from the event, so only the text
+    // belongs in the terminal card.
+    if (output && typeof output === "object" && typeof output.output === "string")
+      output = output.output;
     var term = document.createElement("div");
     term.className = "term";
     if (t.input && t.input.command) {
@@ -1828,6 +1833,16 @@ import { mountSidebar } from "./sidebar.js";
       // The document renders from the event's artifacts[], the same path any
       // tool's output files take — nothing tool-specific left to draw here.
       result: function () {},
+    },
+    get_attachment: {
+      icon: FILE_SVG,
+      row: function (input) {
+        return (input && input.name) || "get_attachment";
+      },
+      summary: function (steps, active) {
+        var n = lastInput(steps).name;
+        return (active ? "Loading " : "Loaded ") + (n || "a file") + " into the sandbox";
+      },
     },
     read_artifact: {
       icon: ICON_RESEARCH,

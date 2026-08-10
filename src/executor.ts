@@ -39,12 +39,44 @@ export interface ExecResult {
   timedOut: boolean;
 }
 
+/** A file drained out of the sandbox's outbox. */
+export interface HarvestedFile {
+  /** Path relative to the outbox root, e.g. "chart.png" or "data/out.csv". */
+  path: string;
+  bytes: Uint8Array;
+}
+
 export interface Executor {
   /** A short tag for logs/UI ("docker", "kata"). */
   readonly kind: string;
   run(spec: ExecSpec, signal?: AbortSignal): Promise<ExecResult>;
+  /**
+   * Materialize bytes inside the sandbox, creating parent directories. This is
+   * how a blob — a user attachment or an earlier document — becomes a file the
+   * model can actually operate on.
+   */
+  putFile(session: string, path: string, bytes: Uint8Array, signal?: AbortSignal): Promise<void>;
+  /**
+   * Drain the outbox: every file under `dir`, returned and then removed.
+   *
+   * Removing is what makes it an outbox rather than a directory. The workspace
+   * is scratch and dies with the container; a file is only durable once it has
+   * been promoted to a blob, so leaving copies behind would mean re-harvesting
+   * the same file on every later step.
+   */
+  harvest(
+    session: string,
+    dir: string,
+    limits: { maxFiles: number; maxBytes: number },
+    signal?: AbortSignal,
+  ): Promise<HarvestedFile[]>;
   /** Tear down a conversation's persistent sandbox (on delete). Best-effort. */
   disposeSession(session: string): void;
+}
+
+/** Single-quote a path for `sh -c`, so a name can't break out of its command. */
+function shq(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
 const MAX_OUTPUT = 100_000; // cap each stream so a runaway command can't flood the transcript
@@ -197,6 +229,74 @@ export class LocalDockerExecutor implements Executor {
         dockerQuiet(["rm", "-f", s.name], this.env);
       }
     }
+  }
+
+  /**
+   * Write bytes into the container over `docker exec -i`, straight down stdin
+   * into `cat >`. No tar, no temp file on this host, and binary-safe: the CLI
+   * pipes stdin through untouched.
+   */
+  async putFile(
+    session: string,
+    path: string,
+    bytes: Uint8Array,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const s = this.ensureSession(session);
+    await s.ready;
+    const dir = path.slice(0, path.lastIndexOf("/")) || "/";
+    const proc = Bun.spawn(
+      ["docker", "exec", "-i", s.name, "sh", "-c", `mkdir -p ${shq(dir)} && cat > ${shq(path)}`],
+      { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: this.env, signal },
+    );
+    proc.stdin.write(bytes);
+    await proc.stdin.end();
+    const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
+    if (code !== 0) throw new Error(`could not write ${path}: ${stderr.trim() || `exit ${code}`}`);
+  }
+
+  async harvest(
+    session: string,
+    dir: string,
+    limits: { maxFiles: number; maxBytes: number },
+    signal?: AbortSignal,
+  ): Promise<HarvestedFile[]> {
+    const s = this.sessions.get(session);
+    if (!s) return []; // no sandbox ran, so nothing to drain
+    await s.ready;
+    // Size-filter in `find` rather than after reading: a file too big to promote
+    // shouldn't be pulled across the socket just to be discarded.
+    const kb = Math.max(1, Math.floor(limits.maxBytes / 1024));
+    const listed = await dockerRun(
+      [
+        "exec",
+        s.name,
+        "sh",
+        "-c",
+        `cd ${shq(dir)} 2>/dev/null && find . -type f -size -${kb}k | sed 's|^./||' | head -n ${limits.maxFiles}`,
+      ],
+      this.env,
+      signal,
+    );
+    const paths = listed.stdout
+      .split("\n")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const out: HarvestedFile[] = [];
+    for (const p of paths) {
+      const proc = Bun.spawn(["docker", "exec", s.name, "cat", `${dir}/${p}`], {
+        stdout: "pipe",
+        stderr: "pipe",
+        env: this.env,
+        signal,
+      });
+      const [buf, code] = await Promise.all([new Response(proc.stdout).arrayBuffer(), proc.exited]);
+      if (code === 0) out.push({ path: p, bytes: new Uint8Array(buf) });
+    }
+    // Drain only what was taken. A file that arrived mid-harvest, or was skipped
+    // for size, stays for the next step rather than vanishing unpromoted.
+    for (const f of out) dockerQuiet(["exec", s.name, "rm", "-f", `${dir}/${f.path}`], this.env);
+    return out;
   }
 
   disposeSession(session: string): void {
