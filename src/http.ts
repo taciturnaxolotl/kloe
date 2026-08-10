@@ -3,7 +3,7 @@ import { brotliCompressSync, gzipSync, constants as zlibConstants } from "node:z
 import { ConversationActor, type Subscriber, type WireEvent } from "./actor";
 import { authEnabled, gateApi, getSession, sessionUser } from "./auth";
 import type { BlobStore } from "./blobs";
-import { ACTOR_IDLE_TTL_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
+import { ACTOR_IDLE_TTL_MS, SSE_RETRY_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
 import { Event, parseEventId } from "./events";
 import { getExecutor } from "./executor";
 import { getRegistry } from "./inference";
@@ -301,6 +301,8 @@ function openStream(conversationId: string, req: Request, store: Store): Respons
   // connection is what triggers replay via Last-Event-ID. Keepalive comments
   // keep proxies (and Bun's idle timeout) from closing the idle connection.
   const sseTransform = new TransformStream<StreamItem, string>({
+    // The reconnect delay is ours to set, not the browser's to guess.
+    start: (controller) => controller.enqueue(`retry: ${SSE_RETRY_MS}\n\n`),
     transform: (item, controller) => {
       if (item === KEEPALIVE) controller.enqueue(": keepalive\n\n");
       else controller.enqueue(sseBlock(item));

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FsBlobStore } from "../src/blobs";
 import { Catalog } from "../src/catalog";
+import { SSE_RETRY_MS } from "../src/config";
 import { JobDriver } from "../src/drive";
 import { apiRoutes, evictIdleActors, getActor } from "../src/http";
 import { setRegistry } from "../src/inference";
@@ -74,6 +75,7 @@ async function readSse(res: Response, until: (frames: Frame[]) => boolean): Prom
         else if (line.startsWith("id:")) id = line.slice(3).trim();
         else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
       }
+      if (!dataLines.length) continue; // control frame (`retry:`), not an event
       frames.push({ event, id, data: JSON.parse(dataLines.join("\n")) });
       if (until(frames)) {
         await reader.cancel();
@@ -170,6 +172,16 @@ test("prompt → SSE stream emits user-message, message-start, deltas, message-e
   expect((delta!.data as { delta: string }).delta).toBe("echo: hello kloe");
   const seqs = frames.map((f) => Number(f.id.split(":")[1]!));
   for (let i = 1; i < seqs.length; i++) expect(seqs[i]!).toBeGreaterThan(seqs[i - 1]!);
+});
+
+test("the stream sets its own reconnect interval", async () => {
+  // Without `retry:` the browser guesses (~3s in Chrome), which makes a server
+  // restart feel like an outage. It has to be the first thing on the wire.
+  const res = await fetch(`${base}/api/conversations/retryfield/stream`);
+  const reader = res.body!.getReader();
+  const head = new TextDecoder().decode((await reader.read()).value);
+  await reader.cancel();
+  expect(head.startsWith(`retry: ${SSE_RETRY_MS}\n\n`)).toBe(true);
 });
 
 test("resume via HTTP Last-Event-ID replays only the gap", async () => {

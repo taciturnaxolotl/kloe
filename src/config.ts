@@ -6,6 +6,11 @@ export const HEARTBEAT_INTERVAL_MS = 10_000;
 export const LEASE_GRACE_MS = 30_000;
 export const REAP_INTERVAL_MS = 5_000;
 export const SUBSCRIBER_HEARTBEAT_MS = 15_000;
+// Told to the browser as the SSE `retry:` field. Without it browsers use their
+// own default (~3s in Chrome), which makes a server restart feel like an outage;
+// a blip should heal before the user notices. Longer waits are the client's job:
+// it takes the schedule over once a gap lingers, so this never becomes a hammer.
+export const SSE_RETRY_MS = 500;
 export const MAX_SSE_FIELD_BYTES = 8 * 1024;
 // Actors with no subscribers and no active run are evicted after this TTL.
 export const ACTOR_IDLE_TTL_MS = 5 * 60_000;
