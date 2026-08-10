@@ -36,6 +36,7 @@ import {
   TOOL_ICON as ICON_TOOL,
   SEND_ICON as SEND,
 } from "./icons.js";
+import { mountRosette } from "./rosette.js";
 import { createRouter } from "./router.js";
 import { mountSidebar } from "./sidebar.js";
 
@@ -2307,6 +2308,7 @@ import { mountSidebar } from "./sidebar.js";
     retryDelay = RETRY_MIN;
     retryCount = 0;
     hat.set("live");
+    $("chatShell").classList.remove("loaded"); // until this one's history lands
     convId = id;
     // The open document belongs to the conversation being left, so it goes with
     // it rather than hanging over the next one.
@@ -2338,6 +2340,10 @@ import { mountSidebar } from "./sidebar.js";
     if (convId !== id) return; // switched conversations while loading
     var tail = await streamInto(res, id, null, true); // phase 1: newest turns at the bottom
     if (convId !== id) return;
+    // History has settled, so an empty thread now means an empty CONVERSATION
+    // rather than one still loading. Only then may the empty state show — the
+    // CSS can see that #thread has no turns, but not why.
+    $("chatShell").classList.add("loaded");
     // No completed turn carried usage for this conversation (a new/empty chat, or
     // one whose last turn had none): the gauge is still showing the previous
     // conversation's value, so drain it to empty now.
@@ -2717,6 +2723,10 @@ import { mountSidebar } from "./sidebar.js";
   var conversations = [];
   var dialogs = mountDialogs();
   mountPane();
+  // The empty state. CSS decides when it's visible (see .emptystate); the
+  // rosette itself sleeps whenever it has no box to draw into, so mounting it
+  // unconditionally costs nothing in a conversation that already has messages.
+  mountRosette($("rosette"));
   // The section the router is currently showing ("chat" | "conversations" |
   // "projects" | "settings"). The sidebar's "New chat" highlight is a chat-view
   // concern, so it only lights up while we're actually on chat.

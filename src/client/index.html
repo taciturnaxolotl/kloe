@@ -70,6 +70,11 @@
 
       <div class="scroll" id="scroll">
         <div class="thread" id="thread"></div>
+        <!-- Empty state. Shown by CSS whenever #thread has no turns, so nothing
+             has to remember to toggle it. -->
+        <div class="emptystate" id="emptyState" aria-hidden="true">
+          <div class="rosette"><canvas id="rosette"></canvas></div>
+        </div>
       </div>
 
       <div class="dock">

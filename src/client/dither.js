@@ -7,14 +7,14 @@
  * pattern stays chunky and legible instead of dissolving into a gradient.
  */
 
-const BAYER = [
+export const BAYER = [
   [0, 8, 2, 10],
   [12, 4, 14, 6],
   [3, 11, 1, 9],
   [15, 7, 13, 5],
 ];
 
-function smoothstep(a, b, x) {
+export function smoothstep(a, b, x) {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
 }

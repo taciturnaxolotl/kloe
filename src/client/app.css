@@ -948,6 +948,36 @@ body.selecting #selectBtn {
   position: relative;
   scrollbar-gutter: stable;
 }
+/* The empty state, shown only for a conversation that really is empty.
+   `:empty` alone isn't that: #thread is also empty while an existing
+   conversation's history is still in flight, which flashed the drawing on every
+   open. `.loaded` is set once the history has settled, so the two conditions
+   together mean "no turns, and we know why". */
+.emptystate {
+  display: none;
+  position: absolute;
+  inset: 0;
+  place-items: center;
+  padding: 24px;
+  pointer-events: none;
+}
+.chatshell.loaded .thread:empty ~ .emptystate {
+  display: grid;
+}
+.rosette {
+  width: min(52vh, 60%, 420px);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  /* The overlay itself is click-through so the thread still scrolls; only the
+     drawing takes the pointer, because clicking it sends a message across. */
+  pointer-events: auto;
+  cursor: pointer;
+}
+.rosette canvas {
+  display: block;
+}
+
 .thread {
   max-width: var(--measure);
   margin: 0 auto;
