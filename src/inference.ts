@@ -8,7 +8,7 @@ import { ProviderRegistry } from "./providers";
 import { RateLimiter } from "./ratelimit";
 import { getConfig } from "./settings";
 import type { Store } from "./store";
-import { toolSet } from "./tools";
+import { type ToolContext, toolSet } from "./tools";
 
 /**
  * True when provider reasoning metadata carries a signature — the marker of a
@@ -240,6 +240,13 @@ export interface RunOptions {
   conversationId?: string;
   /** Set when the conversation is filed under a project. */
   project?: RunProject;
+  /**
+   * Where a long-running tool reports from mid-execution. Bypasses this
+   * generator on purpose (see ConversationActor.toolProgress): while a tool runs,
+   * the provider stream — and so this generator — is parked, and anything routed
+   * through it would surface only once the tool had already finished.
+   */
+  onProgress?: ToolContext["onProgress"];
 }
 
 export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGenerator<RunStep> {
@@ -257,6 +264,7 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
     owner: opts.owner,
     conversationId: opts.conversationId,
     model, // deep_research runs its subagent on the same model as the run
+    onProgress: opts.onProgress,
   });
   const hasTools = Object.keys(tools).length > 0;
   // Output cap: an explicit provider override wins; otherwise fall back to the

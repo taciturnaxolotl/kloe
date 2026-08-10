@@ -14,6 +14,7 @@ export const Event = {
   ReasoningDelta: "reasoning-delta",
   ReasoningSig: "reasoning-signature",
   ToolCall: "tool-call",
+  ToolProgress: "tool-progress",
   ToolResult: "tool-result",
   MsgEnd: "message-end",
   RunStart: "run-started",
@@ -108,6 +109,29 @@ export interface ToolCallData {
   input: unknown;
 }
 
+/**
+ * A tool reporting from inside its own execution, before it returns.
+ *
+ * Most tools are quick enough that a spinner is the whole story. A tool that
+ * runs for minutes is not — `deep_research` searches, reads, and drafts for long
+ * enough that silence reads as a hang. These carry what it is doing right now,
+ * and they are durable like everything else, so reloading mid-run rebuilds the
+ * live view instead of showing an empty step.
+ *
+ * `phase` is the tool's own vocabulary; the client renders what it recognizes and
+ * ignores the rest, so a tool can add a phase without a client change.
+ */
+export interface ToolProgressData {
+  threadId: string;
+  runId: string;
+  messageId: string;
+  toolCallId: string;
+  toolName: string;
+  phase: string;
+  /** Phase-specific payload — a query, a page, a chunk of the draft. */
+  data?: unknown;
+}
+
 export interface ToolResultData {
   threadId: string;
   runId: string;
@@ -178,6 +202,7 @@ export type EventData =
   | ReasoningDeltaData
   | ReasoningSignatureData
   | ToolCallData
+  | ToolProgressData
   | ToolResultData
   | MessageEndData
   | RunErrorData

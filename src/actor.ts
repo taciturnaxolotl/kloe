@@ -724,4 +724,29 @@ export class ConversationActor {
     });
     this.currentRunId = null;
   }
+
+  /**
+   * Log a running tool's progress (see ToolProgressData).
+   *
+   * Called from inside a tool's `execute`, which is why it doesn't travel the
+   * RunStep generator like tool-call and tool-result do: that generator is parked
+   * on the provider stream while a tool runs, so anything routed through it would
+   * arrive only once the tool had already finished, which is the one moment
+   * progress is worthless. Persisting straight to the log gets it out now.
+   *
+   * The seq counter is shared with the run's own events and JS is single
+   * threaded, so this interleaves cleanly. It may still land before the tool-call
+   * event when the provider streams the call and starts the tool in the same
+   * tick; the client creates the step on whichever arrives first.
+   */
+  toolProgress(p: {
+    runId: string;
+    messageId: string;
+    toolCallId: string;
+    toolName: string;
+    phase: string;
+    data?: unknown;
+  }): void {
+    this.persist(Event.ToolProgress, { threadId: this.conversationId, ...p });
+  }
 }

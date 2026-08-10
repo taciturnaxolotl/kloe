@@ -59,6 +59,40 @@ test("a usage step is stamped onto the message-end event", async () => {
   expect(data.usage).toEqual({ inputTokens: 12, outputTokens: 5, totalTokens: 17 });
 });
 
+test("tool progress reaches subscribers while the tool is still running", async () => {
+  // A tool reports from inside its own execute, so this bypasses the RunStep
+  // generator — which, mid-tool, is parked on the provider stream. The test
+  // mirrors that: the progress goes out from inside the run, before the step
+  // that follows it, and the durable log keeps it so a reload can replay it.
+  const a = new ConversationActor("t-prog", store);
+  const events: WireEvent[] = [];
+  a.follow({ push: (e) => events.push(e), closed: false });
+
+  await a.runText("r-p", "m-p", async function* (_signal) {
+    a.toolProgress({
+      runId: "r-p",
+      messageId: "m-p",
+      toolCallId: "call-1",
+      toolName: "deep_research",
+      phase: "read",
+      data: { url: "https://a.test/x" },
+    });
+    yield { kind: "text", chunk: "after" };
+  });
+
+  const names = events.map((e) => e.event);
+  expect(names.indexOf(Event.ToolProgress)).toBeGreaterThanOrEqual(0);
+  expect(names.indexOf(Event.ToolProgress)).toBeLessThan(names.lastIndexOf(Event.TextDelta));
+  const p = events.find((e) => e.event === Event.ToolProgress)!.data as {
+    phase: string;
+    toolCallId: string;
+    threadId: string;
+  };
+  expect(p).toMatchObject({ phase: "read", toolCallId: "call-1", threadId: "t-prog" });
+  // Durable, like every other event: replay sees it.
+  expect(store.replay("t-prog", 0).some((e) => e.event === Event.ToolProgress)).toBe(true);
+});
+
 test("message-end omits usage when no usage step is yielded", async () => {
   const a = new ConversationActor("t-nousage", store);
   const events: WireEvent[] = [];

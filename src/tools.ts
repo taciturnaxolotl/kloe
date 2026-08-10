@@ -83,13 +83,20 @@ function fetchUrl(provider: FetchProvider) {
  * what the description spends its words on: a model that reaches for this to
  * check one fact has bought a minute of latency for nothing.
  */
-function deepResearch(model: LanguageModel, search: SearchProvider, fetcher: FetchProvider) {
+function deepResearch(
+  model: LanguageModel,
+  search: SearchProvider,
+  fetcher: FetchProvider,
+  onProgress?: ToolContext["onProgress"],
+) {
   return tool({
     description:
       "Hand off a question that needs real research — several searches, several " +
       "pages read, findings reconciled across sources — to a subagent that does " +
-      "the whole job and returns a cited summary. It runs a bounded loop " +
-      "(search → read → find the gap → search again) and can take a few minutes. " +
+      "the whole job and returns a cited summary. It splits the question into " +
+      "angles, researches them in parallel, and merges the findings — it can read " +
+      "a couple of hundred pages and take ten minutes or more, so treat it as a " +
+      "job worth waiting for rather than a lookup. " +
       "Use it for open questions where the answer has to be assembled: comparisons " +
       "across vendors or papers, the current state of a moving topic, anything " +
       "where one page won't settle it. Do NOT use it to look up a single fact or " +
@@ -109,8 +116,17 @@ function deepResearch(model: LanguageModel, search: SearchProvider, fetcher: Fet
       required: ["question"],
       additionalProperties: false,
     }),
-    execute: async ({ question }, { abortSignal }) =>
-      runResearch({ question, model, search, fetcher, signal: abortSignal }),
+    execute: async ({ question }, { toolCallId, abortSignal }) =>
+      runResearch({
+        question,
+        model,
+        search,
+        fetcher,
+        signal: abortSignal,
+        onProgress: onProgress
+          ? (phase, data) => onProgress({ toolCallId, toolName: "deep_research", phase, data })
+          : undefined,
+      }),
   });
 }
 
@@ -182,7 +198,7 @@ const REGISTRY: Array<{
       if (!ctx.model || !getConfig().research.enabled) return null;
       const search = createSearchProvider();
       const fetcher = createFetchProvider();
-      return search && fetcher ? deepResearch(ctx.model, search, fetcher) : null;
+      return search && fetcher ? deepResearch(ctx.model, search, fetcher, ctx.onProgress) : null;
     },
   },
   {
@@ -286,6 +302,12 @@ export interface ToolContext {
    * model in hand.
    */
   model?: LanguageModel;
+  /**
+   * Report from inside a long-running tool, so the UI can show the work as it
+   * happens rather than a spinner that lasts minutes. Absent when nothing is
+   * listening (a nested run, a test), and every caller treats it as optional.
+   */
+  onProgress?: (p: { toolCallId: string; toolName: string; phase: string; data?: unknown }) => void;
 }
 
 /**

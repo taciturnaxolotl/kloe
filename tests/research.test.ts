@@ -1,6 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import type { FetchProvider, FetchResult } from "../src/fetch";
-import { bindCitations, researchBudget, runResearch, type Source } from "../src/research";
+import {
+  bindCitations,
+  reportFilename,
+  researchBudget,
+  runResearch,
+  type Source,
+} from "../src/research";
 import type { SearchProvider, SearchResult } from "../src/search";
 import { loadConfig, setConfig } from "../src/settings";
 
@@ -73,24 +79,35 @@ function stubFetch(pages: Record<string, Partial<FetchResult>>): FetchProvider {
 }
 
 /**
- * A model that answers with a fixed script: each entry is one step's reply,
- * either tool calls or final text. Enough to drive the loop without a provider.
+ * A model that answers by ROLE rather than by position.
+ *
+ * The run is a planner, then workers in parallel, then a synthesizer — so a
+ * positional script would be nondeterministic the moment two workers interleave.
+ * Each call is identified by the tools it was given, which is exactly what
+ * distinguishes the roles in the real code too.
  */
-function scriptedModel(script: Array<{ text?: string; calls?: Array<[string, unknown]> }>) {
-  let step = 0;
+type Turn = { text?: string; calls?: Array<[string, unknown]> };
+function roleModel(roles: { plan?: Turn[]; worker?: Turn[]; synth?: Turn[] }) {
+  const seen = { plan: 0, worker: 0, synth: 0 };
   return {
     specificationVersion: "v4",
     provider: "test",
     modelId: "scripted",
     supportedUrls: {},
-    doStream: async () => {
-      const turn = script[Math.min(step++, script.length - 1)]!;
+    doStream: async (opts: { tools?: Array<{ name: string }> }) => {
+      const names = (opts.tools ?? []).map((t) => t.name);
+      const role = names.includes("plan")
+        ? "plan"
+        : names.includes("read_page")
+          ? "worker"
+          : "synth";
+      const script = roles[role] ?? [];
+      const turn = script[Math.min(seen[role]++, script.length - 1)] ?? {};
       const parts: Array<Record<string, unknown>> = [];
       for (const [name, input] of turn.calls ?? []) {
-        const id = `c${parts.length}${step}`;
         parts.push({
           type: "tool-call",
-          toolCallId: id,
+          toolCallId: `c${role}${seen[role]}${name}`,
           toolName: name,
           input: JSON.stringify(input),
         });
@@ -117,75 +134,197 @@ function scriptedModel(script: Array<{ text?: string; calls?: Array<[string, unk
   } as unknown as Parameters<typeof runResearch>[0]["model"];
 }
 
-test("the loop ledgers what it read and returns it as cited sources", async () => {
-  const model = scriptedModel([
-    { calls: [["read_page", { url: "https://a.test/x" }]] },
-    { text: "Findings about the thing [1]." },
-    { text: "Findings about the thing [1]." }, // the citation pass echoes the draft
-  ]);
+const PLAN = (...angles: string[]): Turn => ({ calls: [["plan", { angles }]] });
+const NOTES = (notes: string): Turn => ({ calls: [["submit_findings", { notes }]] });
+const FILE = (content: string, title = "T", filename = "f"): Turn => ({
+  calls: [["write_report", { title, filename, content }]],
+});
+/** The common shape: one angle, one worker that reads nothing, one report. */
+function simpleRun(over: Partial<Parameters<typeof runResearch>[0]> = {}) {
+  return runResearch({
+    question: "what",
+    model: roleModel({
+      plan: [PLAN("only angle")],
+      worker: [NOTES("notes")],
+      synth: [FILE("Findings.")],
+    }),
+    search: stubSearch([]),
+    fetcher: stubFetch({}),
+    ...over,
+  });
+}
+
+test("the model names its own document, but not where the name points", () => {
+  expect(reportFilename("Hack Club Funding")).toBe("hack-club-funding.md");
+  expect(reportFilename("hack-club-funding.md")).toBe("hack-club-funding.md");
+  // Separators, traversal and leading dots are stripped, not escaped: the model
+  // picks a name, never a path.
+  expect(reportFilename("../../etc/passwd")).toBe("etc-passwd.md");
+  expect(reportFilename("/tmp/x")).toBe("tmp-x.md");
+  expect(reportFilename(".hidden")).toBe("hidden.md");
+  expect(reportFilename("   ")).toBe("research-findings.md");
+  expect(reportFilename("a".repeat(200)).length).toBeLessThanOrEqual(63);
+});
+
+test("the filed report is the deliverable, and workers never write it", async () => {
   const out = await runResearch({
     question: "what",
-    model,
+    model: roleModel({
+      plan: [PLAN("angle a")],
+      worker: [{ text: "thinking out loud", calls: [["submit_findings", { notes: "raw notes" }]] }],
+      synth: [FILE("# Real report\n\nBody.", "How X works", "how-x")],
+    }),
     search: stubSearch([]),
-    fetcher: stubFetch({ "https://a.test/x": { title: "A page" } }),
-    budget: { maxSteps: 4 },
+    fetcher: stubFetch({}),
   });
-  expect(out.sources).toEqual([{ n: 1, url: "https://a.test/x", title: "A page" }]);
-  expect(out.report).toContain("[1]");
-  expect(out.stats.read).toBe(1);
+  expect(out.report).toBe("# Real report\n\nBody.");
+  expect(out.title).toBe("How X works");
+  expect(out.filename).toBe("how-x.md");
+  // The worker's narration and its raw notes are both upstream of the document.
+  expect(out.report).not.toContain("thinking out loud");
+  expect(out.report).not.toContain("raw notes");
+});
+
+test("the question is split across parallel workers", async () => {
+  const seen: Array<{ phase: string; data?: unknown }> = [];
+  await runResearch({
+    question: "what",
+    model: roleModel({
+      plan: [PLAN("angle a", "angle b", "angle c")],
+      worker: [NOTES("notes")],
+      synth: [FILE("Done.")],
+    }),
+    search: stubSearch([]),
+    fetcher: stubFetch({}),
+    onProgress: (phase, data) => seen.push({ phase, data }),
+  });
+  const agents = seen.filter((p) => p.phase === "agent");
+  expect(agents).toHaveLength(3);
+  const planned = seen.find((p) => p.phase === "plan")?.data as { angles: string[] } | undefined;
+  expect(planned?.angles).toEqual(["angle a", "angle b", "angle c"]);
+  // Every worker is started before any of them finishes: they run together.
+  const phases = seen.map((p) => p.phase);
+  expect(phases.lastIndexOf("agent")).toBeLessThan(phases.indexOf("agent-done"));
+  expect(phases.indexOf("synthesis")).toBeGreaterThan(phases.lastIndexOf("agent-done"));
+});
+
+test("a planner that fails still researches, as one angle", async () => {
+  const seen: string[] = [];
+  const out = await runResearch({
+    question: "the whole question",
+    model: roleModel({
+      plan: [{ text: "I refuse to use the tool" }],
+      worker: [NOTES("notes")],
+      synth: [FILE("Done.")],
+    }),
+    search: stubSearch([]),
+    fetcher: stubFetch({}),
+    onProgress: (phase) => seen.push(phase),
+  });
+  expect(out.report).toBe("Done.");
+  expect(seen.filter((p) => p === "agent")).toHaveLength(1);
+});
+
+test("workers share one page budget, one numbering and one dedupe", async () => {
+  // Two workers, each asking for the same two pages: four requests, one URL
+  // apiece after redirects — so two sources, numbered once, not four.
+  const out = await runResearch({
+    question: "what",
+    model: roleModel({
+      plan: [PLAN("a", "b")],
+      worker: [
+        {
+          calls: [
+            ["read_page", { url: "https://a.test/1" }],
+            ["read_page", { url: "https://a.test/2" }],
+          ],
+        },
+        NOTES("notes"),
+      ],
+      synth: [FILE("Both pages said things [1][2].")],
+    }),
+    search: stubSearch([]),
+    fetcher: stubFetch({}),
+    budget: { maxSources: 10 },
+  });
+  expect(out.stats.read).toBe(2);
+  expect(out.sources.map((s) => s.n)).toEqual([1, 2]);
 });
 
 test("the page-read cap is enforced by the harness, not the prompt", async () => {
-  // Four reads asked for, two allowed. The third and fourth come back as a
-  // budget message rather than a fetch, and never enter the ledger.
-  const model = scriptedModel([
-    {
-      calls: [
-        ["read_page", { url: "https://a.test/1" }],
-        ["read_page", { url: "https://a.test/2" }],
-        ["read_page", { url: "https://a.test/3" }],
-        ["read_page", { url: "https://a.test/4" }],
-      ],
-    },
-    { text: "Done." },
-    { text: "Done." },
-  ]);
+  // Four reads asked for, two allowed. The rest come back as a budget message
+  // rather than a fetch, and never enter the ledger.
   const out = await runResearch({
     question: "what",
-    model,
+    model: roleModel({
+      plan: [PLAN("a")],
+      worker: [
+        {
+          calls: [
+            ["read_page", { url: "https://a.test/1" }],
+            ["read_page", { url: "https://a.test/2" }],
+            ["read_page", { url: "https://a.test/3" }],
+            ["read_page", { url: "https://a.test/4" }],
+          ],
+        },
+        NOTES("notes"),
+      ],
+      synth: [FILE("Done.")],
+    }),
     search: stubSearch([]),
     fetcher: stubFetch({}),
-    budget: { maxSteps: 4, maxSources: 2 },
+    budget: { maxSources: 2 },
   });
   expect(out.stats.read).toBe(2);
 });
 
-test("a redirect onto an already-read page doesn't spend a second slot", async () => {
-  const model = scriptedModel([
-    {
-      calls: [
-        ["read_page", { url: "https://a.test/x" }],
-        ["read_page", { url: "https://a.test/dupe" }],
+test("the run reports its phases as it goes, not only at the end", async () => {
+  const seen: Array<{ phase: string; data?: unknown }> = [];
+  await runResearch({
+    question: "what",
+    model: roleModel({
+      plan: [PLAN("a")],
+      worker: [
+        { calls: [["web_search", { query: "spherical mirrors" }]] },
+        { calls: [["read_page", { url: "https://a.test/x" }]] },
+        NOTES("notes"),
       ],
-    },
-    { text: "Done." },
-    { text: "Done." },
-  ]);
+      synth: [FILE("Findings.")],
+    }),
+    search: stubSearch([{ title: "T", url: "https://a.test/x", snippet: "s" }]),
+    fetcher: stubFetch({ "https://a.test/x": { title: "A page" } }),
+    onProgress: (phase, data) => seen.push({ phase, data }),
+  });
+  const phases = seen.map((p) => p.phase);
+  expect(phases.indexOf("planning")).toBe(0);
+  expect(phases.indexOf("plan")).toBeLessThan(phases.indexOf("agent"));
+  expect(phases.indexOf("search")).toBeLessThan(phases.indexOf("read"));
+  expect(phases.indexOf("read")).toBeLessThan(phases.indexOf("synthesis"));
+  expect(phases[phases.length - 1]).toBe("done");
+  expect(seen.find((p) => p.phase === "read")?.data).toMatchObject({
+    agent: 0,
+    url: "https://a.test/x",
+    title: "A page",
+  });
+});
+
+test("a worker that fails doesn't sink the run", async () => {
+  // The reads happened; only the filing blew up. Thinner, not lost.
   const out = await runResearch({
     question: "what",
-    model,
+    model: roleModel({
+      plan: [PLAN("a", "b")],
+      worker: [{ calls: [["read_page", { url: "https://a.test/1" }]] }, NOTES("notes")],
+      synth: [FILE("Salvaged.")],
+    }),
     search: stubSearch([]),
-    // Both requests land on the same canonical URL.
-    fetcher: {
-      fetch: async () => ({
-        url: "https://a.test/final",
-        title: "One page",
-        content: "body",
-        format: "markdown" as const,
-        truncated: false,
-      }),
-    },
-    budget: { maxSteps: 4, maxSources: 5 },
+    fetcher: stubFetch({}),
   });
+  expect(out.report).toBe("Salvaged.");
   expect(out.stats.read).toBe(1);
+});
+
+test("a run with nothing listening still works", async () => {
+  const out = await simpleRun();
+  expect(out.report).toBe("Findings.");
 });

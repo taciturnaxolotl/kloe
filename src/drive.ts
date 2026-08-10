@@ -168,8 +168,7 @@ export class JobDriver {
     await actor.runText(
       spec.runId,
       spec.messageId,
-      (signal) =>
-        this.streamTimed(messages, spec, signal, owner, actor.conversationId, project, timing),
+      (signal) => this.streamTimed(messages, spec, signal, owner, actor, project, timing),
       (seq) => {
         // Advance the job's durable checkpoint + lease on each flush so a
         // crash mid-run is re-claimed from the last flushed seq.
@@ -236,7 +235,7 @@ export class JobDriver {
     spec: RunSpec,
     signal: AbortSignal,
     owner: string,
-    conversationId: string,
+    actor: ConversationActor,
     project: RunProject | undefined,
     timing?: RunTiming,
   ): AsyncGenerator<RunStep> {
@@ -246,8 +245,11 @@ export class JobDriver {
       abortSignal: signal,
       store: this.store,
       owner,
-      conversationId,
+      conversationId: actor.conversationId,
       project,
+      // A long tool reports straight into the log rather than through this
+      // generator, which is parked on the provider stream while it runs.
+      onProgress: (p) => actor.toolProgress({ runId: spec.runId, messageId: spec.messageId, ...p }),
     })) {
       if (timing && step.kind === "text") {
         if (!timing.firstTokenAt) timing.firstTokenAt = Date.now();

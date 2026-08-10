@@ -149,19 +149,43 @@ const AgentSchema = v.object({
  * conversation (see research.ts). Needs both a search provider and a fetch
  * provider; with either missing the tool is simply not offered.
  *
- * The budget is the whole safety story, so it is config rather than prompt. The
- * defaults are sized for a question worth a few minutes: enough steps to search,
- * read, notice a gap and go again, and a ceiling low enough that a runaway costs
- * one page of tokens rather than a bill.
+ * The budget is the whole safety story, so it is config rather than prompt, and
+ * the defaults are set for depth: a couple of hundred sources across half a
+ * dozen workers, which is what separates a report you'd act on from a summary of
+ * the first page of results. It is not cheap — six workers is roughly six times
+ * the tokens — so these are the dials to turn down, not up.
  */
 const ResearchSchema = v.object({
   enabled: v.optional(v.boolean(), true),
-  /** Provider round-trips in the loop. */
-  maxSteps: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 24),
-  /** Pages the loop may open. Each one is a citable source. */
-  maxSources: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 12),
-  /** Wall clock for the loop plus its citation pass. */
-  timeoutMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1_000)), 240_000),
+  /**
+   * Provider round-trips per worker.
+   *
+   * Usually the binding constraint, and not the obvious one: a worker spends
+   * most of its steps searching, so a low cap starves the reads it was searching
+   * for. A run capped at 20 managed 140 searches and 18 reads.
+   *
+   * Set high enough that it stops being a limit at all — what ends a worker
+   * should be having answered its angle, or the shared page pool running out.
+   * This is the runaway backstop, not the pacing.
+   */
+  maxSteps: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 400),
+  /**
+   * Pages the whole run may open, shared across workers. Each one is a citable
+   * source, so this is the main dial between "a quick look" and "a real report".
+   */
+  maxSources: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 500),
+  /**
+   * Workers running at once, each on its own angle with its own context window.
+   * This is what lets a run cover far more material than one window could hold —
+   * and it costs roughly this multiple in tokens, so it's the expensive dial.
+   */
+  maxAgents: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(12)), 6),
+  /**
+   * Wall clock for planning, the workers, synthesis and citations together.
+   * Generous on purpose: a run reading a couple of hundred pages is a job you
+   * come back to, and the ceiling is there to stop a hang, not to pace the work.
+   */
+  timeoutMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1_000)), 1_800_000),
 });
 
 /** Web-search backing for the `web_search` tool. Disabled by default. */

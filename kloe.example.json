@@ -23,9 +23,10 @@
   },
   "research": {
     "enabled": true,
-    "maxSteps": 24,
-    "maxSources": 12,
-    "timeoutMs": 240000
+    "maxAgents": 6,
+    "maxSteps": 400,
+    "maxSources": 500,
+    "timeoutMs": 1800000
   },
   "fetch": {
     "enabled": true,
