@@ -1683,6 +1683,12 @@ body.selecting #selectBtn {
 .split {
   display: inline-flex;
 }
+/* Explicit, because an author `display` outranks the hidden attribute's UA
+   `display: none` — the same trap `.chatshell[hidden]` documents. Without it the
+   Copy button sits over the document LIST, where it has nothing to copy. */
+.split[hidden] {
+  display: none;
+}
 .split .panebtn:first-child {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
