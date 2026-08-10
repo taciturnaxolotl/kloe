@@ -61,7 +61,7 @@ export function icon(node, attrs) {
 
 export var CONV_ICON = icon(MessageSquare, { "stroke-width": 1.8 });
 export var FILE_ICON = icon(File, { "stroke-width": 1.8 });
-export var SEND_ICON = icon(ArrowUp, { "stroke-width": 2.2 });
+export var SEND_ICON = icon(ArrowUp, { "stroke-width": 2 });
 export var CHEV_ICON = icon(ChevronRight, { class: "chev", "stroke-width": 2.6 });
 export var MORE_ICON = icon(EllipsisVertical);
 export var GRIP_ICON = icon(GripVertical);

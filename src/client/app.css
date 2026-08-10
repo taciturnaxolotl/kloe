@@ -1718,7 +1718,7 @@ body.resizing {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 14px;
+  padding: 6px 10px;
   min-height: 48px;
   border-bottom: 1px solid var(--rule);
 }
@@ -1738,12 +1738,12 @@ body.resizing {
 }
 .panebtn {
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--ink-muted);
   background: none;
   border: 1px solid var(--rule-strong);
   border-radius: var(--radius-md);
-  padding: 5px 10px;
+  padding: 3px 8px;
   cursor: pointer;
 }
 .panebtn:hover {
@@ -1769,14 +1769,14 @@ body.resizing {
 .splitmore {
   display: inline-flex;
   align-items: center;
-  padding: 5px 6px;
+  padding: 3px 4px;
   margin-left: -1px;
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
 }
 .splitmore svg {
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
 }
 /* Whichever half is hovered or focused comes forward, so the shared edge isn't
    painted over by its neighbour. */
@@ -1785,18 +1785,17 @@ body.resizing {
   position: relative;
   z-index: 1;
 }
+/* One size for both, so the header doesn't read as two different weights of
+   control sitting either side of the title. */
 .panefull,
 .panex {
-  width: 30px;
-  height: 30px;
+  width: 26px;
+  height: 26px;
 }
-.panefull svg {
-  width: 15px;
-  height: 15px;
-}
+.panefull svg,
 .panex svg {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
 }
 /* A citation, as a source pill: small enough to sit inside a sentence without
    breaking its rhythm, legible enough to be worth reading. */
@@ -1875,7 +1874,7 @@ body.resizing {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 22px 26px 40px;
+  padding: 18px 20px 40px;
 }
 /* The document reads at a measure, like the conversation does — but centred in
    the pane. Left-aligned, every pixel the pane had beyond the measure piled up
@@ -2627,23 +2626,31 @@ body.resizing {
 
 /* flex:none keeps the button a fixed 36×36 square — without it the flex row
    squeezes it narrower (not square) on a cramped mobile width. */
+/* Send and stop share one slot — one swaps for the other when a run starts — so
+   their box is declared once. Both need the font-size too: `em` resolves against
+   the element's OWN size, so leaving one to inherit made it a pixel smaller than
+   its twin and the outlines stopped lining up. */
+.send,
+.stopbtn {
+  width: 1.75em;
+  height: 1.75em;
+  font-size: 16px;
+  line-height: 1;
+  border-radius: var(--radius-md);
+  padding: 0;
+  flex: none;
+}
 .send {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: none;
-  width: 36px;
-  height: 36px;
   border-radius: var(--radius-md);
   border: 1px solid transparent;
   background: var(--bg-sunk);
   color: var(--ink-faint);
   cursor: default;
   margin-left: 4px;
-  padding: 0;
   font-family: var(--mono);
-  font-size: 16px;
-  line-height: 1;
 }
 .send svg {
   width: 18px;
@@ -2662,22 +2669,17 @@ body.resizing {
   display: none;
   align-items: center;
   justify-content: center;
-  flex: none;
-  width: 36px;
-  height: 36px;
-  border-radius: var(--radius-md);
   border: 1px solid var(--rule-strong);
   background: var(--bg);
   color: var(--ink);
   cursor: pointer;
-  padding: 0;
 }
 .stopbtn:hover {
   background: color-mix(in srgb, var(--ink) 9%, transparent);
 }
 .stopbtn svg {
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
 }
 
 /* ---- steer queue --------------------------------------------------------
