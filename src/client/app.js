@@ -1332,9 +1332,6 @@ import { mountSidebar } from "./sidebar.js";
         rsrchState(p.write, "active");
         rsrchLabel(p.write, d.title ? "Created \u201c" + d.title + "\u201d" : "Writing the report");
         break;
-      case "citing":
-        rsrchLabel(p.write, "Attaching citations");
-        break;
       case "done":
         rsrchState(p.write, "done");
         rsrchLabel(p.write, d.title ? "Created \u201c" + d.title + "\u201d" : "Report written");
@@ -1492,9 +1489,13 @@ import { mountSidebar } from "./sidebar.js";
   }
   function enhanceCitations(root, sources) {
     root.querySelectorAll("a").forEach(function (a) {
-      var m = /^\[(\d+)\]$/.exec((a.textContent || "").trim());
-      if (!m) return;
-      var src = sources[Number(m[1])];
+      // A citation is a link whose whole text is a number that the document's
+      // own bibliography knows. Requiring the number to resolve is what keeps an
+      // ordinary link that happens to read "2024" from becoming a pill.
+      var text = (a.textContent || "").trim();
+      if (!/^\d+$/.test(text)) return;
+      var src = sources[Number(text)];
+      if (!src) return;
       var host = domainOf(a.href) || "source";
       a.className = "cite";
       a.target = "_blank";
