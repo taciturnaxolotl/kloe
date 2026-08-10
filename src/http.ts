@@ -484,14 +484,30 @@ async function serveBlob(
   // path segment so it can't inject header bytes or a Content-Disposition break.
   const safe = filename ? sanitizeFilename(filename) : "";
   const disposition = safe ? `inline; filename="${safe}"` : "inline";
-  return new Response(blob, {
-    headers: {
-      "Content-Type": meta.mime,
-      "Cache-Control": "public, max-age=31536000, immutable",
-      "Content-Disposition": disposition,
-    },
-  });
+  const headers: Record<string, string> = {
+    "Content-Type": meta.mime,
+    "Cache-Control": "public, max-age=31536000, immutable",
+    "Content-Disposition": disposition,
+    // Never let a sniffed type outrank the declared one: a .txt blob whose
+    // bytes start with `<html>` must not become a document.
+    "X-Content-Type-Options": "nosniff",
+  };
+  // Blobs are model- and upload-authored bytes served from the app's own origin,
+  // so anything the browser would run script from has to be defanged. `sandbox`
+  // with no tokens drops the response into an opaque origin with scripting off,
+  // which makes a direct visit to an HTML artifact inert — it cannot read the
+  // session cookie's requests, call /api on the user's behalf, or touch the app.
+  //
+  // The header is ignored for `<img>`/`<embed>` of the same bytes (no document
+  // is created), so inline images keep working. Rendering an artifact as a live
+  // page is a separate, deliberate path: a sandboxed iframe in the client.
+  if (ACTIVE_MIME.test(meta.mime)) headers["Content-Security-Policy"] = "sandbox";
+  return new Response(blob, { headers });
 }
+
+/** Mimes a browser will execute script from when it renders them as a document. */
+const ACTIVE_MIME =
+  /^(text\/html|application\/xhtml\+xml|image\/svg\+xml|(?:text|application)\/xml)\b/i;
 
 /** A filename reduced to one safe segment: no path separators, quotes, or control bytes. */
 function sanitizeFilename(name: string): string {

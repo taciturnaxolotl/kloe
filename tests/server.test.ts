@@ -849,3 +849,22 @@ test("GET /api/blobs/:sha256?name= sets the download filename", async () => {
   expect(cd).not.toContain("/");
   expect(cd).not.toMatch(/[\r\n]/);
 });
+
+// Blobs are model- and upload-authored bytes on the app's own origin, so an
+// HTML artifact must never come back as a live document.
+test("an html blob is served defanged, an image is left alone", async () => {
+  const evil = await blobs.put(new TextEncoder().encode("<script>alert(1)</script>"));
+  store.recordBlob(evil.sha256, "text/html", evil.size);
+  const png = await blobs.put(new Uint8Array([137, 80, 78, 71]));
+  store.recordBlob(png.sha256, "image/png", png.size);
+
+  const html = await fetch(`${base}/api/blobs/${evil.sha256}`);
+  expect(html.headers.get("content-security-policy")).toBe("sandbox");
+  expect(html.headers.get("x-content-type-options")).toBe("nosniff");
+
+  // An image creates no document, so the sandbox header would only be noise —
+  // and inline rendering of attachments has to keep working.
+  const img = await fetch(`${base}/api/blobs/${png.sha256}`);
+  expect(img.headers.get("content-security-policy")).toBeNull();
+  expect(img.headers.get("content-disposition")).toContain("inline");
+});

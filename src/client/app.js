@@ -1424,6 +1424,9 @@ import { mountSidebar } from "./sidebar.js";
   // with copy and download. One pane, reused — opening a second artifact
   // replaces the first rather than stacking.
   var paneDoc = null;
+  // HTML documents show their rendered self by default and their source on
+  // request. Per-open rather than sticky: the point of the pane is the document.
+  var paneSource = false;
   // The pane has two modes and one frame: the conversation's documents, and one
   // of them open. Same panel either way — a list that behaved like a dropdown
   // while the document behaved like a panel would be two idioms for one thing.
@@ -1439,6 +1442,10 @@ import { mountSidebar } from "./sidebar.js";
     // document itself, alongside copy and download.
     $("paneFull").hidden = mode !== "doc";
     $("paneDocActions").hidden = mode !== "doc";
+    // Only a document with a rendering distinct from its source has a source to
+    // switch to; markdown in the pane already IS the rendering.
+    $("paneSourceBtn").hidden = mode !== "doc" || !isHtmlDoc(paneDoc);
+    $("paneSourceBtn").textContent = paneSource ? "Preview" : "Source";
     // The header button and an open pane say the same thing, so only one of them
     // says it. Closing the pane brings the button back.
     $("docsBtn").hidden = !artifactList.length;
@@ -1545,8 +1552,50 @@ import { mountSidebar } from "./sidebar.js";
   // Artifacts are blob references, so the pane fetches the bytes rather than the
   // event carrying them: content-addressed and immutable, which is exactly the
   // cache the browser is good at (one GET per sha, then never again).
+  function isHtmlDoc(doc) {
+    return !!doc && /^text\/html\b/.test(doc.mime || "");
+  }
+  /**
+   * A page, rendered as a page — inside a frame that cannot reach the app.
+   *
+   * `sandbox="allow-scripts"` WITHOUT `allow-same-origin` is the whole security
+   * argument: the two together would hand the document our origin back and undo
+   * the sandbox entirely, so they must never both appear. Scripts alone run in
+   * an opaque origin, which is what makes a chart or a little interactive demo
+   * work while leaving it unable to read the conversation or call the API.
+   *
+   * `srcdoc` rather than pointing the frame at /api/blobs: the served response
+   * carries a `sandbox` CSP that kills scripting outright, which is right for a
+   * stray visit and wrong for the one place we mean to render.
+   */
+  function renderHtmlDoc(body, text) {
+    var frame = document.createElement("iframe");
+    frame.className = "htmlframe";
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    frame.srcdoc = text;
+    body.appendChild(frame);
+  }
+  /** The source behind a rendered page, highlighted by the usual markdown path. */
+  function renderHtmlSource(body, text) {
+    renderStaticMd(body, "```html\n" + text + "\n```");
+  }
+  function paintPaneDoc() {
+    var body = $("paneBody");
+    body.innerHTML = "";
+    var text = paneDoc.content;
+    if (isHtmlDoc(paneDoc)) {
+      if (paneSource) renderHtmlSource(body, text);
+      else renderHtmlDoc(body, text);
+    } else {
+      renderStaticMd(body, stripSources(text));
+      enhanceCitations(body, parseSources(text));
+    }
+    body.scrollTop = 0;
+  }
   function openPane(doc) {
     paneDoc = doc;
+    paneSource = false; // a page opens rendered; the source is the deliberate click
     paneChrome("doc");
     $("paneTitle").textContent = doc.title || doc.name;
     var body = $("paneBody");
@@ -1560,10 +1609,7 @@ import { mountSidebar } from "./sidebar.js";
       .then(function (text) {
         if (!paneDoc || paneDoc.sha256 !== want) return; // opened something else meanwhile
         paneDoc.content = text;
-        body.innerHTML = "";
-        renderStaticMd(body, stripSources(text));
-        enhanceCitations(body, parseSources(text));
-        body.scrollTop = 0;
+        paintPaneDoc();
       })
       .catch(function () {
         if (!paneDoc || paneDoc.sha256 !== want) return;
@@ -1692,6 +1738,12 @@ import { mountSidebar } from "./sidebar.js";
     mountPaneResize();
     $("paneFull").addEventListener("click", togglePaneFull);
     $("paneClose").addEventListener("click", closePane);
+    $("paneSourceBtn").addEventListener("click", function () {
+      if (!paneDoc || !paneDoc.content) return;
+      paneSource = !paneSource;
+      $("paneSourceBtn").textContent = paneSource ? "Preview" : "Source";
+      paintPaneDoc();
+    });
     $("paneCopy").addEventListener("click", function () {
       if (!paneDoc) return;
       var btn = $("paneCopy");
@@ -1744,7 +1796,8 @@ import { mountSidebar } from "./sidebar.js";
     kind.className = "artifactkind";
     // Version only once there IS history — "v1" on a document written once is
     // noise about a thing that hasn't happened.
-    kind.textContent = "Document" + (ref.version > 1 ? " \u00b7 v" + ref.version : "");
+    kind.textContent =
+      (isHtmlDoc(ref) ? "Page" : "Document") + (ref.version > 1 ? " \u00b7 v" + ref.version : "");
     text.appendChild(h);
     text.appendChild(kind);
 
@@ -1755,7 +1808,13 @@ import { mountSidebar } from "./sidebar.js";
     var paper = document.createElement("span");
     paper.className = "artifactpaper";
     peek.appendChild(paper);
-    if (peekText) paper.textContent = peekPreview(peekText);
+    // The peek is meant to be recognizable prose, and a page's opening bytes are
+    // `<!doctype html><head><style>…` — its markup tells you nothing about it,
+    // so preview what the page would SAY rather than how it is built.
+    var forPeek = function (s) {
+      return isHtmlDoc(ref) ? htmlToText(s) : s;
+    };
+    if (peekText) paper.textContent = peekPreview(forPeek(peekText));
     // No live copy (a replayed log): pull just enough of the blob to preview.
     else
       fetch("/api/blobs/" + encodeURIComponent(ref.sha256))
@@ -1763,13 +1822,33 @@ import { mountSidebar } from "./sidebar.js";
           return r.ok ? r.text() : "";
         })
         .then(function (body) {
-          paper.textContent = peekPreview(body);
+          paper.textContent = peekPreview(forPeek(body));
         })
         .catch(function () {});
 
     wrap.appendChild(text);
     wrap.appendChild(peek);
     return wrap;
+  }
+  /**
+   * The words out of a page, for previewing.
+   *
+   * Done with string work rather than by parsing into a detached DOM on purpose:
+   * assigning untrusted markup to innerHTML runs no <script>, but it happily
+   * fetches an <img src=x onerror=…>, and this text arrives from a model. Regex
+   * is the blunter tool and the safe one — it never builds a live node.
+   */
+  function htmlToText(s) {
+    return String(s || "")
+      .replace(/<(script|style|head)\b[\s\S]*?<\/\1>/gi, " ")
+      .replace(/<(br|\/p|\/div|\/h[1-6]|\/li|\/tr)\s*>/gi, "\n")
+      .replace(/<[^>]*>/g, " ")
+      .replace(/&(nbsp|amp|lt|gt|quot|#39);/gi, function (_, e) {
+        return { nbsp: " ", amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" }[e.toLowerCase()];
+      })
+      .replace(/[ \t]+/g, " ")
+      .replace(/\n\s*\n\s*/g, "\n")
+      .trim();
   }
   function peekPreview(body) {
     return String(body || "")

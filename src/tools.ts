@@ -320,7 +320,9 @@ export function sandboxDescription(info: SandboxInfo, hasAttachments: boolean): 
       "step rather than cramming a session into one command. It is still scratch — it dies with the container. " +
       "To KEEP a file, write it to /workspace/outputs/ (already created): anything there is saved as a document the " +
       "user can open and download, and is then removed from the directory, so do not expect to find it again — a " +
-      "second write of the same name becomes a new version." +
+      "second write of the same name becomes a new version. A `.md` file is shown as a formatted document and a " +
+      "`.html` file is shown as a rendered page (its own CSS and scripts run, isolated from the app), so reach for " +
+      "HTML when the result is visual — a chart, a diagram, a small interactive thing — and Markdown when it is prose." +
       (hasAttachments
         ? " Files the user attached, and documents from earlier turns, arrive at /workspace/inputs/ via get_attachment."
         : ""),

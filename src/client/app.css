@@ -1906,6 +1906,21 @@ body.resizing {
   overflow-y: auto;
   padding: 18px 20px 40px;
 }
+/* A rendered page gets the whole pane and none of the pane's chrome: it brings
+   its own background and measure, so padding here would frame someone else's
+   design with ours. The panebody keeps its padding for documents, so this pulls
+   back out of it. */
+.panebody:has(> .htmlframe) {
+  padding: 0;
+  overflow: hidden;
+}
+.htmlframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
 /* The document reads at a measure, like the conversation does — but centred in
    the pane. Left-aligned, every pixel the pane had beyond the measure piled up
    on the right and read as a huge empty gutter. */

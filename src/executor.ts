@@ -144,6 +144,23 @@ async function dockerRun(
   ]);
   return { stdout, stderr, exitCode, timedOut: false };
 }
+/**
+ * How long a control-plane docker call (inspect, rm, ps) may take before we give
+ * up on it. The command itself carries the user's timeout; these are the
+ * bookkeeping calls around it, and they should be instant.
+ *
+ * Without a cap they inherit the daemon's mood: a wedged docker leaves `docker
+ * inspect` hanging forever, and since session startup awaits it, one sick daemon
+ * would hang the turn rather than failing it. An unreachable daemon must look
+ * like a broken sandbox, not like a model thinking.
+ */
+const CONTROL_TIMEOUT_MS = 10_000;
+
+/** A docker call we need the answer to, but never enough to wait indefinitely. */
+function dockerControl(argv: string[], env: DockerEnv): Promise<ExecResult | null> {
+  return dockerRun(argv, env, AbortSignal.timeout(CONTROL_TIMEOUT_MS)).catch(() => null);
+}
+
 /** Fire-and-forget docker command whose output we don't need (rm, etc.). */
 function dockerQuiet(argv: string[], env: DockerEnv): void {
   try {
@@ -287,11 +304,11 @@ export class LocalDockerExecutor implements Executor {
    * Anything other than "running under today's policy" means recreate.
    */
   private async adoptable(name: string): Promise<boolean> {
-    const r = await dockerRun(
+    const r = await dockerControl(
       ["inspect", "-f", '{{.State.Running}} {{index .Config.Labels "kloe-policy"}}', name],
       this.env,
-    ).catch(() => null);
-    if (!r || r.exitCode !== 0) return false; // no such container
+    );
+    if (!r || r.exitCode !== 0) return false; // no such container, or no answer
     const [running, policy] = r.stdout.trim().split(/\s+/);
     return running === "true" && policy === this.policyHash();
   }
@@ -306,10 +323,10 @@ export class LocalDockerExecutor implements Executor {
    * mean abandoned, and the TTL it answers to is the one already documented.
    */
   private async sweepUnclaimed(): Promise<void> {
-    const listed = await dockerRun(
+    const listed = await dockerControl(
       ["ps", "-a", "--filter", "label=kloe-sandbox=1", "--format", "{{.Names}}\t{{.State}}"],
       this.env,
-    ).catch(() => null);
+    );
     if (!listed || listed.exitCode !== 0) return;
     const live = new Set([...this.sessions.values()].map((s) => s.name));
     for (const line of listed.stdout.split("\n")) {
@@ -319,9 +336,10 @@ export class LocalDockerExecutor implements Executor {
         dockerQuiet(["rm", "-f", name], this.env); // a stopped sandbox is dead weight
         continue;
       }
-      const started = await dockerRun(["inspect", "-f", "{{.State.StartedAt}}", name], this.env)
-        .then((r) => Date.parse(r.stdout.trim()))
-        .catch(() => Number.NaN);
+      const started = await dockerControl(
+        ["inspect", "-f", "{{.State.StartedAt}}", name],
+        this.env,
+      ).then((r) => (r ? Date.parse(r.stdout.trim()) : Number.NaN));
       if (Number.isFinite(started) && Date.now() - started > this.idleMs)
         dockerQuiet(["rm", "-f", name], this.env);
     }
@@ -361,7 +379,7 @@ export class LocalDockerExecutor implements Executor {
     // fire-and-forget this replaces — container names are deterministic per
     // conversation, so a `rm -f` racing its own `run` loses often enough to
     // brick the session with "name is already in use".
-    await dockerRun(["rm", "-f", name], this.env).catch(() => null);
+    await dockerControl(["rm", "-f", name], this.env);
     const argv = [
       "run",
       "-d",
@@ -384,7 +402,7 @@ export class LocalDockerExecutor implements Executor {
     // hits the same wall until something removes the container. Clear it and
     // retry once rather than leaving the conversation with a dead sandbox.
     if (r.exitCode !== 0 && /already in use/i.test(r.stderr)) {
-      await dockerRun(["rm", "-f", name], this.env).catch(() => null);
+      await dockerControl(["rm", "-f", name], this.env);
       r = await dockerRun(argv, this.env);
     }
     if (r.exitCode !== 0)
