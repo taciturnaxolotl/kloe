@@ -20,7 +20,7 @@ import {
   Globe,
   GripVertical,
   Hash,
-  ImageOff,
+  Image,
   MessageCirclePlus,
   MessageSquare,
   MessagesSquare,
@@ -90,7 +90,7 @@ export var BRAIN_ICON = icon(Brain, { "stroke-width": 1.7 });
 export var TERMINAL_ICON = icon(SquareTerminal, { "stroke-width": 1.8 });
 export var CHECK_ICON = icon(Check, { "stroke-width": 2.2 });
 export var COPY_ICON = icon(Copy, { "stroke-width": 1.8 });
-export var IMAGE_OFF_ICON = icon(ImageOff, { "stroke-width": 1.8 });
+export var IMAGE_ICON = icon(Image, { "stroke-width": 1.8 });
 /* An icon-shaped hole: holds a menu row's icon column open when the row has no
    icon, so a list where only one item is ticked still reads as one column. */
 export var BLANK_ICON = '<svg viewBox="0 0 24 24"></svg>';

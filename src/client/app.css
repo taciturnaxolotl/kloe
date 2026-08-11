@@ -3009,8 +3009,8 @@ body.resizing {
 }
 
 /* An image whose format this browser can't decode. It keeps the file chip's
-   shape — because that is what it now is, a file you can download — and the
-   crossed-out image icon says why it isn't a thumbnail. */
+   shape — because that is how you use it now, as something to download — but
+   the icon stays an image, since that is what the file still is. */
 .attachments .att.file.noimg .fi svg {
   color: var(--ink-faint);
 }

@@ -39,7 +39,7 @@ import {
   RESEARCH_ICON as ICON_RESEARCH,
   TERMINAL_ICON as ICON_TERMINAL,
   TOOL_ICON as ICON_TOOL,
-  IMAGE_OFF_ICON,
+  IMAGE_ICON,
   SEND_ICON as SEND,
 } from "./icons.js";
 import {
@@ -281,13 +281,13 @@ import { mountSidebar } from "./sidebar.js";
         var img = document.createElement("img");
         img.src = it.url;
         img.alt = it.name;
-        // An image the browser can't decode becomes the icon that says so,
-        // rather than the broken-image glyph, which reads as a failed upload.
+        // An image the browser can't decode still shows as an image — the
+        // broken-image glyph reads as a failed upload, which it isn't.
         img.onerror = function () {
           chip.classList.remove("img");
           var ic = document.createElement("span");
           ic.className = "fi";
-          ic.innerHTML = IMAGE_OFF_ICON;
+          ic.innerHTML = IMAGE_ICON;
           chip.replaceChild(ic, img);
         };
         chip.appendChild(img);
@@ -323,6 +323,10 @@ import { mountSidebar } from "./sidebar.js";
    * So the image is attempted and the browser answers — `onerror` is the only
    * reliable, always-current test of "can you render this?". The cost is the
    * request, which was going to happen anyway.
+   *
+   * It falls back to a plain image icon rather than a crossed-out one: the file
+   * is a perfectly good photo, and this browser's inability to draw it is our
+   * limitation to report quietly, not a defect to mark on the user's upload.
    */
   function unrenderable(link, name) {
     link.className = "att file noimg";
@@ -331,7 +335,7 @@ import { mountSidebar } from "./sidebar.js";
     link.innerHTML = "";
     var ic = document.createElement("span");
     ic.className = "fi";
-    ic.innerHTML = IMAGE_OFF_ICON;
+    ic.innerHTML = IMAGE_ICON;
     var nm = document.createElement("span");
     nm.className = "nm";
     nm.textContent = name;
