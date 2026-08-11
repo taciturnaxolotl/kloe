@@ -70,7 +70,13 @@ function fetchUrl(provider: FetchProvider) {
     description:
       "Fetch a web page and return its main article content as clean markdown " +
       "(navigation, ads, and boilerplate removed). Use it to read a page found " +
-      "via web_search, or any known URL. Provide the full http(s) URL.",
+      "via web_search, or any known URL. Provide the full http(s) URL. " +
+      "A page that can't be read directly is retried by other routes, and the " +
+      "result says which one it came from: `amp` and `rendered` are the page " +
+      "itself, `archive` may be an older copy of it, and `structured` is only " +
+      "the summary the page publishes for search engines — treat that last one " +
+      "as a lead, not as the article. If a page is blocked outright, the error " +
+      "says so: read a different source rather than retrying the same URL.",
     inputSchema: jsonSchema<{ url: string }>({
       type: "object",
       properties: { url: { type: "string", description: "The full http(s) URL to fetch" } },

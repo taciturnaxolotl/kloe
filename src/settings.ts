@@ -81,6 +81,24 @@ const CatwalkSchema = v.object({
  * Enabled by default (no credential needed). `allowPrivate` lets a homelab read
  * its own internal services — off by default, since it disables the SSRF guard.
  */
+/**
+ * An optional headless-browser renderer for pages the plain fetcher can't read:
+ * a JS-only shell, or a page sitting behind an anti-bot challenge. Off unless
+ * configured, because it is somebody's infrastructure — FlareSolverr runs a real
+ * Chrome and answers on :8191.
+ *
+ * It is deliberately a fallback, never the default path. A render costs seconds
+ * where a fetch costs milliseconds, and FlareSolverr serves one browser at a
+ * time, so pointing a parallel research run at it would queue every worker
+ * behind every other one.
+ */
+const RendererSchema = v.object({
+  provider: v.optional(v.picklist(["none", "flaresolverr"]), "none"),
+  endpoint: v.optional(v.string(), "http://localhost:8191/v1"),
+  /** Per-page cap. FlareSolverr's own default is 60s; a challenge takes 5-15s. */
+  timeoutMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 60_000),
+});
+
 const FetchSchema = v.object({
   enabled: v.optional(v.boolean(), true),
   /** Cap on bytes downloaded per page. */
@@ -91,6 +109,12 @@ const FetchSchema = v.object({
   /** Allow fetching private/reserved addresses (disables SSRF protection). */
   allowPrivate: v.optional(v.boolean(), false),
   userAgent: v.optional(v.string(), "Mozilla/5.0 (compatible; kloe/1.0; +https://kloe.dunkirk.sh)"),
+  renderer: section(RendererSchema),
+  /**
+   * Fall back to the Wayback Machine when a page can't be read live. Only ever
+   * fires on failure, and only sends a URL that already didn't work.
+   */
+  archive: v.optional(v.boolean(), true),
 });
 
 /**

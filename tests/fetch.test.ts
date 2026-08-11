@@ -2,9 +2,12 @@ import { expect, test } from "bun:test";
 import {
   assertAllowedUrl,
   createFetchProvider,
+  detectBlockage,
+  FlareSolverrRenderer,
   isPrivateIp,
   LocalFetchProvider,
   rewriteForFetch,
+  structuredRescue,
 } from "../src/fetch";
 
 const publicLookup = async () => [{ address: "93.184.216.34", family: 4 }];
@@ -270,6 +273,203 @@ test("createFetchProvider honors the enabled flag", () => {
       timeoutMs: 1,
       allowPrivate: false,
       userAgent: "x",
+      renderer: { provider: "none", endpoint: "", timeoutMs: 1000 },
+      archive: false,
     }),
   ).toBeInstanceOf(LocalFetchProvider);
+});
+
+// ---- walls, shells, and the ladder out of them ------------------------------
+// Three ways a fetch comes back with nothing, and each wants a different next
+// move — which is the whole reason they're told apart.
+
+test("detectBlockage names the vendor and whether a browser could help", () => {
+  const h = (o: Record<string, string>) => new Headers(o);
+
+  // Cloudflare says so outright on every challenge type.
+  expect(detectBlockage(403, h({ "cf-mitigated": "challenge" }), "")).toEqual({
+    vendor: "cloudflare",
+    kind: "challenge",
+  });
+  expect(detectBlockage(503, h({}), "<title>Just a moment...</title>")).toMatchObject({
+    vendor: "cloudflare",
+    kind: "challenge",
+  });
+  expect(
+    detectBlockage(403, h({ server: "cloudflare" }), "<h1>Attention Required!</h1> error 1020"),
+  ).toEqual({ vendor: "cloudflare", kind: "denied" });
+
+  // Other vendors carry their own tells.
+  expect(detectBlockage(403, h({ "x-datadome": "protected" }), "")?.vendor).toBe("datadome");
+  expect(detectBlockage(403, h({}), "Incapsula incident ID: 1-2-3")?.vendor).toBe("imperva");
+
+  // An ordinary 404 is not a wall.
+  expect(detectBlockage(404, h({}), "<h1>Not found</h1>")).toBeNull();
+  expect(detectBlockage(200, h({}), "<p>a normal page</p>")).toBeNull();
+});
+
+test("a big page that extracts to nothing escalates; a short one doesn't", async () => {
+  // The shell: 100KB of scripts, no text. This is what a JS-only page looks
+  // like, and the only reliable signal is that we got nothing out of a lot.
+  const shell = `<!doctype html><html><head><title>App</title></head><body><div id="root"></div>${"<script>var x=1;</script>".repeat(400)}</body></html>`;
+  let asked = 0;
+  const p = new LocalFetchProvider(
+    opts({
+      archive: false,
+      renderer: {
+        render: async () => {
+          asked++;
+          return {
+            url: "https://spa.test/",
+            status: 200,
+            html: `<html><body><article><h1>Rendered</h1><p>${"the real article text. ".repeat(20)}</p></article></body></html>`,
+          };
+        },
+      },
+      fetchImpl: async () => htmlRes(shell),
+    }),
+  );
+  const r = await p.fetch("https://spa.test/");
+  expect(asked).toBe(1);
+  expect(r.via).toBe("rendered");
+  expect(r.content).toContain("the real article text");
+
+  // A genuinely short page is not a shell, and must not cost a render.
+  let renders = 0;
+  const small = new LocalFetchProvider(
+    opts({
+      archive: false,
+      renderer: {
+        render: async () => {
+          renders++;
+          throw new Error("should not be called");
+        },
+      },
+      fetchImpl: async () => htmlRes("<html><body><p>Short but real.</p></body></html>"),
+    }),
+  );
+  expect((await small.fetch("https://tiny.test/")).content).toContain("Short but real");
+  expect(renders).toBe(0);
+});
+
+test("a challenge is rendered; the note says what was in the way", async () => {
+  const p = new LocalFetchProvider(
+    opts({
+      archive: false,
+      renderer: {
+        render: async () => ({
+          url: "https://walled.test/",
+          status: 200,
+          html: `<html><body><article><p>${"content behind the wall. ".repeat(20)}</p></article></body></html>`,
+        }),
+      },
+      fetchImpl: async () =>
+        new Response("<title>Just a moment...</title>", {
+          status: 403,
+          headers: { "content-type": "text/html", "cf-mitigated": "challenge" },
+        }),
+    }),
+  );
+  const r = await p.fetch("https://walled.test/");
+  expect(r.via).toBe("rendered");
+  expect(r.note).toContain("cloudflare challenge");
+});
+
+test("with no renderer, a blocked page fails with the reason, not a bare status", async () => {
+  const p = new LocalFetchProvider(
+    opts({
+      archive: false,
+      fetchImpl: async () =>
+        new Response("<title>Just a moment...</title>", {
+          status: 403,
+          headers: { "content-type": "text/html", "cf-mitigated": "challenge" },
+        }),
+    }),
+  );
+  // The model needs to know it hit a wall — that's what makes it try a
+  // different source instead of the same URL again.
+  await expect(p.fetch("https://walled.test/")).rejects.toThrow(/cloudflare bot challenge/);
+});
+
+test("structuredRescue recovers what the page publishes for search engines", () => {
+  const html = `<html><head><title>Fallback</title>
+    <script type="application/ld+json">${JSON.stringify({
+      "@context": "https://schema.org",
+      "@graph": [
+        { "@type": "NewsArticle", headline: "The Headline", articleBody: "A".repeat(300) },
+      ],
+    })}</script></head><body><div id="root"></div></body></html>`;
+  const out = structuredRescue(html, "https://news.test/x");
+  expect(out?.title).toBe("Fallback");
+  expect(out?.markdown.startsWith("AAA")).toBe(true);
+
+  // A headline with nothing behind it is not a rescue.
+  expect(structuredRescue("<html><head><title>Just a title</title></head></html>", "u")).toBeNull();
+});
+
+test("the page's own AMP twin is tried before a browser is", async () => {
+  const shell = `<!doctype html><html><head><link rel="amphtml" href="/amp/x"></head><body><div id="root"></div>${"<script>1</script>".repeat(400)}</body></html>`;
+  let renders = 0;
+  const p = new LocalFetchProvider(
+    opts({
+      archive: false,
+      renderer: {
+        render: async () => {
+          renders++;
+          throw new Error("should not be called");
+        },
+      },
+      fetchImpl: async (url: string) =>
+        htmlRes(
+          url.includes("/amp/")
+            ? `<html><body><article><p>${"amp article text. ".repeat(20)}</p></article></body></html>`
+            : shell,
+        ),
+    }),
+  );
+  const r = await p.fetch("https://news.test/x");
+  expect(r.via).toBe("amp");
+  expect(r.content).toContain("amp article text");
+  expect(renders).toBe(0); // the cheap rung worked, so the expensive one never ran
+});
+
+test("FlareSolverrRenderer speaks the v1 protocol and serializes its calls", async () => {
+  const seen: string[] = [];
+  let inFlight = 0;
+  let overlapped = false;
+  const fetchImpl = (async (_url: string, init: RequestInit) => {
+    inFlight++;
+    if (inFlight > 1) overlapped = true;
+    seen.push(JSON.parse(String(init.body)).url);
+    await Bun.sleep(5);
+    inFlight--;
+    return new Response(
+      JSON.stringify({
+        status: "ok",
+        solution: { url: "https://x.test/", status: 200, response: "<html>ok</html>" },
+      }),
+    );
+  }) as unknown as typeof fetch;
+  const r = new FlareSolverrRenderer({
+    endpoint: "http://box:8191/v1",
+    timeoutMs: 1000,
+    fetchImpl,
+  });
+
+  const [a, b] = await Promise.all([r.render("https://a.test/"), r.render("https://b.test/")]);
+  expect(a.html).toBe("<html>ok</html>");
+  expect(b.status).toBe(200);
+  expect(seen).toEqual(["https://a.test/", "https://b.test/"]);
+  // One browser, one page at a time: overlapping calls would queue behind each
+  // other inside FlareSolverr anyway, and blow every caller's budget.
+  expect(overlapped).toBe(false);
+});
+
+test("a renderer that errors leaves the failure explained, not swallowed", async () => {
+  const fetchImpl = (async () =>
+    new Response(
+      JSON.stringify({ status: "error", message: "Challenge not solved!" }),
+    )) as unknown as typeof fetch;
+  const r = new FlareSolverrRenderer({ endpoint: "http://box:8191/v1", timeoutMs: 100, fetchImpl });
+  await expect(r.render("https://x.test/")).rejects.toThrow(/Challenge not solved/);
 });

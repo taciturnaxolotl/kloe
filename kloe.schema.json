@@ -219,6 +219,38 @@
         "userAgent": {
           "type": "string",
           "default": "Mozilla/5.0 (compatible; kloe/1.0; +https://kloe.dunkirk.sh)"
+        },
+        "renderer": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "enum": [
+                "none",
+                "flaresolverr"
+              ],
+              "type": "string",
+              "default": "none"
+            },
+            "endpoint": {
+              "type": "string",
+              "default": "http://localhost:8191/v1"
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 60000
+            }
+          },
+          "required": [],
+          "default": {
+            "provider": "none",
+            "endpoint": "http://localhost:8191/v1",
+            "timeoutMs": 60000
+          }
+        },
+        "archive": {
+          "type": "boolean",
+          "default": true
         }
       },
       "required": [],
@@ -228,7 +260,13 @@
         "maxChars": 50000,
         "timeoutMs": 15000,
         "allowPrivate": false,
-        "userAgent": "Mozilla/5.0 (compatible; kloe/1.0; +https://kloe.dunkirk.sh)"
+        "userAgent": "Mozilla/5.0 (compatible; kloe/1.0; +https://kloe.dunkirk.sh)",
+        "renderer": {
+          "provider": "none",
+          "endpoint": "http://localhost:8191/v1",
+          "timeoutMs": 60000
+        },
+        "archive": true
       }
     },
     "sandbox": {

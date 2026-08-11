@@ -24,8 +24,20 @@ import { type Config, getConfig } from "./settings";
  * a homelab that deliberately wants to read its own services.
  */
 
+/**
+ * How a page's text was obtained. The model is told, because it changes what
+ * the text is worth: an archived copy may be stale, a structured-data rescue is
+ * a fragment rather than the article, and a rendered page is what a browser saw
+ * rather than what the server sent us.
+ */
+export type FetchVia = "direct" | "amp" | "structured" | "rendered" | "archive";
+
 /** One fetched page, normalized for the model. */
 export interface FetchResult {
+  /** Which route produced `content`; absent means the ordinary one. */
+  via?: FetchVia;
+  /** What was in the way, when something was. */
+  note?: string;
   /** The final URL after redirects. */
   url: string;
   title: string;
@@ -58,6 +70,10 @@ interface LocalFetchOptions {
   userAgent: string;
   fetchImpl?: typeof fetch;
   lookupImpl?: Lookup;
+  /** Headless browser for JS-only pages and challenge walls. Absent → no rendering. */
+  renderer?: Renderer;
+  /** Try the Wayback Machine when a page can't be read live. */
+  archive?: boolean;
 }
 
 /** IPv4 dotted-quad → true if it's in a private/reserved/non-global range. */
@@ -449,13 +465,288 @@ function htmlToMarkdown(
   };
 }
 
+// ---- anti-bot walls ---------------------------------------------------------
+/**
+ * Whether a response is a bot wall rather than the page.
+ *
+ * Worth detecting precisely, because the three ways a fetch comes back empty
+ * want three different next moves: a challenge can be rendered through a real
+ * browser, a hard denial cannot and the model should go elsewhere, and an empty
+ * extraction is a rendering problem. Answering all of them with "no readable
+ * content" (which is what this did) sends the model back to the same wall.
+ *
+ * The markers are vendor-specific strings, so false positives are rare.
+ * Cloudflare's `cf-mitigated: challenge` is documented and definitive; the rest
+ * are the tells each vendor's block page carries.
+ */
+export interface Blockage {
+  vendor: string;
+  /** `challenge` may yield to a browser; `denied` is a refusal to serve us. */
+  kind: "challenge" | "denied";
+}
+
+export function detectBlockage(status: number, headers: Headers, body: string): Blockage | null {
+  const h = (n: string) => (headers.get(n) || "").toLowerCase();
+  const head = body.slice(0, 65_536);
+  const has = (re: RegExp) => re.test(head);
+
+  // Cloudflare states it outright on every challenge type.
+  if (h("cf-mitigated").includes("challenge")) return { vendor: "cloudflare", kind: "challenge" };
+  if (has(/cdn-cgi\/challenge-platform|_cf_chl_opt|cf_chl_|challenges\.cloudflare\.com/i)) {
+    return { vendor: "cloudflare", kind: "challenge" };
+  }
+  if (has(/<title>\s*just a moment/i)) return { vendor: "cloudflare", kind: "challenge" };
+  if (h("server").includes("cloudflare") && (status === 403 || status === 503)) {
+    return {
+      vendor: "cloudflare",
+      kind: has(/attention required|you have been blocked|error 1020/i) ? "denied" : "challenge",
+    };
+  }
+  if (h("x-datadome") || has(/datadome/i)) return { vendor: "datadome", kind: "challenge" };
+  if (has(/_incapsula_resource|incapsula incident id/i))
+    return { vendor: "imperva", kind: "denied" };
+  if (has(/perimeterx|_pxhd|px-captcha/i)) return { vendor: "perimeterx", kind: "challenge" };
+  if (has(/access denied[\s\S]{0,200}reference #\d/i)) return { vendor: "akamai", kind: "denied" };
+  if (status === 403 && has(/enable javascript and cookies to continue/i))
+    return { vendor: "unknown", kind: "challenge" };
+  return null;
+}
+
+// ---- rescuing a page the extractor came back empty on -----------------------
+/**
+ * Content already in the HTML that Readability didn't count as an article.
+ *
+ * A JS-shell page usually isn't as empty as it looks: the metadata a page ships
+ * for search engines and social cards is server-rendered even when the article
+ * isn't. This is explicitly a RESCUE, not an extraction — `articleBody` is often
+ * a summary rather than the full text, and the caller labels what it hands back
+ * so nobody mistakes a description for the piece.
+ */
+export function structuredRescue(
+  html: string,
+  baseUrl: string,
+): { title: string; markdown: string } | null {
+  const { document } = parseHTML(html);
+  const meta = (sel: string) => document.querySelector(sel)?.getAttribute("content")?.trim() || "";
+  const parts: string[] = [];
+  let title = document.querySelector("title")?.textContent?.trim() || "";
+
+  // JSON-LD first: when a site does ship articleBody, it is the real text.
+  for (const node of document.querySelectorAll('script[type="application/ld+json"]')) {
+    let data: unknown;
+    try {
+      data = JSON.parse(node.textContent || "");
+    } catch {
+      continue;
+    }
+    for (const item of flattenLd(data)) {
+      const body = typeof item.articleBody === "string" ? item.articleBody.trim() : "";
+      const head = typeof item.headline === "string" ? item.headline.trim() : "";
+      const desc = typeof item.description === "string" ? item.description.trim() : "";
+      if (head && !title) title = head;
+      if (body) parts.push(body);
+      else if (desc) parts.push(desc);
+    }
+  }
+  if (!parts.length) {
+    const og = meta('meta[property="og:description"]') || meta('meta[name="description"]');
+    if (og) parts.push(og);
+    const ogTitle = meta('meta[property="og:title"]');
+    if (ogTitle && !title) title = ogTitle;
+  }
+  // A <noscript> block is written for exactly this situation and often carries
+  // the whole article on sites that degrade properly.
+  const noscript = document.querySelector("noscript")?.textContent?.trim() || "";
+  if (noscript.length > 200) parts.push(noscript.replace(/\s+/g, " "));
+
+  const markdown = parts.join("\n\n").trim();
+  if (markdown.length < 80) return null; // a headline and nothing else isn't a rescue
+  return { title: title || baseUrl, markdown };
+}
+
+/** JSON-LD arrives as an object, an array, or an @graph — flatten all three. */
+function flattenLd(data: unknown): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  const walk = (v: unknown) => {
+    if (Array.isArray(v)) {
+      for (const x of v) walk(x);
+    } else if (v && typeof v === "object") {
+      const o = v as Record<string, unknown>;
+      out.push(o);
+      if (o["@graph"]) walk(o["@graph"]);
+    }
+  };
+  walk(data);
+  return out;
+}
+
+/** A page's AMP twin, when it declares one. AMP is static by construction. */
+export function ampLink(html: string, baseUrl: string): string | null {
+  const { document } = parseHTML(html);
+  const href = document.querySelector('link[rel="amphtml"]')?.getAttribute("href");
+  if (!href) return null;
+  try {
+    const url = new URL(href, baseUrl).href;
+    return url === baseUrl ? null : url;
+  } catch {
+    return null;
+  }
+}
+
+// ---- headless rendering -----------------------------------------------------
+/** A page as a real browser saw it, after scripts and any challenge. */
+export interface Renderer {
+  render(url: string, signal?: AbortSignal): Promise<{ url: string; html: string; status: number }>;
+}
+
+/**
+ * FlareSolverr (github.com/FlareSolverr/FlareSolverr): POST /v1 with
+ * `cmd: request.get`, get back the post-JS HTML.
+ *
+ * Calls are serialized. FlareSolverr drives one Chrome and a challenge takes
+ * five to fifteen seconds; six research workers hitting it at once would each
+ * wait for all the others, and the queue would outlive their budgets. One at a
+ * time is not a limitation we are imposing — it is the one it has.
+ */
+export class FlareSolverrRenderer implements Renderer {
+  private readonly endpoint: string;
+  private readonly timeoutMs: number;
+  private readonly fetchImpl: typeof fetch;
+  private queue: Promise<unknown> = Promise.resolve();
+
+  constructor(opts: { endpoint: string; timeoutMs: number; fetchImpl?: typeof fetch }) {
+    this.endpoint = opts.endpoint;
+    this.timeoutMs = opts.timeoutMs;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+  }
+
+  render(
+    url: string,
+    signal?: AbortSignal,
+  ): Promise<{ url: string; html: string; status: number }> {
+    const run = this.queue.then(
+      () => this.one(url, signal),
+      () => this.one(url, signal), // a previous failure must not poison the queue
+    );
+    this.queue = run.catch(() => {});
+    return run;
+  }
+
+  private async one(
+    url: string,
+    signal?: AbortSignal,
+  ): Promise<{ url: string; html: string; status: number }> {
+    const res = await this.fetchImpl(this.endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: "request.get", url, maxTimeout: this.timeoutMs }),
+      signal: signal ?? AbortSignal.timeout(this.timeoutMs + 5_000),
+    });
+    if (!res.ok) throw new Error(`renderer failed: ${res.status} ${res.statusText}`);
+    const data = (await res.json()) as {
+      status?: string;
+      message?: string;
+      solution?: { url?: string; status?: number; response?: string };
+    };
+    if (data.status !== "ok" || !data.solution?.response) {
+      throw new Error(`renderer could not load the page: ${data.message || "no solution"}`);
+    }
+    return {
+      url: data.solution.url || url,
+      html: data.solution.response,
+      status: data.solution.status ?? 200,
+    };
+  }
+}
+
+/** The most recent Wayback capture of a URL, if there is one. */
+export async function archivedUrl(
+  url: string,
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs = 10_000,
+): Promise<string | null> {
+  try {
+    const api = `https://archive.org/wayback/available?url=${encodeURIComponent(url)}`;
+    const res = await fetchImpl(api, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      archived_snapshots?: { closest?: { available?: boolean; url?: string } };
+    };
+    const closest = data.archived_snapshots?.closest;
+    return closest?.available && closest.url ? closest.url.replace(/^http:/, "https:") : null;
+  } catch {
+    return null;
+  }
+}
+
 export class LocalFetchProvider implements FetchProvider {
   private readonly opts: LocalFetchOptions;
   constructor(opts: LocalFetchOptions) {
     this.opts = opts;
   }
 
+  /**
+   * Fetch a page, escalating only as far as it has to.
+   *
+   * The ladder, cheapest first: the plain request; the page's own AMP twin;
+   * whatever content is in the HTML for search engines; a real browser; the
+   * Wayback Machine. Each rung exists because the one before it comes back
+   * empty on a real class of page, and every rung is skipped when the one
+   * before it worked — which is nearly always.
+   *
+   * What it will not do is pretend to be somebody else. Rendering a public page
+   * in a browser is a different thing from forging a Googlebot user-agent to
+   * get past a paywall, and only the first is here.
+   */
   async fetch(rawUrl: string): Promise<FetchResult> {
+    const direct = await this.direct(rawUrl);
+    if (direct.ok) {
+      const out = this.toResult(direct.text, direct.contentType, direct.url, rawUrl, direct.capped);
+      if (!isThin(out, direct.text, direct.contentType)) return out;
+      // Read fine, said nothing: a JS shell, or an article Readability didn't
+      // recognize. Try the page's own static twin, then its metadata.
+      const rescued = await this.rescue(direct.text, direct.url, rawUrl);
+      if (rescued) return rescued;
+    }
+    const blocked = direct.ok ? null : direct.blockage;
+    // A challenge yields to a browser; a hard denial does not, but a JS shell
+    // does too — so render whenever we have one and the cheap path came up empty.
+    if (this.opts.renderer && (!blocked || blocked.kind === "challenge" || direct.ok)) {
+      try {
+        const rendered = await this.renderPage(rawUrl);
+        if (rendered) {
+          rendered.note = blocked ? `${blocked.vendor} ${blocked.kind}; rendered` : undefined;
+          return rendered;
+        }
+      } catch (e) {
+        // A renderer that is down must not turn a readable page into an error.
+        console.warn("[fetch] render failed:", (e as Error).message);
+      }
+    }
+    if (this.opts.archive) {
+      const archived = await this.fromArchive(rawUrl);
+      if (archived) {
+        archived.note = blocked
+          ? `live page blocked (${blocked.vendor} ${blocked.kind}); served from the Wayback Machine`
+          : "live page had no readable content; served from the Wayback Machine";
+        return archived;
+      }
+    }
+    if (direct.ok) {
+      // Nothing worked, but the server did answer: hand back the empty result
+      // with an explanation rather than an error.
+      const out = this.toResult(direct.text, direct.contentType, direct.url, rawUrl, direct.capped);
+      out.content = this.opts.renderer
+        ? "No readable content could be extracted: the page renders its content with JavaScript and rendering it in a browser did not help either. Try a different source."
+        : "No readable content could be extracted — the page appears to render its content with JavaScript, which this fetcher does not execute. Try a different source, or an archived copy.";
+      out.format = "text";
+      return out;
+    }
+    throw new Error(direct.error);
+  }
+
+  /** The plain request, redirects re-validated at every hop. */
+  private async direct(rawUrl: string): Promise<DirectFetch> {
     const doFetch = this.opts.fetchImpl ?? fetch;
     const lookup =
       this.opts.lookupImpl ?? ((h: string) => dnsLookup(h, { all: true, verbatim: true }));
@@ -488,29 +779,51 @@ export class LocalFetchProvider implements FetchProvider {
       }
       break;
     }
-    if (!res) throw new Error("fetch failed");
+    if (!res) return { ok: false, url: current, error: "fetch failed" };
+    const contentType = (res.headers.get("content-type") || "").toLowerCase();
     if (!res.ok) {
-      // Surface a snippet of the error body (many servers explain the failure
-      // there) so the model gets more than a bare status code.
-      let detail = "";
+      // Read the body anyway: a block page explains itself in it, and so do
+      // most ordinary errors. Surface a snippet so the model gets more than a
+      // bare status code.
+      let body = "";
       try {
-        const { text } = await readCapped(res, 4096);
-        const t = isProbablyText(text)
-          ? text
-              .replace(/<[^>]+>/g, " ")
-              .replace(/\s+/g, " ")
-              .trim()
-          : "";
-        if (t) detail = " — " + t.slice(0, 200);
+        body = (await readCapped(res, 65_536)).text;
       } catch {
         /* ignore a body we can't read */
       }
-      throw new Error(`fetch failed: ${res.status} ${res.statusText}${detail}`);
+      const blockage = detectBlockage(res.status, res.headers, body);
+      const t = isProbablyText(body)
+        ? body
+            .replace(/<[^>]+>/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+        : "";
+      const detail = blockage
+        ? ` — ${blockage.vendor} ${blockage.kind === "challenge" ? "bot challenge" : "blocked this request"}`
+        : t
+          ? " — " + t.slice(0, 200)
+          : "";
+      return {
+        ok: false,
+        url: current,
+        blockage,
+        error: `fetch failed: ${res.status} ${res.statusText}${detail}`,
+      };
     }
-
-    const contentType = (res.headers.get("content-type") || "").toLowerCase();
     const { text, capped } = await readCapped(res, this.opts.maxBytes);
+    // A 200 can still be a wall: Cloudflare's JS challenge is served as one.
+    const blockage = detectBlockage(res.status, res.headers, text);
+    return { ok: true, url: current, contentType, text, capped, blockage };
+  }
 
+  /** Turn a fetched body into a result, whatever route produced it. */
+  private toResult(
+    text: string,
+    contentType: string,
+    current: string,
+    rawUrl: string,
+    capped: boolean,
+  ): FetchResult {
     let title = current;
     let content: string;
     let format: "markdown" | "text" = "text";
@@ -560,14 +873,6 @@ export class LocalFetchProvider implements FetchProvider {
       content = `[${contentType || "binary"} content — not rendered as text]`;
     }
 
-    // Extraction can come back empty — a JS-rendered SPA shell, or a page with no
-    // article text. Return a clear note (not a blank row) so the model knows why.
-    if (!content.trim()) {
-      content =
-        "No readable content could be extracted — the page may be empty or render its content with JavaScript (which this fetcher does not execute).";
-      format = "text";
-    }
-
     let truncated = capped;
     if (content.length > this.opts.maxChars) {
       content =
@@ -584,6 +889,116 @@ export class LocalFetchProvider implements FetchProvider {
     }
     return { url: current, title, content, format, truncated, faviconSvg, faviconDark };
   }
+
+  /** The page's own static twin, then whatever it ships for search engines. */
+  private async rescue(html: string, current: string, rawUrl: string): Promise<FetchResult | null> {
+    const amp = ampLink(html, current);
+    if (amp) {
+      const got = await this.direct(amp).catch(() => null);
+      if (got?.ok) {
+        const out = this.toResult(got.text, got.contentType, got.url, rawUrl, got.capped);
+        if (!isThin(out, got.text, got.contentType)) {
+          out.via = "amp";
+          return out;
+        }
+      }
+    }
+    const rescued = structuredRescue(html, current);
+    if (!rescued) return null;
+    return {
+      url: current,
+      title: rescued.title,
+      // Labelled, because it usually isn't the article: JSON-LD `articleBody`
+      // is often a summary, and a description is definitely one.
+      content: `[The page's own text could not be extracted; this is the description and metadata it publishes.]\n\n${rescued.markdown}`,
+      format: "markdown",
+      truncated: false,
+      via: "structured",
+      ...knownFaviconFields(rawUrl),
+    };
+  }
+
+  /** The page as a browser sees it — scripts run, challenges answered. */
+  private async renderPage(rawUrl: string): Promise<FetchResult | null> {
+    if (!this.opts.renderer) return null;
+    // The renderer runs on the operator's network and does its own DNS and
+    // redirects, so nothing we check afterwards can constrain it. The SSRF
+    // policy has to be applied to the URL BEFORE it is handed over.
+    const lookup =
+      this.opts.lookupImpl ?? ((h: string) => dnsLookup(h, { all: true, verbatim: true }));
+    const url = await assertAllowedUrl(rewriteForFetch(rawUrl), this.opts.allowPrivate, lookup);
+    const out = await this.opts.renderer.render(url.href);
+    const result = this.toResult(out.html, "text/html", out.url, rawUrl, false);
+    // A browser that renders the page and still yields nothing has told us the
+    // page has nothing, and the ladder should move on rather than return it.
+    if (isThin(result, out.html, "text/html")) return null;
+    result.via = "rendered";
+    return result;
+  }
+
+  /** The most recent Wayback capture, read through the ordinary path. */
+  private async fromArchive(rawUrl: string): Promise<FetchResult | null> {
+    const snapshot = await archivedUrl(rawUrl, this.opts.fetchImpl ?? fetch);
+    if (!snapshot) return null;
+    const got = await this.direct(snapshot).catch(() => null);
+    if (!got?.ok) return null;
+    const out = this.toResult(got.text, got.contentType, got.url, rawUrl, got.capped);
+    if (isThin(out, got.text, got.contentType)) return null;
+    out.via = "archive";
+    return out;
+  }
+}
+
+/** What `direct` learned about one request. */
+type DirectFetch =
+  | {
+      ok: true;
+      url: string;
+      contentType: string;
+      text: string;
+      capped: boolean;
+      blockage: Blockage | null;
+    }
+  | { ok: false; url: string; error: string; blockage?: Blockage | null };
+
+/**
+ * Whether an extraction is worth returning, or worth escalating past.
+ *
+ * This is the trigger for every rung of the ladder, and it asks about the
+ * OUTCOME rather than the page. Testing whether HTML *looks* like a single-page
+ * app misfires constantly — Next and Nuxt server-render their content and look
+ * identical to a shell that doesn't.
+ *
+ * Two conditions, and the second is what keeps it honest: a big document that
+ * yielded almost nothing is a shell, while a small document that yielded almost
+ * nothing is simply a short page. Escalating on length alone would send every
+ * one-paragraph page through a browser.
+ */
+const THIN_CHARS = 200;
+const SHELL_BYTES = 4_000;
+function isThin(r: FetchResult, source = "", contentType = ""): boolean {
+  const got = r.content.trim().length;
+  if (got === 0) return true;
+  const htmlish = contentType.includes("html") || /^\s*<(!doctype|html)\b/i.test(source);
+  return htmlish && got < THIN_CHARS && source.length > SHELL_BYTES;
+}
+
+/** Host-level favicons for a result assembled without page HTML. */
+function knownFaviconFields(rawUrl: string): { faviconSvg?: string; faviconDark?: string } {
+  const known = knownFavicons(rawUrl);
+  return { faviconSvg: known.svg, faviconDark: known.dark };
+}
+
+/** The configured headless renderer, or null when none is set up. */
+export function createRenderer(cfg: Config["fetch"]["renderer"]): Renderer | null {
+  switch (cfg.provider) {
+    case "flaresolverr":
+      return cfg.endpoint
+        ? new FlareSolverrRenderer({ endpoint: cfg.endpoint, timeoutMs: cfg.timeoutMs })
+        : null;
+    default:
+      return null; // "none"
+  }
 }
 
 /** Builds the configured fetch provider, or null when disabled. */
@@ -597,5 +1012,7 @@ export function createFetchProvider(
     timeoutMs: cfg.timeoutMs,
     allowPrivate: cfg.allowPrivate,
     userAgent: cfg.userAgent,
+    renderer: createRenderer(cfg.renderer) ?? undefined,
+    archive: cfg.archive,
   });
 }
