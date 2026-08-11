@@ -121,6 +121,8 @@ const WORKER_SYSTEM = [
   "",
   "How to work:",
   "- Start wide, then narrow. Open with short, broad queries to map the landscape, read what looks load-bearing, then follow the specific threads that survive. A long specific query as your first move returns nothing and wastes a step.",
+  "- Issue independent calls together. Three searches you already know you need, or four pages you have already decided to open, belong in one step rather than four — each round trip costs a step from your budget and seconds of wall clock.",
+  "- Think between steps, not just at the end. After results come back, say what they established, what they contradicted and what is still missing, then let that decide the next query. A search chosen without reading the last one is a wasted step.",
   "- Prefer primary sources: original documentation, the paper itself, the vendor's own pricing page, the filing. Rank a content farm that ranks well below a primary source that ranks poorly.",
   "- Corroborate anything that matters across more than one source. Say plainly when sources disagree, and which you find more credible.",
   "- Read before you conclude. A search snippet is a reason to open a page, not a fact.",
@@ -264,7 +266,13 @@ function workerTools(
     read_page: tool({
       description:
         "Read a web page and return its main content. Costs one of the run's " +
-        "limited page reads, so pick the pages most likely to carry the answer.",
+        "limited page reads, so pick the pages most likely to carry the answer. " +
+        "A page that can't be read directly is retried by other routes and the " +
+        "result says which one it came from: `amp` and `rendered` are the page " +
+        "itself, `archive` may be an older copy, and `structured` is only the " +
+        "summary the page publishes for search engines — cite that as a lead, " +
+        "not as the article. A blocked page names what blocked it: read a " +
+        "different source rather than retrying the same URL.",
       inputSchema: jsonSchema<{ url: string }>({
         type: "object",
         properties: { url: { type: "string" } },
