@@ -1089,10 +1089,10 @@ body.selecting #selectBtn {
 .turn .body .block + .block {
   margin-top: 14px;
 }
-:is(.turn .body, .panebody, .sharebody) .prose > :first-child {
+:is(.turn .body, .panebody, .sharebody, .lbtext) .prose > :first-child {
   margin-top: 0;
 }
-:is(.turn .body, .panebody, .sharebody) .prose > :last-child {
+:is(.turn .body, .panebody, .sharebody, .lbtext) .prose > :last-child {
   margin-bottom: 0;
 }
 /* Markdown renders on three surfaces — a turn in the thread, a document in the
@@ -1100,10 +1100,10 @@ body.selecting #selectBtn {
    markdown each time, so the typography below names all three. (Rules that once
    said only `.turn .body` are why pane code blocks used to render highlighted
    but uncoloured, wearing inline-code chrome.) */
-:is(.turn .body, .panebody, .sharebody) p {
+:is(.turn .body, .panebody, .sharebody, .lbtext) p {
   margin: 0 0 12px;
 }
-:is(.turn .body, .panebody, .sharebody) code {
+:is(.turn .body, .panebody, .sharebody, .lbtext) code {
   font-family: var(--mono);
   font-size: 0.88em;
   background: var(--bg-sunk);
@@ -1111,7 +1111,7 @@ body.selecting #selectBtn {
   border-radius: var(--radius-xs);
   padding: 0.05em 0.35em;
 }
-:is(.turn .body, .panebody, .sharebody) pre {
+:is(.turn .body, .panebody, .sharebody, .lbtext) pre {
   font-family: var(--mono);
   font-size: 12.5px;
   line-height: 1.55;
@@ -1122,42 +1122,42 @@ body.selecting #selectBtn {
   overflow-x: auto;
   margin: 0 0 12px;
 }
-:is(.turn .body, .panebody, .sharebody) pre code {
+:is(.turn .body, .panebody, .sharebody, .lbtext) pre code {
   background: none;
   border: 0;
   padding: 0;
   font-size: inherit;
 }
-:is(.turn .body, .panebody, .sharebody) ul,
-:is(.turn .body, .panebody, .sharebody) ol {
+:is(.turn .body, .panebody, .sharebody, .lbtext) ul,
+:is(.turn .body, .panebody, .sharebody, .lbtext) ol {
   margin: 0 0 12px;
   padding-left: 1.4em;
 }
-:is(.turn .body, .panebody, .sharebody) li {
+:is(.turn .body, .panebody, .sharebody, .lbtext) li {
   margin: 2px 0;
 }
-:is(.turn .body, .panebody, .sharebody) blockquote {
+:is(.turn .body, .panebody, .sharebody, .lbtext) blockquote {
   margin: 0 0 12px;
   padding-left: 12px;
   border-left: 3px solid var(--rule-strong);
   color: var(--ink-muted);
 }
-:is(.turn .body, .panebody, .sharebody) h1,
-:is(.turn .body, .panebody, .sharebody) h2,
-:is(.turn .body, .panebody, .sharebody) h3 {
+:is(.turn .body, .panebody, .sharebody, .lbtext) h1,
+:is(.turn .body, .panebody, .sharebody, .lbtext) h2,
+:is(.turn .body, .panebody, .sharebody, .lbtext) h3 {
   margin: 16px 0 8px;
   line-height: 1.3;
 }
-:is(.turn .body, .panebody, .sharebody) h1 {
+:is(.turn .body, .panebody, .sharebody, .lbtext) h1 {
   font-size: 1.3em;
 }
-:is(.turn .body, .panebody, .sharebody) h2 {
+:is(.turn .body, .panebody, .sharebody, .lbtext) h2 {
   font-size: 1.18em;
 }
-:is(.turn .body, .panebody, .sharebody) h3 {
+:is(.turn .body, .panebody, .sharebody, .lbtext) h3 {
   font-size: 1.05em;
 }
-:is(.turn .body, .panebody, .sharebody) a {
+:is(.turn .body, .panebody, .sharebody, .lbtext) a {
   color: var(--accent);
   text-decoration: underline;
   text-underline-offset: 2px;
@@ -1168,7 +1168,7 @@ body.selecting #selectBtn {
    `display: block` makes the table its own scroll container, and `max-content`
    lets it take the width it wants first, so a wide table scrolls instead of
    crushing every column into two words per line. */
-:is(.turn .body, .panebody, .sharebody) table {
+:is(.turn .body, .panebody, .sharebody, .lbtext) table {
   display: block;
   width: max-content;
   max-width: 100%;
@@ -1178,23 +1178,23 @@ body.selecting #selectBtn {
   font-size: 0.94em;
   line-height: 1.45;
 }
-:is(.turn .body, .panebody, .sharebody) th,
-:is(.turn .body, .panebody, .sharebody) td {
+:is(.turn .body, .panebody, .sharebody, .lbtext) th,
+:is(.turn .body, .panebody, .sharebody, .lbtext) td {
   border: 1px solid var(--rule);
   padding: 6px 10px;
   text-align: left;
   vertical-align: top;
 }
-:is(.turn .body, .panebody, .sharebody) thead th {
+:is(.turn .body, .panebody, .sharebody, .lbtext) thead th {
   background: var(--bg-sunk);
   font-weight: 600;
   /* A header names its column; wrapping it turns a table into a puzzle. */
   white-space: nowrap;
 }
-:is(.turn .body, .panebody, .sharebody) tbody tr:nth-child(even) {
+:is(.turn .body, .panebody, .sharebody, .lbtext) tbody tr:nth-child(even) {
   background: color-mix(in srgb, var(--ink) 3%, transparent);
 }
-:is(.turn .body, .panebody, .sharebody) img {
+:is(.turn .body, .panebody, .sharebody, .lbtext) img {
   max-width: 100%;
   border-radius: var(--radius-sm);
 }
@@ -1223,18 +1223,18 @@ body.selecting #selectBtn {
 
 /* Shiki highlighting: tokens carry --shiki-light/--shiki-dark; pick per theme.
    The app's own pre/code chrome (bg, border, padding) is kept — only colors change. */
-:is(.turn .body, .panebody, .sharebody) pre code.hl span {
+:is(.turn .body, .panebody, .sharebody, .lbtext) pre code.hl span {
   color: var(--shiki-light);
 }
 @media (prefers-color-scheme: dark) {
-  :is(.turn .body, .panebody, .sharebody) pre code.hl span {
+  :is(.turn .body, .panebody, .sharebody, .lbtext) pre code.hl span {
     color: var(--shiki-dark);
   }
 }
-:root[data-theme="light"] :is(.turn .body, .panebody, .sharebody) pre code.hl span {
+:root[data-theme="light"] :is(.turn .body, .panebody, .sharebody, .lbtext) pre code.hl span {
   color: var(--shiki-light);
 }
-:root[data-theme="dark"] :is(.turn .body, .panebody, .sharebody) pre code.hl span {
+:root[data-theme="dark"] :is(.turn .body, .panebody, .sharebody, .lbtext) pre code.hl span {
   color: var(--shiki-dark);
 }
 
@@ -1916,7 +1916,7 @@ body.resizing {
 }
 /* A citation, as a source pill: small enough to sit inside a sentence without
    breaking its rhythm, legible enough to be worth reading. */
-:is(.turn .body, .panebody, .sharebody) a.cite {
+:is(.turn .body, .panebody, .sharebody, .lbtext) a.cite {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1932,7 +1932,7 @@ body.resizing {
   text-decoration: none;
   white-space: nowrap;
 }
-:is(.turn .body, .panebody, .sharebody) a.cite:hover {
+:is(.turn .body, .panebody, .sharebody, .lbtext) a.cite:hover {
   color: var(--ink);
   border-color: var(--rule-strong);
   background: color-mix(in srgb, var(--accent) 10%, var(--bg-sunk));
@@ -3000,9 +3000,15 @@ body.resizing {
   color: var(--accent);
   opacity: 1;
 }
-/* A staged image is previewable, and says so on hover. */
-.staged .chip.previewable img {
+/* A staged file that can be previewed opens from anywhere on the chip. */
+.staged .chip.previewable {
   cursor: zoom-in;
+}
+.staged .chip.previewable:hover {
+  border-color: var(--accent);
+}
+.staged .chip .chipbtn {
+  cursor: pointer;
 }
 
 /* Rendered attachments on a turn (and in queue previews). */
@@ -3062,9 +3068,17 @@ body.resizing {
   color: var(--ink-faint);
 }
 
-/* A rendered image opens full-view; the cursor promises it before the click. */
-.attachments .att.img img {
+/* Anything previewable opens full-view from anywhere on the block — the name
+   and the icon are as much "the file" as the thumbnail is. The cursor promises
+   it before the click; a file that only downloads keeps the ordinary pointer. */
+.attachments .att[data-preview] {
   cursor: zoom-in;
+}
+.attachments .att[data-broken] {
+  cursor: pointer;
+}
+.attachments .att.file[data-preview]:hover {
+  border-color: var(--accent);
 }
 
 /* ---- lightbox ------------------------------------------------------------ */
@@ -3094,6 +3108,35 @@ body.lb-open {
   align-items: center;
   justify-content: center;
   padding: 56px 64px 32px;
+}
+/* A file is read from the top, not centred in the void like a photograph. */
+.lbstage.istext {
+  align-items: stretch;
+  justify-content: stretch;
+}
+.lbtext {
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  overflow: auto;
+  padding: 18px 20px;
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  color: var(--ink);
+  box-shadow: 0 12px 48px rgb(0 0 0 / 55%);
+}
+/* The file fills its sheet: the code block brings its own chrome, so a second
+   border and background inside this one would be a box in a box. */
+.lbtext .block.prose pre {
+  margin: 0;
+  border: 0;
+  background: none;
+  padding: 0;
+}
+.lbloading {
+  color: var(--ink-faint);
+  font-family: var(--mono);
+  font-size: 12px;
 }
 .lbimg {
   max-width: 100%;

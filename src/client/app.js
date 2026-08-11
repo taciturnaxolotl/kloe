@@ -207,6 +207,25 @@ import { mountSidebar } from "./sidebar.js";
   function attKind(mime) {
     return IMG.test(mime) ? "image" : "file";
   }
+  /**
+   * Whether a file can be shown in place, and as what.
+   *
+   * Mime first, extension second, because a browser hands `.py`, `.ts` and
+   * `.toml` over as an empty type or application/octet-stream — going by mime
+   * alone would decide the most obviously previewable files are unpreviewable.
+   */
+  var TEXTISH_MIME =
+    /^text\/|^application\/(json|xml|javascript|x-sh|x-yaml|yaml|toml|sql|x-www-form-urlencoded)\b/;
+  var TEXTISH_EXT =
+    /\.(txt|md|markdown|rst|log|csv|tsv|json|jsonl|ya?ml|toml|ini|cfg|conf|env|xml|html?|css|scss|sql|sh|bash|zsh|fish|ps1|py|rb|pl|php|lua|r|jl|go|rs|zig|nix|c|h|cc|cpp|hpp|cs|java|kt|kts|swift|m|mm|scala|clj|ex|exs|erl|hs|ml|elm|dart|vue|svelte|js|mjs|cjs|jsx|ts|tsx|gradle|dockerfile|makefile|mk|cmake|patch|diff|gitignore|editorconfig)$/i;
+  function previewKind(name, mime) {
+    if (IMG.test(mime || "")) return "image";
+    if (TEXTISH_MIME.test(mime || "")) return "text";
+    if (TEXTISH_EXT.test(name || "")) return "text";
+    // Extension-less names that are conventionally text (Makefile, Dockerfile).
+    if (/^(makefile|dockerfile|readme|license|changelog)$/i.test(name || "")) return "text";
+    return null;
+  }
   // Serve URL for a stored blob, carrying the original name so a download keeps it.
   function blobUrl(a) {
     return "/api/blobs/" + encodeURIComponent(a.sha256) + "?name=" + encodeURIComponent(a.name);
@@ -239,7 +258,10 @@ import { mountSidebar } from "./sidebar.js";
       sha256: null,
       uploading: true,
       failed: false,
-      url: IMG.test(file.type || "") ? URL.createObjectURL(file) : null,
+      preview: previewKind(file.name || "", file.type || ""),
+      // An object URL for anything we can show in place, not just images: the
+      // lightbox reads a staged text file through the same fetch as a stored one.
+      url: previewKind(file.name || "", file.type || "") ? URL.createObjectURL(file) : null,
     };
     staged.push(it);
     renderStaged();
@@ -313,23 +335,13 @@ import { mountSidebar } from "./sidebar.js";
         // An image the browser can't decode still shows as an image — the
         // broken-image glyph reads as a failed upload, which it isn't.
         img.onerror = function () {
-          chip.classList.remove("img");
+          chip.classList.remove("img", "previewable");
+          it.broken = true; // and so out of the group the arrows page through
           var ic = document.createElement("span");
           ic.className = "fi";
           ic.innerHTML = IMAGE_ICON;
           chip.replaceChild(ic, img);
-          chip.classList.remove("previewable");
         };
-        img.addEventListener("click", function () {
-          // Located by url, not by identity: `stagedShot` builds a fresh object
-          // each call, so an indexOf against a new one never matches.
-          var shots = stagedImages();
-          var here = shots.findIndex(function (shot) {
-            return shot.url === it.url;
-          });
-          openLightbox(shots, here < 0 ? 0 : here);
-        });
-        chip.classList.add("previewable");
         chip.appendChild(img);
       } else {
         var ic = document.createElement("span");
@@ -341,6 +353,22 @@ import { mountSidebar } from "./sidebar.js";
       nm.className = "nm";
       nm.textContent = it.failed ? it.name + " — failed" : it.name;
       chip.appendChild(nm);
+      // The whole chip opens it, not just the thumbnail: the name and the icon
+      // are as much "the file" as the picture is, and a 28px target was the
+      // only part of it that did anything.
+      if (it.preview && it.url) {
+        chip.classList.add("previewable");
+        chip.addEventListener("click", function (e) {
+          if (e.target.closest(".chipbtn")) return; // remove/retry are their own actions
+          var shots = stagedPreviews();
+          // Located by url, not by identity: `stagedShot` builds a fresh object
+          // each call, so an indexOf against a new one never matches.
+          var here = shots.findIndex(function (shot) {
+            return shot.url === it.url;
+          });
+          if (here >= 0) openLightbox(shots, here);
+        });
+      }
       if (it.failed) {
         var retry = document.createElement("button");
         retry.type = "button";
@@ -367,12 +395,38 @@ import { mountSidebar } from "./sidebar.js";
   // Staged images, as lightbox items. Recomputed per click rather than cached:
   // the tray changes as uploads land and files are removed.
   function stagedShot(it) {
-    return { url: it.url, name: it.name, href: it.sha256 ? blobUrl(it) : it.url };
+    return {
+      kind: it.preview,
+      url: it.url,
+      name: it.name,
+      href: it.sha256 ? blobUrl(it) : it.url,
+    };
   }
-  function stagedImages() {
-    return staged.filter((it) => it.kind === "image" && it.url).map(stagedShot);
+  function stagedPreviews() {
+    return staged.filter((it) => it.preview && it.url && !it.broken).map(stagedShot);
   }
-  // Renders a turn's attachments (images as thumbnails, other files as chips).
+  /**
+   * The previewable files of one attachment group, in the order they appear.
+   *
+   * Built from the DOM at click time rather than from the attachment data, so a
+   * file that turned out not to render — a HEIC the browser can't decode — is
+   * simply not in the list. Arrowing through a gallery onto a blank frame is
+   * worse than not offering the arrow.
+   */
+  function groupPreviews(wrap) {
+    var out = [];
+    wrap.querySelectorAll(".att[data-preview]").forEach(function (link) {
+      if (link.dataset.broken) return;
+      out.push({
+        kind: link.dataset.preview,
+        url: link.dataset.url,
+        name: link.dataset.name,
+        href: link.href,
+      });
+    });
+    return out;
+  }
+
   /**
    * What to show for an image the browser refuses to decode.
    *
@@ -389,6 +443,7 @@ import { mountSidebar } from "./sidebar.js";
    */
   function unrenderable(link, name) {
     link.className = "att file noimg";
+    link.dataset.broken = "1";
     link.setAttribute("download", name);
     link.title = name + " — this format can't be previewed here. Click to download.";
     link.innerHTML = "";
@@ -403,51 +458,39 @@ import { mountSidebar } from "./sidebar.js";
   }
 
   /**
-   * The images of one attachment group that actually rendered.
+   * A turn's attachments: images as thumbnails, everything else as a file chip
+   * — and any of them that can be shown in place opens in the lightbox.
    *
-   * Read off the DOM at click time, so a HEIC that fell back to a file chip is
-   * simply not in the list — arrowing through a gallery onto a blank frame is
-   * worse than not offering it.
+   * The handler sits on the whole link, so the chip's name and icon open the
+   * file exactly as its thumbnail does. The href stays a real URL underneath,
+   * so cmd-click and "open in new tab" keep working: the lightbox enhances the
+   * link rather than replacing it.
    */
-  function renderableImages(wrap) {
-    var out = [];
-    wrap.querySelectorAll(".att.img img").forEach(function (img) {
-      out.push({ url: img.src, name: img.alt, href: img.src });
-    });
-    return out;
-  }
-
   function renderAttachments(container, attachments) {
     if (!attachments || !attachments.length) return;
     var wrap = document.createElement("div");
     wrap.className = "attachments";
     attachments.forEach(function (a) {
       var link = document.createElement("a");
-      link.href = blobUrl(a);
+      var url = blobUrl(a);
+      link.href = url;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
+      var kind = previewKind(a.name, a.mime);
+      if (kind) {
+        link.dataset.preview = kind;
+        link.dataset.url = url;
+        link.dataset.name = a.name;
+      }
       if (a.kind === "image") {
         link.className = "att img";
         var img = document.createElement("img");
-        img.src = blobUrl(a);
+        img.src = url;
         img.alt = a.name;
         img.loading = "lazy";
         img.onerror = function () {
           unrenderable(link, a.name);
         };
-        // Open in place rather than navigating away. The href stays a real URL
-        // underneath, so cmd-click and "open in new tab" keep working — the
-        // lightbox is an enhancement of the link, not a replacement for it.
-        link.addEventListener("click", function (e) {
-          if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-          var shots = renderableImages(wrap);
-          var here = shots.findIndex(function (s) {
-            return s.url === blobUrl(a);
-          });
-          if (here < 0) return; // this one failed to decode; let the link do its job
-          e.preventDefault();
-          openLightbox(shots, here);
-        });
         link.appendChild(img);
       } else {
         link.className = "att file";
@@ -460,6 +503,19 @@ import { mountSidebar } from "./sidebar.js";
         nm.className = "nm";
         nm.textContent = a.name;
         link.appendChild(nm);
+      }
+      if (kind) {
+        link.addEventListener("click", function (e) {
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+          if (link.dataset.broken) return; // fell back to a download; let it download
+          var shots = groupPreviews(wrap);
+          var here = shots.findIndex(function (shot) {
+            return shot.url === url;
+          });
+          if (here < 0) return;
+          e.preventDefault();
+          openLightbox(shots, here);
+        });
       }
       wrap.appendChild(link);
     });
