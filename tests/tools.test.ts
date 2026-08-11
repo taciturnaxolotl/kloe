@@ -81,3 +81,16 @@ test("sandboxDescription mentions get_attachment only when that tool is offered"
   expect(sandboxDescription(INFO, true)).toContain("get_attachment");
   expect(sandboxDescription(INFO, false)).not.toContain("get_attachment");
 });
+
+test("the shell description points at the file tools only when they're offered", () => {
+  const withFiles = sandboxDescription(INFO, false, true);
+  expect(withFiles).toContain("view_file");
+  expect(withFiles).toContain("edit_file");
+  // The reason, not just the instruction: a model that knows WHY reaches for
+  // the right tool in cases this text didn't enumerate.
+  expect(withFiles).toContain("quoting");
+
+  // A one-off sandbox (no conversation) has no persistent filesystem to edit,
+  // so the tools aren't offered and must not be advertised.
+  expect(sandboxDescription(INFO, false, false)).not.toContain("view_file");
+});

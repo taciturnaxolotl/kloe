@@ -330,3 +330,37 @@ liveTest(
   },
   90_000,
 );
+
+liveTest(
+  "readFile classifies what it found, not just whether it worked",
+  async () => {
+    const e = new LocalDockerExecutor(SANDBOX);
+    const session = "test-" + Math.random().toString(36).slice(2);
+    try {
+      await e.putFile(session, "/workspace/notes.md", new TextEncoder().encode("one\ntwo\n"));
+      expect(await e.readFile(session, "/workspace/notes.md")).toMatchObject({
+        kind: "file",
+        text: "one\ntwo\n",
+      });
+
+      // The three ways a read fails are three different mistakes, and the tool
+      // above phrases a different fix for each.
+      expect((await e.readFile(session, "/workspace/nope.md")).kind).toBe("missing");
+      expect((await e.readFile(session, "/workspace")).kind).toBe("directory");
+
+      // Bytes that were never text: refused rather than mangled into a string.
+      await e.putFile(session, "/workspace/blob.bin", new Uint8Array([0, 1, 2, 0, 255]));
+      expect((await e.readFile(session, "/workspace/blob.bin")).kind).toBe("binary");
+
+      // A file too big to inline is a different answer from a file that failed.
+      await e.run({
+        command: "head -c 300000 /dev/zero | tr '\\0' 'x' > /workspace/big.txt",
+        session,
+      });
+      expect((await e.readFile(session, "/workspace/big.txt")).kind).toBe("too-large");
+    } finally {
+      e.disposeSession(session);
+    }
+  },
+  120_000,
+);

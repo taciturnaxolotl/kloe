@@ -57,6 +57,17 @@ export interface ExecResult {
   timedOut: boolean;
 }
 
+/**
+ * The outcome of reading a path in the sandbox: what it turned out to be, and
+ * its text when it was a readable file.
+ */
+export type ReadResult =
+  | { kind: "file"; text: string; bytes: number }
+  | { kind: "missing" }
+  | { kind: "directory" }
+  | { kind: "too-large"; bytes: number }
+  | { kind: "binary" };
+
 /** A file drained out of the sandbox's outbox. */
 export interface HarvestedFile {
   /** Path relative to the outbox root, e.g. "chart.png" or "data/out.csv". */
@@ -76,6 +87,14 @@ export interface Executor {
    * model can actually operate on.
    */
   putFile(session: string, path: string, bytes: Uint8Array, signal?: AbortSignal): Promise<void>;
+  /**
+   * Read one file back out, with enough of a verdict to explain a failure.
+   *
+   * The kind comes back with the bytes because "no such file" and "that's a
+   * directory" are different mistakes, and a tool that answers both with an
+   * empty string teaches the model nothing.
+   */
+  readFile(session: string, path: string, signal?: AbortSignal): Promise<ReadResult>;
   /**
    * Drain the outbox: every file under `dir`, returned and then removed.
    *
@@ -98,6 +117,13 @@ export interface Executor {
 function shq(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
+
+/**
+ * Ceiling on a single file read, so a tool call can't pull a gigabyte of log
+ * through the socket and into a prompt. Generous next to any source file, and
+ * `run_shell` is still there for the cases that genuinely need the whole thing.
+ */
+const MAX_READ_BYTES = 256 * 1024;
 
 /** What a killed command reports back. coreutils `timeout` uses 124 already. */
 const TIMEOUT_EXIT = 124;
@@ -460,6 +486,39 @@ export class LocalDockerExecutor implements Executor {
     await proc.stdin.end();
     const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
     if (code !== 0) throw new Error(`could not write ${path}: ${stderr.trim() || `exit ${code}`}`);
+  }
+
+  /**
+   * Read a file out of the container, classifying it on the way.
+   *
+   * One `docker exec` rather than a stat followed by a cat: the shell decides
+   * what the path is and prints a verdict line, then the bytes. Two round trips
+   * would also be two moments — a file can be created between them — and this
+   * way the answer describes a single instant.
+   *
+   * Text only, by design. The transport decodes stdout as UTF-8, so bytes that
+   * aren't text arrive mangled; detecting that here and saying so is honest,
+   * where handing back replacement characters would look like content.
+   */
+  async readFile(session: string, path: string, signal?: AbortSignal): Promise<ReadResult> {
+    const s = this.ensureSession(session);
+    await s.ready;
+    const max = MAX_READ_BYTES;
+    const script =
+      `p=${shq(path)}; ` +
+      `if [ -d "$p" ]; then echo DIR; elif [ ! -e "$p" ]; then echo MISSING; else ` +
+      `n=$(wc -c < "$p"); if [ "$n" -gt ${max} ]; then echo "BIG $n"; else echo "OK $n"; cat "$p"; fi; fi`;
+    const r = await dockerRun(["exec", s.name, "sh", "-c", script], this.env, signal);
+    const nl = r.stdout.indexOf("\n");
+    const verdict = (nl < 0 ? r.stdout : r.stdout.slice(0, nl)).trim();
+    if (verdict === "DIR") return { kind: "directory" };
+    if (verdict === "MISSING" || r.exitCode !== 0) return { kind: "missing" };
+    if (verdict.startsWith("BIG ")) return { kind: "too-large", bytes: Number(verdict.slice(4)) };
+    const text = nl < 0 ? "" : r.stdout.slice(nl + 1);
+    // A NUL or a decode failure means these bytes were never text. Editing them
+    // through a string API would corrupt the file, so refuse rather than try.
+    if (text.includes(" ") || text.includes("�")) return { kind: "binary" };
+    return { kind: "file", text, bytes: Number(verdict.slice(3)) || text.length };
   }
 
   async harvest(

@@ -1,7 +1,14 @@
 import { jsonSchema, type LanguageModel, type Tool, type ToolSet, tool } from "ai";
 import type { BlobStore } from "./blobs";
+import { replaceOnce, viewSlice } from "./edits";
 import type { ArtifactRef } from "./events";
-import { type Executor, formatExecResult, getExecutor, type SandboxInfo } from "./executor";
+import {
+  type Executor,
+  formatExecResult,
+  getExecutor,
+  type ReadResult,
+  type SandboxInfo,
+} from "./executor";
 import { createFetchProvider, type FetchProvider } from "./fetch";
 import {
   contextToText,
@@ -296,7 +303,11 @@ function getAttachment(store: Store, blobs: BlobStore, executor: Executor, conve
  * busybox and little else. Better to say so and point at `command -v` than to
  * send the model chasing a python3 that isn't there.
  */
-export function sandboxDescription(info: SandboxInfo, hasAttachments: boolean): string {
+export function sandboxDescription(
+  info: SandboxInfo,
+  hasAttachments: boolean,
+  hasFileTools = false,
+): string {
   const secs = (ms: number) => Math.round(ms / 1000);
   const net = info.network
     ? "It HAS network access, so package installs work and persist for the rest of the chat — use the image's own " +
@@ -332,6 +343,16 @@ export function sandboxDescription(info: SandboxInfo, hasAttachments: boolean): 
       (hasAttachments
         ? " Files the user attached, and documents from earlier turns, arrive at /workspace/inputs/ via get_attachment."
         : ""),
+    ...(hasFileTools
+      ? [
+          "",
+          "Files: reach for view_file, write_file and edit_file rather than doing it here. A " +
+            "heredoc has to survive the shell's quoting and a `sed` expression has to survive its " +
+            "own, and when that goes wrong the result is a mangled file rather than an error. " +
+            "This tool is still the right one for everything around the file: listing, searching, " +
+            "running it, moving it, installing what it needs.",
+        ]
+      : []),
   ].join("\n");
 }
 
@@ -346,7 +367,7 @@ function runShell(executor: Executor, ctx: ToolContext) {
   );
   const maxSeconds = Math.round(executor.info.maxTimeoutMs / 1000);
   return tool({
-    description: sandboxDescription(executor.info, hasAttachments),
+    description: sandboxDescription(executor.info, hasAttachments, Boolean(ctx.conversationId)),
     inputSchema: jsonSchema<{ command: string; timeout_seconds?: number }>({
       type: "object",
       properties: {
@@ -377,6 +398,178 @@ function runShell(executor: Executor, ctx: ToolContext) {
     },
   });
 }
+
+/**
+ * Working with a file, without going through a shell.
+ *
+ * `run_shell` can already read and write files, and for one-liners it is the
+ * better tool. It falls down on exactly the operations a model does most: get a
+ * file's contents with line numbers you can then refer to, and change a few
+ * lines in the middle of it. Through a shell the second one is a heredoc or a
+ * `sed` expression, where the model's real content has to survive two levels of
+ * quoting — and the failure mode is not an error but a mangled file.
+ *
+ * So the bytes make one trip to this process, the edit happens in a real string
+ * API, and the bytes go back. What the model sends is what lands.
+ */
+// Exported for tests: the wrappers are exercised against a fake executor, so
+// path handling and the phrasing of every failure are checkable without docker.
+function describePaths(): string {
+  return (
+    "Paths are inside the sandbox and may be relative to /workspace (so " +
+    "'notes.md' and '/workspace/notes.md' are the same file)."
+  );
+}
+
+/** Absolute, or resolved against the workspace root the sandbox starts in. */
+function sandboxPath(path: string): string {
+  const p = path.trim();
+  if (!p) return "";
+  return p.startsWith("/") ? p : `/workspace/${p.replace(/^\.\//, "")}`;
+}
+
+/** A read that failed, phrased so the model knows what to do next. */
+function explainRead(result: ReadResult, path: string): string | null {
+  switch (result.kind) {
+    case "missing":
+      return `No file at ${path}. Check the path with run_shell (\`ls\`) — it may be somewhere else, or not written yet.`;
+    case "directory":
+      return `${path} is a directory, not a file. List it with run_shell (\`ls ${path}\`).`;
+    case "too-large":
+      return `${path} is ${result.bytes} bytes, too big to read in one piece. Use run_shell to slice the part you need (\`head\`, \`sed -n\`, \`grep -n\`).`;
+    case "binary":
+      return `${path} is not text, so it can't be viewed or edited this way. Handle it with run_shell, or promote it to /workspace/outputs to hand it to the user.`;
+    default:
+      return null;
+  }
+}
+
+export function viewFile(executor: Executor, session: string) {
+  return tool({
+    description:
+      "Read a text file from the sandbox, with line numbers. Prefer this over `cat`: the numbers " +
+      "are what later edits and your own explanations refer to, and long lines are truncated " +
+      "rather than flooding the conversation. Reads 200 lines from the top by default; pass " +
+      "offset and limit to walk a longer file. " +
+      describePaths(),
+    inputSchema: jsonSchema<{ path: string; offset?: number; limit?: number }>({
+      type: "object",
+      properties: {
+        path: { type: "string", description: "The file to read, e.g. 'src/main.py'." },
+        offset: {
+          type: "number",
+          description: "0-based line to start at. Omit to start at the top.",
+        },
+        limit: { type: "number", description: "How many lines to read. Defaults to 200." },
+      },
+      required: ["path"],
+      additionalProperties: false,
+    }),
+    execute: async ({ path, offset, limit }, { abortSignal }) => {
+      const full = sandboxPath(path);
+      if (!full) return "path is required.";
+      const read = await executor.readFile(session, full, abortSignal);
+      const problem = explainRead(read, full);
+      if (problem) return problem;
+      if (read.kind !== "file") return problem ?? "Could not read that file.";
+      if (read.text === "") return `${full} is empty (0 bytes).`;
+      const slice = viewSlice(read.text, offset ?? 0, limit ?? DEFAULT_VIEW_LINES);
+      if (slice.shown === 0) {
+        return `${full} has ${slice.total} lines, so there is nothing at offset ${offset}.`;
+      }
+      const end = slice.from + slice.shown - 1;
+      const more =
+        end < slice.total
+          ? `\n\n[showing lines ${slice.from}-${end} of ${slice.total}. Pass offset: ${end} to continue.]`
+          : "";
+      return `${full}\n${slice.body}${more}`;
+    },
+  });
+}
+
+export function writeFile(executor: Executor, session: string) {
+  return tool({
+    description:
+      "Write a text file in the sandbox, creating parent directories and replacing anything " +
+      "already there. This is the tool for a NEW file, or for a rewrite so extensive that " +
+      "quoting the old text would be pointless; to change part of a file, edit_file leaves the " +
+      "rest alone and is far harder to get wrong. Content is written exactly as given — no shell " +
+      "quoting, no escaping. " +
+      describePaths(),
+    inputSchema: jsonSchema<{ path: string; content: string }>({
+      type: "object",
+      properties: {
+        path: { type: "string", description: "The file to write, e.g. 'src/main.py'." },
+        content: { type: "string", description: "The file's complete new contents." },
+      },
+      required: ["path", "content"],
+      additionalProperties: false,
+    }),
+    execute: async ({ path, content }, { abortSignal }) => {
+      const full = sandboxPath(path);
+      if (!full) return "path is required.";
+      const before = await executor.readFile(session, full, abortSignal);
+      if (before.kind === "directory") return `${full} is a directory, not a file.`;
+      await executor.putFile(session, full, new TextEncoder().encode(content), abortSignal);
+      const lines = content === "" ? 0 : content.split("\n").length;
+      return before.kind === "file"
+        ? `Overwrote ${full} (${lines} lines, ${content.length} bytes).`
+        : `Created ${full} (${lines} lines, ${content.length} bytes).`;
+    },
+  });
+}
+
+export function editFile(executor: Executor, session: string) {
+  return tool({
+    description:
+      "Change part of a text file in the sandbox by exact find-and-replace. old_string must " +
+      "appear EXACTLY once — include the surrounding lines that make it unique — or pass " +
+      "replace_all to change every occurrence. Copy old_string byte-for-byte from view_file, " +
+      "whitespace included; if it doesn't match, the reply shows you what the file really says. " +
+      "Nothing outside old_string is touched. " +
+      describePaths(),
+    inputSchema: jsonSchema<{
+      path: string;
+      old_string: string;
+      new_string: string;
+      replace_all?: boolean;
+    }>({
+      type: "object",
+      properties: {
+        path: { type: "string", description: "The file to edit." },
+        old_string: { type: "string", description: "The exact text to replace." },
+        new_string: {
+          type: "string",
+          description: "What to put in its place (may be empty to delete).",
+        },
+        replace_all: {
+          type: "boolean",
+          description: "Replace every occurrence instead of requiring a unique one.",
+        },
+      },
+      required: ["path", "old_string", "new_string"],
+      additionalProperties: false,
+    }),
+    execute: async ({ path, old_string, new_string, replace_all }, { abortSignal }) => {
+      const full = sandboxPath(path);
+      if (!full) return "path is required.";
+      const read = await executor.readFile(session, full, abortSignal);
+      const problem = explainRead(read, full);
+      if (problem) return problem;
+      if (read.kind !== "file") return "Could not read that file.";
+      const out = replaceOnce(read.text, old_string, new_string, replace_all === true);
+      if (!out.ok) return out.reason;
+      await executor.putFile(session, full, new TextEncoder().encode(out.text), abortSignal);
+      const delta = out.text.split("\n").length - read.text.split("\n").length;
+      const shape =
+        delta === 0 ? "same line count" : delta > 0 ? `+${delta} lines` : `${delta} lines`;
+      return `Edited ${full} — ${out.replaced} replacement${out.replaced === 1 ? "" : "s"}, ${shape}.`;
+    },
+  });
+}
+
+/** Lines a view returns when the caller doesn't say. Anthropic's tool uses the same default. */
+const DEFAULT_VIEW_LINES = 200;
 
 /**
  * Drain /workspace/outputs into blobs after a command.
@@ -524,6 +717,33 @@ const REGISTRY: Array<{
     create: (ctx) => {
       const e = getExecutor();
       return e ? runShell(e, ctx) : null;
+    },
+  },
+  // The file tools need a conversation to be the sandbox session: a one-off
+  // container would be a fresh filesystem per call, so viewing a file you just
+  // wrote would find nothing.
+  {
+    name: "view_file",
+    executor: "sandbox",
+    create: (ctx) => {
+      const e = getExecutor();
+      return e && ctx.conversationId ? viewFile(e, ctx.conversationId) : null;
+    },
+  },
+  {
+    name: "write_file",
+    executor: "sandbox",
+    create: (ctx) => {
+      const e = getExecutor();
+      return e && ctx.conversationId ? writeFile(e, ctx.conversationId) : null;
+    },
+  },
+  {
+    name: "edit_file",
+    executor: "sandbox",
+    create: (ctx) => {
+      const e = getExecutor();
+      return e && ctx.conversationId ? editFile(e, ctx.conversationId) : null;
     },
   },
 ];

@@ -34,6 +34,7 @@ import {
   EXT_ICON as ICON_EXT,
   GLOBE_ICON as ICON_GLOBE,
   PAGE_ICON as ICON_PAGE,
+  PENCIL_ICON as ICON_PENCIL,
   RESEARCH_ICON as ICON_RESEARCH,
   TERMINAL_ICON as ICON_TERMINAL,
   TOOL_ICON as ICON_TOOL,
@@ -2227,7 +2228,52 @@ import { mountSidebar } from "./sidebar.js";
       },
       result: renderShellResult,
     },
+    // The file tools name the file they touched, because that is the whole
+    // story of the step: which file, and what happened to it. The result body
+    // (numbered lines, or a one-line report) renders with the default.
+    view_file: {
+      icon: ICON_PAGE,
+      row: function (input) {
+        return (input && input.path) || "view_file";
+      },
+      summary: function (steps, active) {
+        var verb = active ? "Reading" : "Read";
+        if (steps.length > 1) return verb + " " + steps.length + " files";
+        return verb + " " + (baseName(lastInput(steps).path) || "a file");
+      },
+      result: defaultResult,
+    },
+    write_file: {
+      icon: ICON_PAGE,
+      row: function (input) {
+        return (input && input.path) || "write_file";
+      },
+      summary: function (steps, active) {
+        var verb = active ? "Writing" : "Wrote";
+        if (steps.length > 1) return verb + " " + steps.length + " files";
+        return verb + " " + (baseName(lastInput(steps).path) || "a file");
+      },
+      result: defaultResult,
+    },
+    edit_file: {
+      icon: ICON_PENCIL,
+      row: function (input) {
+        return (input && input.path) || "edit_file";
+      },
+      summary: function (steps, active) {
+        var verb = active ? "Editing" : "Edited";
+        if (steps.length > 1) return verb + " " + steps.length + " files";
+        return verb + " " + (baseName(lastInput(steps).path) || "a file");
+      },
+      result: defaultResult,
+    },
   };
+  /** The last path segment — a step reads better as "main.py" than as its path. */
+  function baseName(p) {
+    if (!p) return "";
+    var parts = String(p).split("/");
+    return parts[parts.length - 1] || p;
+  }
   var DEFAULT_TOOL = {
     icon: ICON_TOOL,
     row: function (_input, name) {
