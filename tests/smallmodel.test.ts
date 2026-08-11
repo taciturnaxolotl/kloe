@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { Catalog } from "../src/catalog";
-import { setRegistry } from "../src/inference";
+import { resolveVisionModel, setRegistry } from "../src/inference";
 import { ProviderRegistry } from "../src/providers";
 import { loadConfig, setConfig } from "../src/settings";
 import { Store } from "../src/store";
@@ -12,6 +12,10 @@ afterEach(() => setConfig(null));
 function configureSmallModel(smallModel: string): void {
   const base = loadConfig({ path: "/nonexistent", env: {} });
   setConfig({ ...base, agent: { ...base.agent, smallModel } });
+}
+function configureVisionModel(visionModel: string): void {
+  const base = loadConfig({ path: "/nonexistent", env: {} });
+  setConfig({ ...base, agent: { ...base.agent, visionModel } });
 }
 
 /** Two real models at different prices, alongside the built-in echo mock. */
@@ -40,6 +44,23 @@ function registry(): ProviderRegistry {
         // Nothing known about it: the catalog coerces absent pricing to zero,
         // so on cost alone it beats every real model.
         { id: "mystery", name: "Mystery" },
+        // Two that can actually see, one dearer than the other.
+        {
+          id: "eyes",
+          name: "Eyes",
+          context_window: 8000,
+          cost_per_1m_in: 5,
+          cost_per_1m_out: 15,
+          supports_attachments: true,
+        },
+        {
+          id: "cheap-eyes",
+          name: "Cheap Eyes",
+          context_window: 8000,
+          cost_per_1m_in: 2,
+          cost_per_1m_out: 4,
+          supports_attachments: true,
+        },
       ],
     },
   ]);
@@ -83,4 +104,35 @@ test("a configured model that is not enabled falls back to the cheapest real one
   setRegistry(registry());
   configureSmallModel("acme/gone");
   expect(resolveSmallModel(storeWith("echo", "acme/big", "acme/small"))).toBe("acme/small");
+});
+
+// ---- the image reader ------------------------------------------------------
+// Same selection shape as the small model, with one extra requirement that is
+// the whole point: it has to be able to see.
+
+test("the vision model is the cheapest ENABLED model that accepts images", () => {
+  setRegistry(registry());
+  expect(resolveVisionModel(storeWith("acme/big", "acme/eyes", "acme/cheap-eyes"))).toBe(
+    "acme/cheap-eyes",
+  );
+  // Cheaper models that can't see are not candidates, however cheap.
+  expect(resolveVisionModel(storeWith("acme/small", "acme/eyes"))).toBe("acme/eyes");
+});
+
+test("with no image-capable model enabled there is no reader", () => {
+  setRegistry(registry());
+  // `read_image` is then simply not offered — better than offered and broken.
+  expect(resolveVisionModel(storeWith("acme/big", "acme/small"))).toBeNull();
+  expect(resolveVisionModel(storeWith())).toBeNull();
+});
+
+test("a configured vision model wins, and a stale one falls back", () => {
+  setRegistry(registry());
+  configureVisionModel("acme/eyes");
+  expect(resolveVisionModel(storeWith("acme/eyes", "acme/cheap-eyes"))).toBe("acme/eyes");
+
+  // Configured but not enabled: fall back rather than return a ref nothing can
+  // resolve.
+  configureVisionModel("acme/ghost");
+  expect(resolveVisionModel(storeWith("acme/eyes", "acme/cheap-eyes"))).toBe("acme/cheap-eyes");
 });

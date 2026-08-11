@@ -1,43 +1,10 @@
 import { type JSONValue, streamText } from "ai";
-import { getRegistry, resolveModel } from "./inference";
-import { isEchoModel } from "./providers";
-import { getConfig } from "./settings";
+import { getRegistry, resolveModel, resolveSmallModel } from "./inference";
 import type { Store } from "./store";
 
-/** Models the deployment has enabled (visible in the picker). */
-function enabledModels(store: Store) {
-  const settings = new Map(store.listModelSettings().map((s) => [s.ref, s]));
-  return getRegistry()
-    .listModels()
-    .filter((m) => settings.get(m.ref)?.visible);
-}
-
-/**
- * The model for utility work (titles): `agent.smallModel` when it's set AND
- * enabled, otherwise the cheapest enabled model (least in+out cost per 1M) — so
- * a configured ref that no longer exists gracefully falls back. Null when no
- * model is enabled at all.
- *
- * Two exclusions, both because "cheapest" rewards missing metadata. The echo
- * mock costs nothing, so it won outright whenever it was visible. A model with
- * no context window is one nothing is known about — the catalog coerces absent
- * pricing to zero, so an unlisted model would win the same way. A genuinely free
- * local model still wins, because discovery gives it a real window.
- *
- * An explicitly configured `agent.smallModel` skips both checks: naming it is a
- * choice, inheriting it isn't.
- */
-export function resolveSmallModel(store: Store): string | null {
-  const enabled = enabledModels(store);
-  if (!enabled.length) return null;
-  const configured = getConfig().agent.smallModel;
-  if (configured && enabled.some((m) => m.ref === configured)) return configured;
-  const usable = enabled.filter((m) => !isEchoModel(m.ref) && m.contextWindow > 0);
-  if (!usable.length) return null;
-  return usable.reduce((a, b) =>
-    b.costPer1MIn + b.costPer1MOut < a.costPer1MIn + a.costPer1MOut ? b : a,
-  ).ref;
-}
+// Model selection moved to inference.ts, where the registry lives; re-exported
+// here because titling is what it was first for and every caller says so.
+export { resolveSmallModel };
 
 /**
  * A short conversation title from the opening exchange, via a small/cheap model

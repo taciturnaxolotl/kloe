@@ -112,6 +112,9 @@
         },
         "smallModel": {
           "type": "string"
+        },
+        "visionModel": {
+          "type": "string"
         }
       },
       "required": [],
@@ -256,6 +259,11 @@
           "minimum": 1,
           "default": 30000
         },
+        "maxTimeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 300000
+        },
         "idleMs": {
           "type": "integer",
           "minimum": 1,
@@ -264,6 +272,10 @@
         "network": {
           "type": "boolean",
           "default": false
+        },
+        "dockerNetwork": {
+          "type": "string",
+          "default": "bridge"
         }
       },
       "required": [],
@@ -272,8 +284,10 @@
         "backend": "docker",
         "image": "alpine:3.20",
         "timeoutMs": 30000,
+        "maxTimeoutMs": 300000,
         "idleMs": 600000,
-        "network": false
+        "network": false,
+        "dockerNetwork": "bridge"
       }
     },
     "auth": {

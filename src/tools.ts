@@ -1,4 +1,4 @@
-import { jsonSchema, type LanguageModel, type Tool, type ToolSet, tool } from "ai";
+import { generateText, jsonSchema, type LanguageModel, type Tool, type ToolSet, tool } from "ai";
 import type { BlobStore } from "./blobs";
 import { replaceOnce, viewSlice } from "./edits";
 import type { ArtifactRef } from "./events";
@@ -640,6 +640,86 @@ function mimeForName(name: string): string {
 }
 
 /**
+ * Let a text-only model see a picture.
+ *
+ * The conversation's model decides whether an image can be inlined at all: a
+ * non-vision model gets a note saying a file exists and nothing else, which is
+ * a dead end for "what's in this screenshot?". This tool is the way through —
+ * a second, image-capable model looks at the file and answers in words, and
+ * those words are what enters the conversation.
+ *
+ * Which is also its limitation, and the description says so: the reader gets
+ * one question and answers it in isolation. Asking a precise question beats
+ * asking for "a description" and hoping the detail you needed survived.
+ */
+function readImage(store: Store, blobs: BlobStore, conversationId: string, vision: LanguageModel) {
+  return tool({
+    description:
+      "Look at an image in this conversation and get back a description in words. You cannot see " +
+      "images yourself; this hands the file to a model that can. Ask a SPECIFIC question when you " +
+      "have one — 'what does the error message say?' gets you the text, where a general look gets " +
+      "you a general answer and a second call. Name the file exactly as it appears in the " +
+      "conversation. What comes back is one reader's account of the image, not the image: if the " +
+      "answer is thin, ask again about the part you care about.",
+    inputSchema: jsonSchema<{ name: string; question?: string }>({
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The image's name, e.g. 'screenshot.png'." },
+        question: {
+          type: "string",
+          description:
+            "What you need to know about it. Omit for a general description of what it shows.",
+        },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    }),
+    execute: async ({ name, question }, { abortSignal }) => {
+      const images = store.listFiles(conversationId).filter((f) => f.mime.startsWith("image/"));
+      const hit = images.find((f) => f.name === name) ?? images.find((f) => f.sha256 === name);
+      if (!hit) {
+        return images.length
+          ? `No image named "${name}" in this conversation. Images here: ${images.map((f) => f.name).join(", ")}.`
+          : "This conversation has no images.";
+      }
+      const blob = await blobs.get(hit.sha256);
+      if (!blob) return `The bytes for "${name}" are missing from the blob store.`;
+      const ask =
+        question?.trim() ||
+        "Describe this image: what it shows, and any text in it, transcribed exactly.";
+      const out = await generateText({
+        model: vision,
+        abortSignal,
+        maxOutputTokens: VISION_MAX_TOKENS,
+        system:
+          "You are looking at an image on behalf of someone who cannot see it. Answer the " +
+          "question directly and concretely, in plain prose. Transcribe any text exactly as it " +
+          "appears. Say plainly when the image does not show what was asked about — a guess " +
+          "presented as an observation is worse than nothing.",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: ask },
+              {
+                type: "file",
+                data: new Uint8Array(await blob.arrayBuffer()),
+                mediaType: hit.mime,
+              },
+            ],
+          },
+        ],
+      });
+      const text = out.text.trim();
+      return text || `The image reader returned nothing for ${hit.name}.`;
+    },
+  });
+}
+
+/** A description is prose about one picture, not a document. */
+const VISION_MAX_TOKENS = 2_000;
+
+/**
  * The tool table: each entry's `create` returns its AI SDK tool, or null when
  * its backing capability isn't configured (so it's simply not offered), and an
  * `executor` tag — `in-proc` runs in this process (pure/read-only), `sandbox`
@@ -710,6 +790,22 @@ const REGISTRY: Array<{
         ? getAttachment(ctx.store, ctx.blobs, e, ctx.conversationId)
         : null;
     },
+  },
+  {
+    // Offered only to a model that can't see images itself, and only once this
+    // conversation HAS one. A vision model with the tool would be a slower,
+    // lossier path to what it can already do.
+    name: "read_image",
+    executor: "in-proc",
+    create: (ctx) =>
+      ctx.store &&
+      ctx.blobs &&
+      ctx.conversationId &&
+      ctx.visionModel &&
+      !ctx.modelReadsImages &&
+      ctx.store.listFiles(ctx.conversationId).some((f) => f.mime.startsWith("image/"))
+        ? readImage(ctx.store, ctx.blobs, ctx.conversationId, ctx.visionModel)
+        : null,
   },
   {
     name: "run_shell",
@@ -839,6 +935,15 @@ export interface ToolContext {
    * model in hand.
    */
   model?: LanguageModel;
+  /**
+   * A resolved image-capable model, and whether the run's own model needs it.
+   * Both are decided by the caller for the same reason `model` is: choosing a
+   * model needs the registry, which lives in inference.ts, which imports this
+   * module. `read_image` is offered only when the run's model can't see images
+   * and this one can.
+   */
+  visionModel?: LanguageModel;
+  modelReadsImages?: boolean;
   /** Where a tool's output files go: agent artifacts share the user-upload store. */
   blobs?: BlobStore;
   /**

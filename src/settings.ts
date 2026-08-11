@@ -162,6 +162,13 @@ const AgentSchema = v.object({
    * enabled — this just steers which one.
    */
   smallModel: v.optional(v.string()),
+  /**
+   * A model ref that can read images, for the `read_image` tool a non-vision
+   * model uses to see an attachment. Used when set AND enabled; otherwise the
+   * cheapest enabled model that accepts images. With no such model the tool is
+   * not offered, and images stay unreadable to a text-only model — as they were.
+   */
+  visionModel: v.optional(v.string()),
 });
 
 /**

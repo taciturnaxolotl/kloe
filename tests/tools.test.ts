@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
-import type { ToolSet } from "ai";
-import { harden, sandboxDescription } from "../src/tools";
+import type { LanguageModel, ToolSet } from "ai";
+import type { BlobStore } from "../src/blobs";
+import { Store } from "../src/store";
+import { harden, sandboxDescription, toolSet } from "../src/tools";
 
 // harden() only reads/replaces each tool's `execute`, so a minimal tool-shaped
 // object exercises it without the `tool()` builder's generic gymnastics.
@@ -93,4 +95,68 @@ test("the shell description points at the file tools only when they're offered",
   // A one-off sandbox (no conversation) has no persistent filesystem to edit,
   // so the tools aren't offered and must not be advertised.
   expect(sandboxDescription(INFO, false, false)).not.toContain("view_file");
+});
+
+// ---- read_image ------------------------------------------------------------
+// The tool exists for one situation: an image in the conversation and a model
+// that can't look at it. Offering it in any other case would be a slower path
+// to what the run's own model already does.
+
+/** A store with one conversation whose user turn carried an attachment. */
+function storeWithFile(name: string, mime: string): Store {
+  const store = new Store(":memory:");
+  store.db
+    .prepare("INSERT INTO conversations (id, created_at, last_seq) VALUES ('c1', ?, 0)")
+    .run(Date.now());
+  store.db
+    .prepare(
+      "INSERT INTO events (id, conversation_id, seq, event, data, created_at) VALUES ('c1:1','c1',1,'user-message',?,?)",
+    )
+    .run(
+      JSON.stringify({ content: "look", attachments: [{ sha256: "a".repeat(64), name, mime }] }),
+      Date.now(),
+    );
+  return store;
+}
+
+const FAKE_MODEL = { modelId: "vision" } as unknown as LanguageModel;
+const BLOBS = {} as unknown as BlobStore;
+
+test("read_image is offered to a blind model with an image to look at", () => {
+  const store = storeWithFile("shot.png", "image/png");
+  const tools = toolSet({
+    store,
+    blobs: BLOBS,
+    conversationId: "c1",
+    visionModel: FAKE_MODEL,
+    modelReadsImages: false,
+  });
+  expect(Object.keys(tools)).toContain("read_image");
+});
+
+test("read_image is withheld when it would add nothing", () => {
+  const store = storeWithFile("shot.png", "image/png");
+  const base = { store, blobs: BLOBS, conversationId: "c1" };
+
+  // The run's model can see for itself: the image is already in its context.
+  expect(
+    Object.keys(toolSet({ ...base, visionModel: FAKE_MODEL, modelReadsImages: true })),
+  ).not.toContain("read_image");
+
+  // No reader configured or discoverable.
+  expect(Object.keys(toolSet({ ...base, modelReadsImages: false }))).not.toContain("read_image");
+
+  // Nothing to look at: a conversation whose only file is a spreadsheet.
+  const noImages = storeWithFile("budget.csv", "text/csv");
+  expect(
+    Object.keys(
+      toolSet({
+        store: noImages,
+        blobs: BLOBS,
+        conversationId: "c1",
+        visionModel: FAKE_MODEL,
+        modelReadsImages: false,
+      }),
+    ),
+  ).not.toContain("read_image");
 });

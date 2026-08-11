@@ -5,7 +5,7 @@ import { type LoadCatalogOptions, loadCatalog } from "./catalog";
 import type { TokenUsage } from "./events";
 import { contextToText, getContext, lardConnected, lardEnabled } from "./lard";
 import { buildSystemPrompt } from "./prompt";
-import { ProviderRegistry } from "./providers";
+import { isEchoModel, ProviderRegistry } from "./providers";
 import { RateLimiter } from "./ratelimit";
 import { getConfig } from "./settings";
 import type { Store } from "./store";
@@ -209,6 +209,68 @@ function modelInfo(modelRef: string) {
   }
 }
 
+/** Models the deployment has enabled (visible in the picker). */
+function enabledModels(store: Store) {
+  const settings = new Map(store.listModelSettings().map((s) => [s.ref, s]));
+  return getRegistry()
+    .listModels()
+    .filter((m) => settings.get(m.ref)?.visible);
+}
+
+/**
+ * The model for utility work (titles): `agent.smallModel` when it's set AND
+ * enabled, otherwise the cheapest enabled model (least in+out cost per 1M) — so
+ * a configured ref that no longer exists gracefully falls back. Null when no
+ * model is enabled at all.
+ *
+ * Two exclusions, both because "cheapest" rewards missing metadata. The echo
+ * mock costs nothing, so it won outright whenever it was visible. A model with
+ * no context window is one nothing is known about — the catalog coerces absent
+ * pricing to zero, so an unlisted model would win the same way. A genuinely free
+ * local model still wins, because discovery gives it a real window.
+ *
+ * An explicitly configured `agent.smallModel` skips both checks: naming it is a
+ * choice, inheriting it isn't.
+ */
+export function resolveSmallModel(store: Store): string | null {
+  const enabled = enabledModels(store);
+  if (!enabled.length) return null;
+  const configured = getConfig().agent.smallModel;
+  if (configured && enabled.some((m) => m.ref === configured)) return configured;
+  const usable = enabled.filter((m) => !isEchoModel(m.ref) && m.contextWindow > 0);
+  if (!usable.length) return null;
+  return usable.reduce((a, b) =>
+    b.costPer1MIn + b.costPer1MOut < a.costPer1MIn + a.costPer1MOut ? b : a,
+  ).ref;
+}
+
+/**
+ * The model that reads images on behalf of one that can't.
+ *
+ * Same shape as `resolveSmallModel` and for the same reason: a deployment
+ * shouldn't have to configure anything for this to work, but should be able to.
+ * `agent.visionModel` wins when set and enabled; otherwise the cheapest enabled
+ * model that actually accepts images. Null when the deployment has none — the
+ * `read_image` tool is then simply not offered, rather than offered and broken.
+ *
+ * The echo/no-window exclusions are inherited from the same reasoning: cheapest
+ * rewards missing metadata, and a model nothing is known about is not a model to
+ * hand a picture to. A configured ref skips them, because naming it is a choice.
+ */
+export function resolveVisionModel(store: Store): string | null {
+  const enabled = enabledModels(store);
+  if (!enabled.length) return null;
+  const configured = getConfig().agent.visionModel;
+  if (configured && enabled.some((m) => m.ref === configured)) return configured;
+  const usable = enabled.filter(
+    (m) => m.supportsImages && !isEchoModel(m.ref) && m.contextWindow > 0,
+  );
+  if (!usable.length) return null;
+  return usable.reduce((a, b) =>
+    b.costPer1MIn + b.costPer1MOut < a.costPer1MIn + a.costPer1MOut ? b : a,
+  ).ref;
+}
+
 /** Whether a model can accept image inputs (false for unknown refs). */
 export function modelSupportsImages(modelRef: string): boolean {
   return modelInfo(modelRef)?.supportsImages ?? false;
@@ -262,12 +324,19 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
   // Only send tools when some are configured (e.g. web_search needs a search
   // provider) — a toolless deployment sends no `tools`, so endpoints that reject
   // an unknown tools field are unaffected.
+  // A model that can't see images gets a reader instead (the `read_image`
+  // tool). Resolved here rather than in tools.ts because picking a model needs
+  // the registry, which lives in this module.
+  const modelReadsImages = modelSupportsImages(opts.model);
+  const visionRef = !modelReadsImages && opts.store ? resolveVisionModel(opts.store) : null;
   const tools = toolSet({
     store: opts.store,
     owner: opts.owner,
     conversationId: opts.conversationId,
     blobs: opts.blobs,
     model, // deep_research runs its subagent on the same model as the run
+    modelReadsImages,
+    visionModel: visionRef ? resolveModel(visionRef) : undefined,
     onProgress: opts.onProgress,
   });
   const hasTools = Object.keys(tools).length > 0;

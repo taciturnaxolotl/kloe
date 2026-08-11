@@ -2460,6 +2460,18 @@ import { mountSidebar } from "./sidebar.js";
       },
       result: renderShellResult,
     },
+    read_image: {
+      icon: IMAGE_ICON,
+      row: function (input) {
+        return (input && input.name) || "read_image";
+      },
+      summary: function (steps, active) {
+        var verb = active ? "Looking at" : "Looked at";
+        if (steps.length > 1) return verb + " " + steps.length + " images";
+        return verb + " " + (lastInput(steps).name || "an image");
+      },
+      result: defaultResult,
+    },
     // The file tools name the file they touched, because that is the whole
     // story of the step: which file, and what happened to it. The result body
     // (numbered lines, or a one-line report) renders with the default.
