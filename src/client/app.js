@@ -1488,46 +1488,79 @@ import { mountSidebar } from "./sidebar.js";
     btn.title = paneVersions.length + " versions";
   }
   // ---- publishing ----------------------------------------------------------
-  // A published version is readable by anyone holding its link, so the state is
-  // shown, not just available in a menu: the chip is how you can tell at a
-  // glance that what you're looking at is public.
+  // A document has at most ONE public link, and that link is either pinned to a
+  // version or following the newest. Private, frozen, live: three states, so
+  // the chip can say which one you are looking at instead of merely that a link
+  // exists somewhere.
+  var panePublication = null; // { token, mode, version } for the open document
   function publicLink(token) {
     return location.origin + "/s/" + token;
   }
-  function publicToken() {
+  /** Whether the link, as configured, serves the revision currently on screen. */
+  function showingPublished() {
     var cur = currentVersion();
-    return (cur && cur.token) || null;
+    if (!panePublication || !cur) return false;
+    if (panePublication.mode === "latest") return cur.version === newestVersion();
+    return cur.version === panePublication.version;
+  }
+  function newestVersion() {
+    return paneVersions.length ? paneVersions[0].version : (paneDoc && paneDoc.version) || 0;
   }
   function paintPublicChip() {
     var chip = $("panePublic");
-    chip.hidden = paneMode !== "doc" || !publicToken();
+    chip.hidden = paneMode !== "doc" || !showingPublished();
     chip.textContent = "Public";
-  }
-  function setVersionToken(version, token) {
-    for (var i = 0; i < paneVersions.length; i++)
-      if (paneVersions[i].version === version) paneVersions[i].token = token;
-    paintPublicChip();
+    chip.title =
+      panePublication && panePublication.mode === "latest"
+        ? "Public link — follows the newest version. Click to copy."
+        : "Public link — pinned to this version. Click to copy.";
   }
   function copyPublicLink() {
-    var token = publicToken();
-    if (!token) return;
+    if (!panePublication) return;
     var chip = $("panePublic");
-    navigator.clipboard.writeText(publicLink(token)).then(function () {
+    navigator.clipboard.writeText(publicLink(panePublication.token)).then(function () {
+      if (chip.hidden) return; // copied from the menu while viewing another revision
       chip.textContent = "Link copied";
       setTimeout(paintPublicChip, 1400);
     });
   }
+  /** The version the pane is acting on: the history knows best, the card will do. */
+  function actingVersion() {
+    return currentVersion() || (paneDoc && paneDoc.version ? paneDoc : null);
+  }
+  function postPublication(version, mode) {
+    return fetch("/api/conversations/" + encodeURIComponent(convId) + "/publications", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: paneDoc.name, version: version, mode: mode }),
+    })
+      .then(function (r) {
+        return r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status));
+      })
+      .then(function (d) {
+        panePublication = { token: d.token, mode: d.mode, version: d.version };
+        paintPublicChip();
+        return d;
+      })
+      .catch(function () {
+        dialogs.confirm({
+          title: "Could not publish",
+          body: "Nothing was changed. Try again in a moment.",
+          ok: "OK",
+        });
+      });
+  }
   /**
-   * Publish the version on screen.
+   * Publish the document, frozen at the revision on screen.
    *
    * Confirmed first, and worded plainly: this is the one action in the pane
    * that hands a document to people who were never in the conversation, and it
-   * cannot be undone for anyone who already has the link.
+   * cannot be undone for anyone who already has the link. Pinned is the default
+   * because a link that quietly starts serving something else is the surprise
+   * worth not defaulting to; following is one menu item away.
    */
   function publishCurrent() {
-    // The history is the better source (it knows the version number for
-    // certain), but a card opened before that fetch lands carries one too.
-    var cur = currentVersion() || (paneDoc && paneDoc.version ? paneDoc : null);
+    var cur = actingVersion();
     if (!cur || !convId) return;
     dialogs
       .confirm({
@@ -1535,36 +1568,42 @@ import { mountSidebar } from "./sidebar.js";
         body:
           "Anyone with the link will be able to read " +
           (paneDoc.title || paneDoc.name) +
-          " without signing in. You can unpublish it at any time, but not un-share a link someone already has.",
+          " without signing in. The link stays on this version until you change it, and you can " +
+          "unpublish at any time — though not un-share a link someone already has.",
         ok: "Publish",
       })
       .then(function (ok) {
         if (!ok) return;
-        return fetch("/api/conversations/" + encodeURIComponent(convId) + "/publications", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name: cur.name, version: cur.version }),
-        })
-          .then(function (r) {
-            return r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status));
-          })
-          .then(function (d) {
-            setVersionToken(cur.version, d.token);
-            copyPublicLink(); // published and on the clipboard, in one press
-          })
-          .catch(function () {
-            dialogs.confirm({
-              title: "Could not publish",
-              body: "The document was not published. Try again in a moment.",
-              ok: "OK",
-            });
-          });
+        return postPublication(cur.version, "pinned").then(function (d) {
+          if (d) copyPublicLink(); // published and on the clipboard, in one press
+        });
+      });
+  }
+  /**
+   * Switch what the existing link serves, keeping the link itself.
+   *
+   * The token survives a mode change, which is the point: "actually, let it
+   * follow along" should not mean re-sending a URL to everyone you gave it to.
+   */
+  function setPublishMode(mode) {
+    var cur = actingVersion();
+    if (!panePublication || !cur || !convId) return;
+    if (mode === "pinned") return void postPublication(cur.version, "pinned");
+    dialogs
+      .confirm({
+        title: "Let the link follow the newest version?",
+        body:
+          "Anyone holding the link will see whatever this document becomes, including revisions " +
+          "you have not written yet. The link itself does not change.",
+        ok: "Follow the newest",
+      })
+      .then(function (ok) {
+        if (ok) postPublication(cur.version, "latest");
       });
   }
   function unpublishCurrent() {
-    var cur = currentVersion();
-    var token = publicToken();
-    if (!cur || !token || !convId) return;
+    if (!panePublication || !convId) return;
+    var token = panePublication.token;
     dialogs
       .confirm({
         title: "Unpublish this document?",
@@ -1581,11 +1620,40 @@ import { mountSidebar } from "./sidebar.js";
             encodeURIComponent(token),
           { method: "DELETE" },
         ).then(function () {
-          setVersionToken(cur.version, null);
+          panePublication = null;
+          paintPublicChip();
         });
       });
   }
+  /** The pane's overflow menu, which depends on whether the document is shared. */
+  function paneMenuItems() {
+    var items = [];
+    if (!panePublication) items.push({ label: "Publish\u2026", onClick: publishCurrent });
+    else {
+      items.push({ label: "Copy public link", onClick: copyPublicLink });
+      items.push(
+        panePublication.mode === "latest"
+          ? {
+              label: "Pin the link to this version",
+              onClick: function () {
+                setPublishMode("pinned");
+              },
+            }
+          : {
+              label: "Let the link follow the newest",
+              onClick: function () {
+                setPublishMode("latest");
+              },
+            },
+      );
+      items.push({ label: "Unpublish", danger: true, onClick: unpublishCurrent });
+    }
+    items.push({ label: "Download as Markdown", onClick: downloadMd });
+    items.push({ label: "Print / Save as PDF", onClick: printPane });
+    return items;
+  }
   function loadPaneVersions(doc) {
+    panePublication = null;
     paintPaneVersions([]);
     if (!doc || !convId) return;
     var want = doc.sha256;
@@ -1600,6 +1668,7 @@ import { mountSidebar } from "./sidebar.js";
       })
       .then(function (d) {
         if (!paneDoc || paneDoc.sha256 !== want) return; // opened something else meanwhile
+        panePublication = d.publication || null;
         paintPaneVersions(d.versions || []);
       })
       .catch(function () {});
@@ -1634,6 +1703,7 @@ import { mountSidebar } from "./sidebar.js";
   function closePane() {
     paneDoc = null;
     paneVersions = [];
+    panePublication = null;
     $("pane").hidden = true;
     $("paneBody").innerHTML = "";
     $("app").classList.remove("pane-open", "pane-full");
@@ -1803,23 +1873,7 @@ import { mountSidebar } from "./sidebar.js";
       if (!paneDoc) return;
       e.stopPropagation(); // the menu's own outside-click handler closes it
       var r = more.getBoundingClientRect();
-      showContextMenu(
-        r.right,
-        r.bottom + 6,
-        publicToken()
-          ? [
-              { label: "Copy public link", onClick: copyPublicLink },
-              { label: "Unpublish", danger: true, onClick: unpublishCurrent },
-              { label: "Download as Markdown", onClick: downloadMd },
-              { label: "Print / Save as PDF", onClick: printPane },
-            ]
-          : [
-              { label: "Publish\u2026", onClick: publishCurrent },
-              { label: "Download as Markdown", onClick: downloadMd },
-              { label: "Print / Save as PDF", onClick: printPane },
-            ],
-        { align: "right", trigger: more },
-      );
+      showContextMenu(r.right, r.bottom + 6, paneMenuItems(), { align: "right", trigger: more });
     });
     document.addEventListener("keydown", function (e) {
       if (e.key !== "Escape" || $("pane").hidden) return;

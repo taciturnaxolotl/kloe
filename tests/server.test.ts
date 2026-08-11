@@ -954,11 +954,11 @@ test("publishing a document hands back a link, and unpublishing revokes it", asy
   expect(await raw.text()).toContain("Hello from a published doc.");
   expect(raw.headers.get("X-Content-Type-Options")).toBe("nosniff");
 
-  // The owner's version list now shows which revision is public.
-  const { versions } = (await (
+  // The owner's history now reports the document's link beside it.
+  const listed = (await (
     await fetch(`${base}/api/conversations/${conv}/artifacts?name=report.md`)
-  ).json()) as { versions: Array<{ token: string | null }> };
-  expect(versions[0]!.token).toBe(token);
+  ).json()) as { publication: { token: string; mode: string; version: number } | null };
+  expect(listed.publication).toEqual({ token, mode: "pinned", version: 1 });
 
   const gone = await fetch(`${base}/api/conversations/${conv}/publications/${token}`, {
     method: "DELETE",
@@ -1005,4 +1005,45 @@ test("publishing a version that doesn't exist is a 404, not an empty link", asyn
     body: JSON.stringify({ name: "ghost.md", version: 1 }),
   });
   expect(res.status).toBe(404);
+});
+
+test("a following link serves the newest version, and keeps its token when repinned", async () => {
+  const conv = "share-live";
+  const write = async (text: string) => {
+    const bytes = new TextEncoder().encode(text);
+    const { sha256 } = await blobs.put(bytes);
+    store.recordBlob(sha256, "text/markdown", bytes.length);
+    store.recordArtifact({
+      conversationId: conv,
+      name: "live.md",
+      sha256,
+      mime: "text/markdown",
+      size: bytes.length,
+    });
+  };
+  await write("first draft");
+
+  const publish = (version: number, mode: string) =>
+    fetch(`${base}/api/conversations/${conv}/publications`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "live.md", version, mode }),
+    }).then((r) => r.json() as Promise<{ token: string; mode: string; version: number }>);
+
+  const live = await publish(1, "latest");
+  expect(live.mode).toBe("latest");
+  expect(await (await fetch(`${base}/api/public/${live.token}/raw`)).text()).toBe("first draft");
+
+  // The document moves on; the link moves with it, without being re-shared.
+  await write("second draft");
+  expect(await (await fetch(`${base}/api/public/${live.token}/raw`)).text()).toBe("second draft");
+  const meta = (await (await fetch(`${base}/api/public/${live.token}`)).json()) as {
+    version: number;
+  };
+  expect(meta.version).toBe(2);
+
+  // Freezing it keeps the same URL — that's the point of one link per document.
+  const pinned = await publish(1, "pinned");
+  expect(pinned.token).toBe(live.token);
+  expect(await (await fetch(`${base}/api/public/${live.token}/raw`)).text()).toBe("first draft");
 });

@@ -697,7 +697,15 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         const denied = guardConv(req, req.params.id);
         if (denied) return denied;
         const name = new URL(req.url).searchParams.get("name");
-        if (name) return Response.json({ versions: store.artifactVersions(req.params.id, name) });
+        if (name) {
+          // The link belongs to the DOCUMENT, so it is reported once beside the
+          // history rather than smeared across the version rows.
+          const pub = store.publicationFor(req.params.id, name);
+          return Response.json({
+            versions: store.artifactVersions(req.params.id, name),
+            publication: pub && { token: pub.token, mode: pub.mode, version: pub.version },
+          });
+        }
         return Response.json({ artifacts: store.listArtifacts(req.params.id) });
       },
     },
@@ -711,9 +719,14 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         const denied = guardConv(req, req.params.id);
         if (denied) return Promise.resolve(denied);
         return withBody(PublishBody, (data) => {
-          const pub = store.publish(req.params.id, data.name, data.version);
+          const pub = store.publish(req.params.id, data.name, data.version, data.mode);
           if (!pub) return Response.json({ error: "not found" }, { status: 404 });
-          return Response.json({ token: pub.token, url: `/s/${pub.token}` });
+          return Response.json({
+            token: pub.token,
+            url: `/s/${pub.token}`,
+            mode: pub.mode,
+            version: pub.version,
+          });
         })(req);
       },
     },

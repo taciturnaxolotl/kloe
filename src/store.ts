@@ -146,8 +146,6 @@ export interface ArtifactVersion {
   size: number;
   messageId: string | null;
   createdAt: number;
-  /** The public link's token, when this version has been published. */
-  token?: string | null;
 }
 
 /** A document at its newest version, with a count of how many exist. */
@@ -155,11 +153,16 @@ export interface ArtifactSummary extends ArtifactVersion {
   versions: number;
 }
 
-/** A document version its owner has put behind a public link. */
+/** Whether a link is frozen at a version or follows the newest one. */
+export type PublicationMode = "pinned" | "latest";
+
+/** A document its owner has put behind a public link. */
 export interface Publication {
   token: string;
   conversationId: string;
   name: string;
+  mode: PublicationMode;
+  /** Pinned: the version served. Latest: the version currently newest. */
   version: number;
   sha256: string;
   title: string | null;
@@ -355,16 +358,28 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_conv ON artifacts (conversation_id, cre
 -- Documents their owner has published to a public link. The token IS the
 -- capability: unguessable, and revoking the row revokes the link.
 --
--- A publication names one VERSION, and copies the bytes' address out of the
--- artifact row rather than joining back to it at read time. Two reasons. A
--- reader following a link should get the document that was shared, not whatever
--- the conversation has rewritten it into since. And serving a public page must
--- not have to touch conversation-owned tables at all — the sha256 is everything
--- the public path needs, so the public path can't reach anything else.
+-- ONE link per document, with a mode, rather than a link per version. A
+-- document is either private, shared frozen, or shared live — three states a
+-- person can hold in their head. A link per version would mean a document could
+-- be public in several ways at once, and revoking "the" link would not be a
+-- thing you could do.
+--
+--   pinned  — serves the stored version, whose bytes are copied into
+--             sha256/mime/size here. The conversation can rewrite the document
+--             freely; a reader keeps getting what was actually shared.
+--   latest  — serves whatever the newest version is at the moment of the
+--             request. The stored version records what it was published from,
+--             so the owner can see where the link started.
+--
+-- A live link is the one case where serving a public request has to read the
+-- artifacts table. That's still bounded by the token: it resolves the newest
+-- version OF THE DOCUMENT THE PUBLICATION NAMES, and nothing else is reachable
+-- from a token, correct or guessed.
 CREATE TABLE IF NOT EXISTS publications (
   token TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,
   name TEXT NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'pinned',
   version INTEGER NOT NULL,
   sha256 TEXT NOT NULL,
   title TEXT,
@@ -372,10 +387,10 @@ CREATE TABLE IF NOT EXISTS publications (
   size INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 );
--- One link per version: publishing twice hands back the link that already
--- exists rather than minting a second one nobody can keep track of.
+-- One link per document: publishing again re-points the link that exists
+-- instead of minting a second one nobody can keep track of.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_publications_doc
-  ON publications (conversation_id, name, version);
+  ON publications (conversation_id, name);
 CREATE INDEX IF NOT EXISTS idx_publications_conv ON publications (conversation_id);
 
 -- Auth sessions (indiko OAuth). The cookie holds an opaque high-entropy id; the
@@ -517,6 +532,24 @@ export class Store {
       this.db.exec("ALTER TABLE conversations ADD COLUMN project_id TEXT");
     } catch {
       // column already exists
+    }
+    // Migration: publications began as one row per VERSION and are now one row
+    // per DOCUMENT with a mode. Reshaping the index means collapsing any doc
+    // that had several links down to its newest — the table is a day old and
+    // nothing depends on the discarded rows, so this is a cheap correction
+    // rather than a data migration.
+    try {
+      this.db.exec("ALTER TABLE publications ADD COLUMN mode TEXT NOT NULL DEFAULT 'pinned'");
+      this.db.exec("DROP INDEX IF EXISTS idx_publications_doc");
+      this.db.exec(
+        `DELETE FROM publications WHERE rowid NOT IN
+           (SELECT MAX(rowid) FROM publications GROUP BY conversation_id, name)`,
+      );
+      this.db.exec(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_publications_doc ON publications (conversation_id, name)",
+      );
+    } catch {
+      // already reshaped
     }
     // Index the foreign key so the gallery's per-project chat COUNT, the
     // project-detail chat list, and unfiling on delete don't scan every
@@ -894,20 +927,12 @@ export class Store {
     ];
   }
 
-  /**
-   * Every version of one document, newest first — each carrying its public
-   * token when that version has been published, so a reader of this list can
-   * tell which revisions are shared without a second query per row.
-   */
+  /** Every version of one document, newest first. */
   artifactVersions(conversationId: string, name: string): ArtifactVersion[] {
     return this.db
       .prepare(
-        `SELECT a.name, a.version, a.sha256, a.title, a.mime, a.size,
-                a.message_id AS messageId, a.created_at AS createdAt, p.token
-           FROM artifacts a
-           LEFT JOIN publications p
-             ON p.conversation_id = a.conversation_id AND p.name = a.name AND p.version = a.version
-          WHERE a.conversation_id = ? AND a.name = ? ORDER BY a.version DESC`,
+        `SELECT name, version, sha256, title, mime, size, message_id AS messageId, created_at AS createdAt
+           FROM artifacts WHERE conversation_id = ? AND name = ? ORDER BY version DESC`,
       )
       .all(conversationId, name) as ArtifactVersion[];
   }
@@ -935,40 +960,50 @@ export class Store {
   // ---- publications ------------------------------------------------------
 
   /**
-   * Put one version of a document behind a public link, or hand back the link
-   * it already has.
+   * Put a document behind a public link, or re-point the one it already has.
    *
-   * Idempotent on purpose: "publish" is a state the document is in, not an
-   * event, so pressing it twice should not scatter two live links for the same
-   * bytes — one of which the owner would never think to revoke.
+   * "Published" is a state a document is in, not an event, so this is an upsert
+   * keyed on the document: pressing Publish again from a different version
+   * moves the existing link rather than scattering a second one the owner would
+   * never think to revoke. The token survives, which is what makes "pin it to
+   * this version instead" and "let it follow the newest" changes to a link
+   * people already have, rather than a new link to re-send.
    */
-  publish(conversationId: string, name: string, version: number): Publication | null {
+  publish(
+    conversationId: string,
+    name: string,
+    version: number,
+    mode: PublicationMode = "pinned",
+  ): Publication | null {
     const doc = this.getArtifact(conversationId, name, version);
     if (!doc) return null;
-    const existing = this.publicationFor(conversationId, name, version);
-    if (existing) return existing;
-    const token = randomUUID().replace(/-/g, "");
+    const existing = this.publicationFor(conversationId, name);
     const row: Publication = {
-      token,
+      token: existing?.token ?? randomUUID().replace(/-/g, ""),
       conversationId,
       name: doc.name,
+      mode,
       version: doc.version,
       sha256: doc.sha256,
       title: doc.title,
       mime: doc.mime,
       size: doc.size,
-      createdAt: Date.now(),
+      createdAt: existing?.createdAt ?? Date.now(),
     };
     this.db
       .prepare(
         `INSERT INTO publications
-           (token, conversation_id, name, version, sha256, title, mime, size, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (token, conversation_id, name, mode, version, sha256, title, mime, size, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(conversation_id, name) DO UPDATE SET
+           mode = excluded.mode, version = excluded.version, sha256 = excluded.sha256,
+           title = excluded.title, mime = excluded.mime, size = excluded.size`,
       )
       .run(
         row.token,
         row.conversationId,
         row.name,
+        row.mode,
         row.version,
         row.sha256,
         row.title,
@@ -976,31 +1011,46 @@ export class Store {
         row.size,
         row.createdAt,
       );
-    return row;
+    return this.getPublication(row.token);
   }
 
-  /** A public document by its token — the only lookup the public path needs. */
+  /**
+   * A public document by its token — the only lookup the public path needs.
+   *
+   * A live publication is resolved here rather than at every call site, so
+   * "which bytes does this link serve" has exactly one answer in the codebase.
+   * A pinned one is already the answer.
+   */
   getPublication(token: string): Publication | null {
-    return (
-      (this.db
-        .prepare(
-          `SELECT token, conversation_id AS conversationId, name, version, sha256, title, mime, size,
-                  created_at AS createdAt
-             FROM publications WHERE token = ?`,
-        )
-        .get(token) as Publication | null) ?? null
-    );
+    const row = this.readPublication("token = ?", token);
+    if (!row || row.mode !== "latest") return row;
+    const newest = this.getArtifact(row.conversationId, row.name);
+    if (!newest) return row; // nothing newer to serve; the stored copy stands
+    return {
+      ...row,
+      version: newest.version,
+      sha256: newest.sha256,
+      title: newest.title,
+      mime: newest.mime,
+      size: newest.size,
+    };
   }
 
-  publicationFor(conversationId: string, name: string, version: number): Publication | null {
+  /** The link a document has, if any — resolved the same way as by token. */
+  publicationFor(conversationId: string, name: string): Publication | null {
+    const row = this.readPublication("conversation_id = ? AND name = ?", conversationId, name);
+    return row ? this.getPublication(row.token) : null;
+  }
+
+  private readPublication(where: string, ...args: unknown[]): Publication | null {
     return (
       (this.db
         .prepare(
-          `SELECT token, conversation_id AS conversationId, name, version, sha256, title, mime, size,
-                  created_at AS createdAt
-             FROM publications WHERE conversation_id = ? AND name = ? AND version = ?`,
+          `SELECT token, conversation_id AS conversationId, name, mode, version, sha256, title,
+                  mime, size, created_at AS createdAt
+             FROM publications WHERE ${where}`,
         )
-        .get(conversationId, name, version) as Publication | null) ?? null
+        .get(...(args as [])) as Publication | null) ?? null
     );
   }
 

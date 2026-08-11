@@ -78,14 +78,17 @@ export const ModelPatchBody = v.object({
 export type ModelPatchBody = v.InferOutput<typeof ModelPatchBody>;
 
 /**
- * POST /api/conversations/:id/publications — put one version of a document
- * behind a public link. The version is required rather than defaulted to the
- * newest: publishing is a deliberate act about a specific set of bytes, and
- * "whatever is newest" would make the link's contents depend on when it was
- * pressed.
+ * POST /api/conversations/:id/publications — put a document behind a public
+ * link, or re-point the one it has.
+ *
+ * `version` is required even for a following link: it is the version the owner
+ * was looking at when they pressed the button, which is what makes "publish"
+ * mean something definite either way. `mode` defaults to "pinned" because the
+ * frozen link is the one that cannot surprise you later.
  */
 export const PublishBody = v.object({
   name: v.pipe(v.string(), v.minLength(1), v.maxLength(200)),
   version: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  mode: v.optional(v.picklist(["pinned", "latest"]), "pinned"),
 });
 export type PublishBody = v.InferOutput<typeof PublishBody>;

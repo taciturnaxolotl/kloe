@@ -125,30 +125,51 @@ test("a conversation with no files lists none", () => {
 
 // ---- publishing ------------------------------------------------------------
 
-test("publishing a version mints one link, and pressing it again returns the same one", () => {
+test("publishing mints one link per DOCUMENT, and publishing again re-points it", () => {
   const store = fresh();
   record(store, "c1", "report.md", "a".repeat(64), "Draft");
   record(store, "c1", "report.md", "b".repeat(64), "Final");
 
   const first = store.publish("c1", "report.md", 2)!;
   expect(first.token).toMatch(/^[0-9a-f]{32}$/);
-  expect(first).toMatchObject({ name: "report.md", version: 2, sha256: "b".repeat(64) });
-  // Idempotent: publishing twice must not scatter two live links for one document.
-  expect(store.publish("c1", "report.md", 2)!.token).toBe(first.token);
+  expect(first).toMatchObject({ mode: "pinned", version: 2, sha256: "b".repeat(64) });
 
-  // A different version is a different document to share, so it gets its own.
-  const older = store.publish("c1", "report.md", 1)!;
-  expect(older.token).not.toBe(first.token);
-  expect(older.sha256).toBe("a".repeat(64));
+  // Publishing an older version moves the SAME link rather than minting a
+  // second one: a document is public in one way at a time.
+  const repinned = store.publish("c1", "report.md", 1)!;
+  expect(repinned.token).toBe(first.token);
+  expect(repinned).toMatchObject({ version: 1, sha256: "a".repeat(64) });
+  expect(store.publicationFor("c1", "report.md")!.token).toBe(first.token);
 });
 
-test("publishing pins the bytes, so a later rewrite doesn't change what was shared", () => {
+test("a pinned link keeps serving what was shared; a following one moves on", () => {
   const store = fresh();
   record(store, "c1", "report.md", "a".repeat(64), "Draft");
-  const pub = store.publish("c1", "report.md", 1)!;
-  record(store, "c1", "report.md", "b".repeat(64), "Rewritten");
 
-  expect(store.getPublication(pub.token)!.sha256).toBe("a".repeat(64));
+  const pinned = store.publish("c1", "report.md", 1, "pinned")!;
+  record(store, "c1", "report.md", "b".repeat(64), "Rewritten");
+  expect(store.getPublication(pinned.token)).toMatchObject({
+    version: 1,
+    sha256: "a".repeat(64),
+    title: "Draft",
+  });
+
+  // Same token, different contract: the link now resolves at read time.
+  const live = store.publish("c1", "report.md", 1, "latest")!;
+  expect(live.token).toBe(pinned.token);
+  expect(store.getPublication(live.token)).toMatchObject({
+    version: 2,
+    sha256: "b".repeat(64),
+    title: "Rewritten",
+  });
+
+  // …and keeps moving as the document does.
+  record(store, "c1", "report.md", "c".repeat(64), "Rewritten again");
+  expect(store.getPublication(live.token)!.sha256).toBe("c".repeat(64));
+
+  // Pinning it again freezes it where the owner chose, link intact.
+  store.publish("c1", "report.md", 2, "pinned");
+  expect(store.getPublication(live.token)).toMatchObject({ version: 2, sha256: "b".repeat(64) });
 });
 
 test("a version that doesn't exist cannot be published", () => {
@@ -158,25 +179,17 @@ test("a version that doesn't exist cannot be published", () => {
   expect(store.publish("c1", "nope.md", 1)).toBeNull();
 });
 
-test("version history carries the public token, and unpublishing takes it away", () => {
+test("unpublishing needs the conversation, not just the token", () => {
   const store = fresh();
   record(store, "c1", "report.md", "a".repeat(64));
-  record(store, "c1", "report.md", "b".repeat(64));
   const pub = store.publish("c1", "report.md", 1)!;
 
-  const versions = store.artifactVersions("c1", "report.md");
-  expect(versions.map((v) => [v.version, v.token ?? null])).toEqual([
-    [2, null],
-    [1, pub.token],
-  ]);
-
-  // Scoped to the conversation: a token alone is not authority to revoke.
   expect(store.unpublish("other", pub.token)).toBe(false);
   expect(store.getPublication(pub.token)).not.toBeNull();
 
   expect(store.unpublish("c1", pub.token)).toBe(true);
   expect(store.getPublication(pub.token)).toBeNull();
-  expect(store.artifactVersions("c1", "report.md")[1]!.token ?? null).toBeNull();
+  expect(store.publicationFor("c1", "report.md")).toBeNull();
 });
 
 test("deleting a conversation revokes the links it published", () => {
