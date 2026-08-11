@@ -2942,20 +2942,67 @@ body.resizing {
   text-overflow: ellipsis;
   color: var(--ink);
 }
-.staged .chip .x {
+/* Chip controls: a real icon button rather than a text "×", with a hit area you
+   can actually land on. Muted until the chip is hovered, so a tray of files
+   isn't a row of buttons demanding attention. */
+.staged .chip .chipbtn {
   flex: none;
-  width: 18px;
-  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  padding: 0 4px;
   border: 0;
-  background: none;
-  cursor: pointer;
-  color: var(--ink-faint);
-  font-size: 15px;
-  line-height: 1;
   border-radius: var(--radius-xs);
+  background: none;
+  color: var(--ink-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0.6;
+  transition:
+    opacity 0.12s ease,
+    color 0.12s ease,
+    background 0.12s ease;
 }
-.staged .chip .x:hover {
+.staged .chip:hover .chipbtn,
+.staged .chip:focus-within .chipbtn {
+  opacity: 1;
+}
+.staged .chip .chipbtn.x {
+  width: 20px;
+  padding: 0;
+}
+.staged .chip .chipbtn svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+.staged .chip .chipbtn:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+}
+.staged .chip .chipbtn.x:hover {
   color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
+}
+/* A failed upload stays in the tray and says so, with the one useful action
+   next to it. Silence and disappearance was the old behaviour, and it was
+   indistinguishable from never having attached the file. */
+.staged .chip.failed {
+  border-color: color-mix(in srgb, var(--err) 55%, var(--rule-strong));
+  background: color-mix(in srgb, var(--err) 7%, var(--bg-sunk));
+}
+.staged .chip.failed .nm {
+  color: var(--err);
+}
+.staged .chip .chipbtn.retry {
+  color: var(--accent);
+  opacity: 1;
+}
+/* A staged image is previewable, and says so on hover. */
+.staged .chip.previewable img {
+  cursor: zoom-in;
 }
 
 /* Rendered attachments on a turn (and in queue previews). */
@@ -3013,6 +3060,144 @@ body.resizing {
    the icon stays an image, since that is what the file still is. */
 .attachments .att.file.noimg .fi svg {
   color: var(--ink-faint);
+}
+
+/* A rendered image opens full-view; the cursor promises it before the click. */
+.attachments .att.img img {
+  cursor: zoom-in;
+}
+
+/* ---- lightbox ------------------------------------------------------------ */
+/* One image, as big as the window allows. The chrome sits over the top edge and
+   the picture gets everything else. */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  background: color-mix(in srgb, #000 82%, transparent);
+  backdrop-filter: blur(3px);
+  animation: lbin 0.12s ease-out;
+}
+@keyframes lbin {
+  from {
+    opacity: 0;
+  }
+}
+body.lb-open {
+  overflow: hidden;
+}
+.lbstage {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 56px 64px 32px;
+}
+.lbimg {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  /* The image reads against any backdrop, including its own dark edges. */
+  box-shadow: 0 12px 48px rgb(0 0 0 / 55%);
+}
+.lbbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  color: #fff;
+}
+.lbname {
+  min-width: 0;
+  flex: 1;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.9;
+}
+.lbcount {
+  font-family: var(--mono);
+  font-size: 11px;
+  opacity: 0.6;
+}
+.lbbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: #fff;
+  cursor: pointer;
+  opacity: 0.75;
+  transition:
+    opacity 0.12s ease,
+    background 0.12s ease;
+}
+.lbbtn:hover {
+  opacity: 1;
+  background: rgb(255 255 255 / 14%);
+}
+.lbbtn svg {
+  width: 17px;
+  height: 17px;
+  display: block;
+}
+.lbnav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: rgb(0 0 0 / 35%);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0.7;
+  transition:
+    opacity 0.12s ease,
+    background 0.12s ease;
+}
+.lbnav:hover {
+  opacity: 1;
+  background: rgb(0 0 0 / 60%);
+}
+.lbnav[hidden] {
+  display: none;
+}
+.lbprev {
+  left: 12px;
+}
+.lbnext {
+  right: 12px;
+}
+.lbnav svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+@media (max-width: 640px) {
+  .lbstage {
+    padding: 52px 12px 20px;
+  }
+  .lbnav {
+    width: 38px;
+    height: 38px;
+  }
 }
 
 /* Composer drop target while dragging files over it. */

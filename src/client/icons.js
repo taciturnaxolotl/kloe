@@ -35,6 +35,7 @@ import {
   User,
   Users,
   Wrench,
+  X,
 } from "lucide";
 
 /** Serialize a Lucide IconNode to an SVG string. `attrs` override the defaults. */
@@ -91,6 +92,7 @@ export var TERMINAL_ICON = icon(SquareTerminal, { "stroke-width": 1.8 });
 export var CHECK_ICON = icon(Check, { "stroke-width": 2.2 });
 export var COPY_ICON = icon(Copy, { "stroke-width": 1.8 });
 export var IMAGE_ICON = icon(Image, { "stroke-width": 1.8 });
+export var X_ICON = icon(X, { "stroke-width": 2 });
 /* An icon-shaped hole: holds a menu row's icon column open when the row has no
    icon, so a list where only one item is ticked still reads as one column. */
 export var BLANK_ICON = '<svg viewBox="0 0 24 24"></svg>';

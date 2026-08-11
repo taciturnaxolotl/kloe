@@ -41,7 +41,9 @@ import {
   TOOL_ICON as ICON_TOOL,
   IMAGE_ICON,
   SEND_ICON as SEND,
+  X_ICON,
 } from "./icons.js";
+import { openLightbox } from "./lightbox.js";
 import {
   enrich,
   enrichMod,
@@ -219,34 +221,58 @@ import { mountSidebar } from "./sidebar.js";
   function attachmentRef(it) {
     return { sha256: it.sha256, name: it.name, mime: it.mime, kind: it.kind };
   }
+  // Only files whose bytes are actually in the store can be referenced. A chip
+  // whose upload failed stays visible so it can be retried or removed, but it
+  // has no sha256 — sending it would attach a reference to nothing.
+  function sendableStaged() {
+    return staged.filter(function (it) {
+      return it.sha256 && !it.uploading;
+    });
+  }
 
   async function uploadOne(file) {
     var it = {
+      file: file, // kept so a failed upload can be retried without re-picking it
       name: file.name || "file",
       mime: file.type || "application/octet-stream",
       kind: attKind(file.type || ""),
       sha256: null,
       uploading: true,
+      failed: false,
       url: IMG.test(file.type || "") ? URL.createObjectURL(file) : null,
     };
     staged.push(it);
+    renderStaged();
+    updateSend();
+    await sendBlob(it);
+  }
+  /**
+   * Upload one staged file's bytes.
+   *
+   * A failure LEAVES the chip in the tray, marked. Dropping it (what this used
+   * to do) meant a file the user watched themselves attach vanished with only a
+   * console warning — indistinguishable from never having dropped it, and they
+   * find out by sending a message that doesn't have it. Staying put with a
+   * Retry says what happened and offers the one thing worth doing about it.
+   */
+  async function sendBlob(it) {
+    it.uploading = true;
+    it.failed = false;
     renderStaged();
     updateSend();
     try {
       var res = await fetch("/api/blobs", {
         method: "POST",
         headers: { "content-type": it.mime },
-        body: file,
+        body: it.file,
       });
       if (!res.ok) throw new Error("upload failed (" + res.status + ")");
       var j = await res.json();
       it.sha256 = j.sha256;
       it.uploading = false;
     } catch (e) {
-      // Drop a failed upload from the tray; nothing was staged for send.
-      var i = staged.indexOf(it);
-      if (i >= 0) staged.splice(i, 1);
-      if (it.url) URL.revokeObjectURL(it.url);
+      it.uploading = false;
+      it.failed = true;
       console.warn("attachment:", e && e.message);
     }
     renderStaged();
@@ -276,7 +302,10 @@ import { mountSidebar } from "./sidebar.js";
     staged.forEach(function (it) {
       var chip = document.createElement("div");
       chip.className =
-        "chip" + (it.uploading ? " uploading" : "") + (it.kind === "image" ? " img" : "");
+        "chip" +
+        (it.uploading ? " uploading" : "") +
+        (it.failed ? " failed" : "") +
+        (it.kind === "image" ? " img" : "");
       if (it.kind === "image" && it.url) {
         var img = document.createElement("img");
         img.src = it.url;
@@ -289,7 +318,18 @@ import { mountSidebar } from "./sidebar.js";
           ic.className = "fi";
           ic.innerHTML = IMAGE_ICON;
           chip.replaceChild(ic, img);
+          chip.classList.remove("previewable");
         };
+        img.addEventListener("click", function () {
+          // Located by url, not by identity: `stagedShot` builds a fresh object
+          // each call, so an indexOf against a new one never matches.
+          var shots = stagedImages();
+          var here = shots.findIndex(function (shot) {
+            return shot.url === it.url;
+          });
+          openLightbox(shots, here < 0 ? 0 : here);
+        });
+        chip.classList.add("previewable");
         chip.appendChild(img);
       } else {
         var ic = document.createElement("span");
@@ -299,19 +339,38 @@ import { mountSidebar } from "./sidebar.js";
       }
       var nm = document.createElement("span");
       nm.className = "nm";
-      nm.textContent = it.name;
+      nm.textContent = it.failed ? it.name + " — failed" : it.name;
       chip.appendChild(nm);
+      if (it.failed) {
+        var retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "chipbtn retry";
+        retry.textContent = "Retry";
+        retry.onclick = function () {
+          void sendBlob(it);
+        };
+        chip.appendChild(retry);
+      }
       var x = document.createElement("button");
       x.type = "button";
-      x.className = "x";
+      x.className = "chipbtn x";
+      x.title = "Remove " + it.name;
       x.setAttribute("aria-label", "Remove " + it.name);
-      x.textContent = "×";
+      x.innerHTML = X_ICON;
       x.onclick = function () {
         removeStaged(it);
       };
       chip.appendChild(x);
       stagedEl.appendChild(chip);
     });
+  }
+  // Staged images, as lightbox items. Recomputed per click rather than cached:
+  // the tray changes as uploads land and files are removed.
+  function stagedShot(it) {
+    return { url: it.url, name: it.name, href: it.sha256 ? blobUrl(it) : it.url };
+  }
+  function stagedImages() {
+    return staged.filter((it) => it.kind === "image" && it.url).map(stagedShot);
   }
   // Renders a turn's attachments (images as thumbnails, other files as chips).
   /**
@@ -343,6 +402,21 @@ import { mountSidebar } from "./sidebar.js";
     link.appendChild(nm);
   }
 
+  /**
+   * The images of one attachment group that actually rendered.
+   *
+   * Read off the DOM at click time, so a HEIC that fell back to a file chip is
+   * simply not in the list — arrowing through a gallery onto a blank frame is
+   * worse than not offering it.
+   */
+  function renderableImages(wrap) {
+    var out = [];
+    wrap.querySelectorAll(".att.img img").forEach(function (img) {
+      out.push({ url: img.src, name: img.alt, href: img.src });
+    });
+    return out;
+  }
+
   function renderAttachments(container, attachments) {
     if (!attachments || !attachments.length) return;
     var wrap = document.createElement("div");
@@ -361,6 +435,19 @@ import { mountSidebar } from "./sidebar.js";
         img.onerror = function () {
           unrenderable(link, a.name);
         };
+        // Open in place rather than navigating away. The href stays a real URL
+        // underneath, so cmd-click and "open in new tab" keep working — the
+        // lightbox is an enhancement of the link, not a replacement for it.
+        link.addEventListener("click", function (e) {
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+          var shots = renderableImages(wrap);
+          var here = shots.findIndex(function (s) {
+            return s.url === blobUrl(a);
+          });
+          if (here < 0) return; // this one failed to decode; let the link do its job
+          e.preventDefault();
+          openLightbox(shots, here);
+        });
         link.appendChild(img);
       } else {
         link.className = "att file";
@@ -2879,7 +2966,7 @@ import { mountSidebar } from "./sidebar.js";
     var content = input.value.trim();
     // Sendable with text or attachments; nothing to send if both are empty.
     if ((!content && staged.length === 0) || !selected || uploadingCount() > 0) return;
-    var attachments = staged.map(attachmentRef);
+    var attachments = sendableStaged().map(attachmentRef);
     input.value = "";
     autosize();
     clearStaged();
