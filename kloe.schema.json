@@ -128,7 +128,8 @@
         "provider": {
           "enum": [
             "none",
-            "ceramic"
+            "ceramic",
+            "hackclub"
           ],
           "type": "string",
           "default": "none"

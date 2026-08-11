@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { CeramicSearchProvider, createSearchProvider } from "../src/search";
+import { CeramicSearchProvider, createSearchProvider, HackClubSearchProvider } from "../src/search";
 import { loadConfig, setConfig } from "../src/settings";
 import { toolSet } from "../src/tools";
 
@@ -69,6 +69,90 @@ test("createSearchProvider selects the backend (and disables gracefully)", () =>
   expect(createSearchProvider({ provider: "ceramic", apiKey: "k", maxResults: 5 })).toBeInstanceOf(
     CeramicSearchProvider,
   );
+  expect(createSearchProvider({ provider: "hackclub", maxResults: 5 })).toBeNull(); // no key
+  expect(createSearchProvider({ provider: "hackclub", apiKey: "k", maxResults: 5 })).toBeInstanceOf(
+    HackClubSearchProvider,
+  );
+});
+
+// ---- Hack Club search ------------------------------------------------------
+// A Brave-shaped API: GET, bearer key, and results grouped per cluster.
+
+test("HackClubSearchProvider sends a GET with the key, the query, and a count", async () => {
+  let seen: { url: string; init: RequestInit } | null = null;
+  const fetchImpl = (async (url: string, init: RequestInit) => {
+    seen = { url, init };
+    return new Response(
+      JSON.stringify({
+        web: {
+          results: [
+            { title: "A", url: "https://a", description: "desc a" },
+            { title: "B", url: "https://b", description: "desc b" },
+          ],
+        },
+      }),
+      { status: 200 },
+    );
+  }) as unknown as typeof fetch;
+
+  const p = new HackClubSearchProvider({ apiKey: "sk-hc-v1-x", fetchImpl, maxResults: 2 });
+  expect(await p.search("frc brushless")).toEqual([
+    { title: "A", url: "https://a", snippet: "desc a" },
+    { title: "B", url: "https://b", snippet: "desc b" },
+  ]);
+  const got = seen as unknown as { url: string; init: RequestInit };
+  const url = new URL(got.url);
+  expect(url.host).toBe("search.hackclub.com");
+  expect(url.pathname).toBe("/res/v1/web/search");
+  expect(url.searchParams.get("q")).toBe("frc brushless");
+  expect(url.searchParams.get("count")).toBe("2");
+  expect((got.init.headers as Record<string, string>).Authorization).toBe("Bearer sk-hc-v1-x");
+});
+
+test("a query over the API's 400-char limit is trimmed rather than rejected", async () => {
+  let asked = "";
+  const fetchImpl = (async (url: string) => {
+    asked = new URL(url).searchParams.get("q") ?? "";
+    return new Response(JSON.stringify({ web: { results: [] } }), { status: 200 });
+  }) as unknown as typeof fetch;
+  await new HackClubSearchProvider({ apiKey: "k", fetchImpl }).search("x".repeat(900));
+  expect(asked.length).toBe(400);
+});
+
+test("results are found wherever the response happens to cluster them", async () => {
+  // A query can come back with only a news or discussions group; returning
+  // nothing would read to the model as "the web has nothing about this".
+  const news = new HackClubSearchProvider({
+    apiKey: "k",
+    fetchImpl: jsonFetch({
+      web: { results: [] },
+      news: { results: [{ title: "N", url: "https://n", description: "d" }] },
+    }),
+  });
+  expect(await news.search("q")).toEqual([{ title: "N", url: "https://n", snippet: "d" }]);
+
+  // And a flattened top-level shape parses too.
+  const flat = new HackClubSearchProvider({
+    apiKey: "k",
+    fetchImpl: jsonFetch({ results: [{ title: "F", url: "https://f", snippet: "s" }] }),
+  });
+  expect(await flat.search("q")).toEqual([{ title: "F", url: "https://f", snippet: "s" }]);
+});
+
+test("an API error surfaces its reason, not a bare status", async () => {
+  const p = new HackClubSearchProvider({
+    apiKey: "bad",
+    fetchImpl: jsonFetch({ error: "Invalid subscription token" }, 401),
+  });
+  await expect(p.search("q")).rejects.toThrow(/401 Invalid subscription token/);
+
+  // The API answers a missing key in plain text; the status still gets through.
+  const plain = new HackClubSearchProvider({
+    apiKey: "",
+    fetchImpl: (async () =>
+      new Response("Authentication required", { status: 401 })) as unknown as typeof fetch,
+  });
+  await expect(plain.search("q")).rejects.toThrow(/hackclub search failed: 401/);
 });
 
 test("toolSet exposes web_search only when a search provider is configured", () => {
