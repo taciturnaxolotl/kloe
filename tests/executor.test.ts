@@ -292,6 +292,21 @@ liveTest(
       expect(
         await e.harvest(session, "/workspace/outputs", { maxFiles: 10, maxBytes: 1e6 }),
       ).toEqual([]);
+
+      // Nested files keep their path relative to the outbox. Promotion names a
+      // document by that whole path, so two `notes.md` in different folders stay
+      // two documents instead of collapsing into versions of each other.
+      await e.run({
+        command:
+          "mkdir -p /workspace/outputs/a /workspace/outputs/b && " +
+          "echo one > /workspace/outputs/a/notes.md && echo two > /workspace/outputs/b/notes.md",
+        session,
+      });
+      const nested = await e.harvest(session, "/workspace/outputs", {
+        maxFiles: 10,
+        maxBytes: 1e6,
+      });
+      expect(nested.map((f) => f.path).sort()).toEqual(["a/notes.md", "b/notes.md"]);
     } finally {
       e.disposeSession(session);
     }

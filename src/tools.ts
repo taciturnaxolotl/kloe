@@ -318,9 +318,15 @@ export function sandboxDescription(info: SandboxInfo, hasAttachments: boolean): 
     "",
     "State: /workspace is the working directory and it PERSISTS across calls in this chat, so build things up step by " +
       "step rather than cramming a session into one command. It is still scratch — it dies with the container. " +
-      "To KEEP a file, write it to /workspace/outputs/ (already created): anything there is saved as a document the " +
-      "user can open and download, and is then removed from the directory, so do not expect to find it again — a " +
-      "second write of the same name becomes a new version. A `.md` file is shown as a formatted document and a " +
+      "Keep everything you are working ON in /workspace itself: source files, intermediates, test fixtures, anything " +
+      "you will read back or build on.",
+    "",
+    "Delivery: /workspace/outputs/ (already created) is not a directory to work in — it is where you HAND something " +
+      "to the user. Every file that lands there becomes a document in their conversation, so put only finished " +
+      "results there, and only ones worth opening: the report, the chart, the one script they asked for. Copy them " +
+      "over at the end rather than building in place — a project assembled inside outputs/ arrives as thirty " +
+      "documents, which buries the one that mattered. A promoted file is removed from the directory, so do not " +
+      "expect to find it again; writing the same name later becomes a new version. A `.md` file is shown as a formatted document and a " +
       "`.html` file is shown as a rendered page (its own CSS and scripts run, isolated from the app), so reach for " +
       "HTML when the result is visual — a chart, a diagram, a small interactive thing — and Markdown when it is prose." +
       (hasAttachments
@@ -404,7 +410,11 @@ async function promoteOutputs(
   const out: ArtifactRef[] = [];
   for (const f of files) {
     const ref = await ctx.blobs.put(f.bytes);
-    const name = safeSegment(f.path.split("/").pop() ?? f.path);
+    // The whole relative path, flattened — not the basename. A name is a
+    // document's identity within the conversation, so `a/notes.md` and
+    // `b/notes.md` reduced to "notes.md" would become two versions of one
+    // document, each silently shadowing the other's history.
+    const name = safeSegment(f.path);
     const mime = mimeForName(name);
     ctx.store?.recordBlob(ref.sha256, mime, ref.size);
     out.push({ sha256: ref.sha256, name, mime, size: ref.size });
