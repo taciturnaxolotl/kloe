@@ -3317,10 +3317,67 @@ import { mountSidebar } from "./sidebar.js";
   // Sharing one number would either unpin the stream early or offer a shortcut
   // to somewhere already on screen.
   var JUMP_AFTER_SCREENS = 2.5;
+  /**
+   * Following the end is an INTENT, not a position.
+   *
+   * The gap to the bottom widens for two very different reasons. One is the
+   * reader scrolling away, which should stop the view following. The other is
+   * the thread growing under a stationary reader — a turn whose 240px estimate
+   * is replaced by its real height (fifteen document cards is a long way from
+   * 240px), a code block that gains a highlighter, an image that loads. Reading
+   * position alone can't tell those apart, so it used to treat both as "they
+   * left", and a document-heavy turn would strand the view above the end: jump
+   * to the bottom, the turn below resolves taller, and the end has moved on
+   * without you.
+   *
+   * So a gesture is what clears the flag, and arriving at the end re-arms it.
+   * Growth can no longer revoke an intent the reader never changed.
+   */
+  // A gesture's scrolling doesn't all arrive with the gesture, so "recent" is
+  // the test rather than "simultaneous" — one flick keeps scrolling after the
+  // wheel stops, and a scrollbar drag scrolls with no wheel at all (hence the
+  // pointer, held down for as long as the drag lasts).
+  var GESTURE_MS = 700;
+  var gestureAt = 0,
+    dragging = false;
+  function noteGesture() {
+    gestureAt = Date.now();
+    settleUntil = 0; // the reader's own scrolling outranks any settling pin
+  }
+  function userDriven() {
+    return dragging || Date.now() - gestureAt < GESTURE_MS;
+  }
   scroll.addEventListener("scroll", function () {
     var gap = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight;
-    atBottom = gap < 40;
+    if (gap < 40) atBottom = true;
+    else if (userDriven()) atBottom = false;
     jump.classList.toggle("show", gap > scroll.clientHeight * JUMP_AFTER_SCREENS);
+  });
+  // Every way a reader moves the thread themselves: the wheel and a finger (both
+  // below, where they also call off a glide), the scrollbar, and the keys that
+  // scroll — ignored while they're typing, where the same keys move a caret.
+  var SCROLL_KEYS = /^(PageUp|PageDown|Home|End|ArrowUp|ArrowDown| )$/;
+  scroll.addEventListener(
+    "pointerdown",
+    function () {
+      dragging = true;
+      noteGesture();
+    },
+    { passive: true },
+  );
+  // On window, so releasing outside the thread still ends the drag.
+  window.addEventListener("pointerup", function () {
+    if (!dragging) return;
+    dragging = false;
+    noteGesture(); // the scroll from the last drag movement is still arriving
+  });
+  window.addEventListener("pointercancel", function () {
+    dragging = false;
+  });
+  document.addEventListener("keydown", function (e) {
+    var t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (SCROLL_KEYS.test(e.key)) noteGesture();
   });
   // Glide to the end rather than teleporting, so it's clear the thread moved
   // rather than swapped — but on our clock, not the browser's. Native smooth
@@ -3340,6 +3397,7 @@ import { mountSidebar } from "./sidebar.js";
     var dist = scroll.scrollHeight - scroll.clientHeight - from;
     if (dist <= 0 || matchMedia("(prefers-reduced-motion: reduce)").matches) {
       scroll.scrollTop = scroll.scrollHeight;
+      pinToBottom(700);
       return;
     }
     // Short hops shouldn't take as long as long ones, but nothing takes longer
@@ -3356,13 +3414,17 @@ import { mountSidebar } from "./sidebar.js";
       else {
         jumpAnim = null;
         scroll.scrollTop = scroll.scrollHeight;
+        // Landing isn't arriving: the turns just revealed are still resolving
+        // their real heights, so hold the end for a beat the way opening a
+        // conversation does. Any gesture ends it early.
+        pinToBottom(700);
       }
     });
   }
   // Our own scrollTop writes fire `scroll`, so a wheel/touch is how we tell that
   // the user changed their mind. Give way immediately when they do.
   function cancelGlide() {
-    settleUntil = 0; // a deliberate scroll outranks the post-load settling
+    noteGesture(); // which also calls off the post-load settling
     if (!jumpAnim) return;
     cancelAnimationFrame(jumpAnim);
     jumpAnim = null;
