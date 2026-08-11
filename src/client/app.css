@@ -1026,6 +1026,58 @@ body.selecting #selectBtn {
 .turn.generating .meta {
   opacity: 1;
 }
+/* The message's own footer: quiet until you go looking for it, the same way the
+   token meta is. A control that is always at full contrast competes with the
+   text it belongs to, and this one is wanted perhaps once a session. */
+.turnfoot {
+  display: flex;
+  gap: 4px;
+  margin-top: 10px;
+}
+.copymsg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--ink-faint);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.12s ease,
+    color 0.12s ease,
+    background 0.12s ease;
+}
+.copymsg svg {
+  width: 15px;
+  height: 15px;
+}
+/* Revealed by hovering the message, by keyboard focus, and permanently once it
+   has just been pressed — a tick that faded out with the pointer would leave
+   you unsure whether it copied. */
+.turn:hover .copymsg,
+.turn:focus-within .copymsg,
+.copymsg.copied {
+  opacity: 1;
+}
+.copymsg:hover {
+  color: var(--ink);
+  background: var(--bg-sunk);
+}
+.copymsg.copied {
+  color: var(--ok);
+}
+/* No hover on a touch screen, so the control simply stays visible. */
+@media (hover: none) {
+  .copymsg {
+    opacity: 1;
+  }
+}
+
 .turn .body > :first-child {
   margin-top: 0;
 }

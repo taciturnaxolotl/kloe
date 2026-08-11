@@ -28,6 +28,7 @@ import { ditherFill } from "./dither.js";
 import {
   CHECK_ICON as CHECK,
   CHEV_ICON as CHEV,
+  COPY_ICON,
   FILE_ICON as FILE_SVG,
   BLANK_ICON as ICON_BLANK,
   CLOCK_ICON as ICON_CLOCK,
@@ -529,6 +530,50 @@ import { mountSidebar } from "./sidebar.js";
   // (so older turns stack in order above the already-rendered newest ones); null
   // means append (live turns, and the newest-first phase).
   var renderAnchor = null;
+
+  // ---- copying a message --------------------------------------------------
+  // The markdown a turn was rendered FROM, not its rendered DOM. A model writes
+  // markdown, the user typed markdown, and that is what someone pasting into an
+  // editor wants back — headings as `#`, code still fenced, tables intact.
+  // Scraping innerText would hand them the shape of the screen instead.
+  var turnMd = new WeakMap();
+  /** Remember a turn's source text, and give it the affordance to copy it. */
+  function markCopyable(turn, md) {
+    if (!turn || !md || !md.trim()) return;
+    turnMd.set(turn, md);
+    if (turn.querySelector(".turnfoot")) return;
+    var foot = document.createElement("div");
+    foot.className = "turnfoot";
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "copymsg";
+    btn.title = "Copy as Markdown";
+    btn.setAttribute("aria-label", "Copy message as Markdown");
+    btn.innerHTML = COPY_ICON;
+    btn.addEventListener("click", function () {
+      var text = turnMd.get(turn);
+      if (!text) return;
+      navigator.clipboard.writeText(text).then(function () {
+        // The tick IS the confirmation — a message that said "Copied" would
+        // move the thread by a line every time anyone pressed it.
+        btn.innerHTML = CHECK;
+        btn.classList.add("copied");
+        setTimeout(function () {
+          btn.innerHTML = COPY_ICON;
+          btn.classList.remove("copied");
+        }, 1400);
+      });
+    });
+    foot.appendChild(btn);
+    turn.appendChild(foot); // after the body and any documents: the end of the message
+  }
+  /** An assistant turn's answer: its prose segments, minus the tool traces. */
+  function answerMarkdown(rec) {
+    var out = "";
+    for (var i = 0; i < rec.proses.length; i++) out += rec.proses[i].full || "";
+    return out;
+  }
+
   function makeTurn(who, cls) {
     var t = document.createElement("article");
     t.className = "turn" + (cls ? " " + cls : "");
@@ -548,6 +593,7 @@ import { mountSidebar } from "./sidebar.js";
     var body = t.querySelector(".body");
     if (content) renderStaticMd(body, content);
     renderAttachments(body, attachments);
+    markCopyable(t, content);
     autoScroll();
     pending[runId] = { turn: t, content: content, attachments: attachments };
   }
@@ -570,6 +616,7 @@ import { mountSidebar } from "./sidebar.js";
     var body = t.querySelector(".body");
     if (content) renderStaticMd(body, content);
     renderAttachments(body, attachments);
+    markCopyable(t, content);
     autoScroll();
   }
   function confirmQueued(runId, content, attachments) {
@@ -2326,6 +2373,9 @@ import { mountSidebar } from "./sidebar.js";
       }
       queueEnrich(p.el);
     }
+    // Copy lands at the END of a turn, not during it: half an answer is not a
+    // thing anyone means to paste.
+    markCopyable(rec.turn, answerMarkdown(rec));
     rec.turn.classList.remove("generating");
     if (finishReason === "aborted") {
       rec.meta.textContent = "";
