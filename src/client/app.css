@@ -3008,6 +3008,13 @@ body.resizing {
   color: var(--ink);
 }
 
+/* An image whose format this browser can't decode. It keeps the file chip's
+   shape — because that is what it now is, a file you can download — and the
+   crossed-out image icon says why it isn't a thumbnail. */
+.attachments .att.file.noimg .fi svg {
+  color: var(--ink-faint);
+}
+
 /* Composer drop target while dragging files over it. */
 .card.drop {
   border-color: var(--accent);

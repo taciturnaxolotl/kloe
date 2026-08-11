@@ -39,6 +39,7 @@ import {
   RESEARCH_ICON as ICON_RESEARCH,
   TERMINAL_ICON as ICON_TERMINAL,
   TOOL_ICON as ICON_TOOL,
+  IMAGE_OFF_ICON,
   SEND_ICON as SEND,
 } from "./icons.js";
 import {
@@ -280,6 +281,15 @@ import { mountSidebar } from "./sidebar.js";
         var img = document.createElement("img");
         img.src = it.url;
         img.alt = it.name;
+        // An image the browser can't decode becomes the icon that says so,
+        // rather than the broken-image glyph, which reads as a failed upload.
+        img.onerror = function () {
+          chip.classList.remove("img");
+          var ic = document.createElement("span");
+          ic.className = "fi";
+          ic.innerHTML = IMAGE_OFF_ICON;
+          chip.replaceChild(ic, img);
+        };
         chip.appendChild(img);
       } else {
         var ic = document.createElement("span");
@@ -304,6 +314,31 @@ import { mountSidebar } from "./sidebar.js";
     });
   }
   // Renders a turn's attachments (images as thumbnails, other files as chips).
+  /**
+   * What to show for an image the browser refuses to decode.
+   *
+   * Which formats those are is not a list worth keeping: Safari shows HEIC and
+   * Chrome doesn't, AVIF arrived in one browser years before another, and a
+   * hardcoded denylist would be wrong in both directions on the day it shipped.
+   * So the image is attempted and the browser answers — `onerror` is the only
+   * reliable, always-current test of "can you render this?". The cost is the
+   * request, which was going to happen anyway.
+   */
+  function unrenderable(link, name) {
+    link.className = "att file noimg";
+    link.setAttribute("download", name);
+    link.title = name + " — this format can't be previewed here. Click to download.";
+    link.innerHTML = "";
+    var ic = document.createElement("span");
+    ic.className = "fi";
+    ic.innerHTML = IMAGE_OFF_ICON;
+    var nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = name;
+    link.appendChild(ic);
+    link.appendChild(nm);
+  }
+
   function renderAttachments(container, attachments) {
     if (!attachments || !attachments.length) return;
     var wrap = document.createElement("div");
@@ -319,6 +354,9 @@ import { mountSidebar } from "./sidebar.js";
         img.src = blobUrl(a);
         img.alt = a.name;
         img.loading = "lazy";
+        img.onerror = function () {
+          unrenderable(link, a.name);
+        };
         link.appendChild(img);
       } else {
         link.className = "att file";
