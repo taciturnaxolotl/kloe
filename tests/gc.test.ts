@@ -63,3 +63,21 @@ test("a blob still referenced by ONE conversation survives (dedup safety)", asyn
   expect(collected).toEqual([]); // c2 still holds it
   expect(await blobs.exists(sha)).toBe(true);
 });
+
+test("sweep spares a published blob even with no conversation reference left", async () => {
+  // Belt and braces: today a publication can't outlive its conversation's
+  // blob_refs row, so this asserts the guarantee holds on its own terms — a
+  // live link always has bytes behind it.
+  const sha = await putAged("published");
+  store.recordArtifact({
+    conversationId: "c1",
+    name: "report.md",
+    sha256: sha,
+    mime: "text/markdown",
+    size: 9,
+  });
+  store.publish("c1", "report.md", 1);
+
+  expect(await sweepOrphanBlobs(store, blobs, 1000)).toEqual([]);
+  expect(await blobs.exists(sha)).toBe(true);
+});

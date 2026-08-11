@@ -25,6 +25,7 @@ import {
   ProjectCreateBody,
   ProjectPatchBody,
   PromptBody,
+  PublishBody,
   RenameBody,
   SteerBody,
 } from "./schemas";
@@ -698,6 +699,32 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         const name = new URL(req.url).searchParams.get("name");
         if (name) return Response.json({ versions: store.artifactVersions(req.params.id, name) });
         return Response.json({ artifacts: store.listArtifacts(req.params.id) });
+      },
+    },
+
+    // Public links for this conversation's documents. Creating one is
+    // idempotent per version, so the owner can press Publish twice and still
+    // have exactly one link to revoke. The public side of these lives in
+    // src/share.ts, outside the auth gate — nothing here serves a reader.
+    "/api/conversations/:id/publications": {
+      POST: (req: Bun.BunRequest<"/api/conversations/:id/publications">) => {
+        const denied = guardConv(req, req.params.id);
+        if (denied) return Promise.resolve(denied);
+        return withBody(PublishBody, (data) => {
+          const pub = store.publish(req.params.id, data.name, data.version);
+          if (!pub) return Response.json({ error: "not found" }, { status: 404 });
+          return Response.json({ token: pub.token, url: `/s/${pub.token}` });
+        })(req);
+      },
+    },
+    "/api/conversations/:id/publications/:token": {
+      DELETE: (req: Bun.BunRequest<"/api/conversations/:id/publications/:token">) => {
+        const denied = guardConv(req, req.params.id);
+        if (denied) return denied;
+        // Idempotent: a link that is already gone is in the state the caller
+        // asked for, so unpublishing twice is not an error.
+        store.unpublish(req.params.id, req.params.token);
+        return Response.json({ ok: true });
       },
     },
 

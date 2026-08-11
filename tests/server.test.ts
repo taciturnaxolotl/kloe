@@ -10,6 +10,7 @@ import { apiRoutes, evictIdleActors, getActor } from "../src/http";
 import { setRegistry } from "../src/inference";
 import { ProviderRegistry } from "../src/providers";
 import { getConfig, setConfig } from "../src/settings";
+import { shareRoutes } from "../src/share";
 import { parseJobParams, Store } from "../src/store";
 
 const tmp = mkdtempSync(join(tmpdir(), "kloe-srv-"));
@@ -22,7 +23,12 @@ const blobs = new FsBlobStore(join(tmp, "blobs"));
 let server: ReturnType<typeof Bun.serve>;
 let base: string;
 beforeAll(() => {
-  server = Bun.serve({ port: 0, routes: apiRoutes({ store, blobs }) });
+  // Public share routes are mounted the way production mounts them: beside the
+  // gated API, never inside it.
+  server = Bun.serve({
+    port: 0,
+    routes: { ...apiRoutes({ store, blobs }), ...shareRoutes({ store, blobs }) },
+  });
   base = server.url.origin;
 });
 afterAll(() => {
@@ -909,4 +915,94 @@ test("GET /api/conversations/:id/artifacts?name= answers with that document's hi
     await fetch(`${base}/api/conversations/${conv}/artifacts?name=nope.md`)
   ).json()) as { versions: unknown[] };
   expect(none.versions).toEqual([]);
+});
+
+test("publishing a document hands back a link, and unpublishing revokes it", async () => {
+  const conv = "share-me";
+  const bytes = new TextEncoder().encode("# Shared\n\nHello from a published doc.\n");
+  const { sha256 } = await blobs.put(bytes);
+  store.recordBlob(sha256, "text/markdown", bytes.length);
+  store.recordArtifact({
+    conversationId: conv,
+    name: "report.md",
+    sha256,
+    title: "The report",
+    mime: "text/markdown",
+    size: bytes.length,
+  });
+
+  const res = await fetch(`${base}/api/conversations/${conv}/publications`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "report.md", version: 1 }),
+  });
+  expect(res.status).toBe(200);
+  const { token, url } = (await res.json()) as { token: string; url: string };
+  expect(url).toBe(`/s/${token}`);
+
+  // The public routes answer without a session — that's the whole point.
+  const meta = (await (await fetch(`${base}/api/public/${token}`)).json()) as {
+    title: string;
+    mime: string;
+    name: string;
+  };
+  expect(meta).toMatchObject({ title: "The report", name: "report.md", mime: "text/markdown" });
+  // …and tell a reader nothing about where the document came from.
+  expect(Object.keys(meta)).not.toContain("conversationId");
+
+  const raw = await fetch(`${base}/api/public/${token}/raw`);
+  expect(await raw.text()).toContain("Hello from a published doc.");
+  expect(raw.headers.get("X-Content-Type-Options")).toBe("nosniff");
+
+  // The owner's version list now shows which revision is public.
+  const { versions } = (await (
+    await fetch(`${base}/api/conversations/${conv}/artifacts?name=report.md`)
+  ).json()) as { versions: Array<{ token: string | null }> };
+  expect(versions[0]!.token).toBe(token);
+
+  const gone = await fetch(`${base}/api/conversations/${conv}/publications/${token}`, {
+    method: "DELETE",
+  });
+  expect(gone.status).toBe(200);
+  expect((await fetch(`${base}/api/public/${token}`)).status).toBe(404);
+  expect((await fetch(`${base}/api/public/${token}/raw`)).status).toBe(404);
+});
+
+test("a published page is served defanged, and a bogus token is just not found", async () => {
+  const conv = "share-html";
+  const bytes = new TextEncoder().encode("<!doctype html><p>hi<script>alert(1)</script>");
+  const { sha256 } = await blobs.put(bytes);
+  store.recordBlob(sha256, "text/html", bytes.length);
+  store.recordArtifact({
+    conversationId: conv,
+    name: "page.html",
+    sha256,
+    mime: "text/html",
+    size: bytes.length,
+  });
+  const { token } = (await (
+    await fetch(`${base}/api/conversations/${conv}/publications`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "page.html", version: 1 }),
+    })
+  ).json()) as { token: string };
+
+  // Visiting the bytes directly must not run them: the share page renders HTML
+  // deliberately, in a sandboxed frame of its own.
+  const raw = await fetch(`${base}/api/public/${token}/raw`);
+  expect(raw.headers.get("Content-Security-Policy")).toBe("sandbox");
+
+  // Nothing that isn't a token reaches SQL, and a well-formed miss is a 404.
+  expect((await fetch(`${base}/api/public/not-a-token`)).status).toBe(404);
+  expect((await fetch(`${base}/api/public/${"0".repeat(32)}`)).status).toBe(404);
+});
+
+test("publishing a version that doesn't exist is a 404, not an empty link", async () => {
+  const res = await fetch(`${base}/api/conversations/no-such-conv/publications`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "ghost.md", version: 1 }),
+  });
+  expect(res.status).toBe(404);
 });

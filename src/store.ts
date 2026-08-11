@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AttachmentRef } from "./events";
@@ -145,11 +146,26 @@ export interface ArtifactVersion {
   size: number;
   messageId: string | null;
   createdAt: number;
+  /** The public link's token, when this version has been published. */
+  token?: string | null;
 }
 
 /** A document at its newest version, with a count of how many exist. */
 export interface ArtifactSummary extends ArtifactVersion {
   versions: number;
+}
+
+/** A document version its owner has put behind a public link. */
+export interface Publication {
+  token: string;
+  conversationId: string;
+  name: string;
+  version: number;
+  sha256: string;
+  title: string | null;
+  mime: string;
+  size: number;
+  createdAt: number;
 }
 
 /** A search hit: a conversation plus an excerpt of the matching message. */
@@ -335,6 +351,32 @@ CREATE TABLE IF NOT EXISTS artifacts (
   PRIMARY KEY (conversation_id, name, version)
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_conv ON artifacts (conversation_id, created_at DESC);
+
+-- Documents their owner has published to a public link. The token IS the
+-- capability: unguessable, and revoking the row revokes the link.
+--
+-- A publication names one VERSION, and copies the bytes' address out of the
+-- artifact row rather than joining back to it at read time. Two reasons. A
+-- reader following a link should get the document that was shared, not whatever
+-- the conversation has rewritten it into since. And serving a public page must
+-- not have to touch conversation-owned tables at all — the sha256 is everything
+-- the public path needs, so the public path can't reach anything else.
+CREATE TABLE IF NOT EXISTS publications (
+  token TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  title TEXT,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+-- One link per version: publishing twice hands back the link that already
+-- exists rather than minting a second one nobody can keep track of.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_publications_doc
+  ON publications (conversation_id, name, version);
+CREATE INDEX IF NOT EXISTS idx_publications_conv ON publications (conversation_id);
 
 -- Auth sessions (indiko OAuth). The cookie holds an opaque high-entropy id; the
 -- row carries the user's identity (sub) and cached profile JSON. Expired rows
@@ -616,9 +658,14 @@ export class Store {
     // Orphans: no conversation references them and they're older than the grace
     // cutoff (so a just-uploaded, not-yet-referenced blob is spared).
     this.findOrphanBlobsStmt = this.db.prepare(
+      // A published document is a reference too. Today it can't outlive its
+      // conversation's blob_refs row (deleting a conversation drops both in one
+      // transaction), but this keeps "a live link always has bytes" true here,
+      // rather than true only because of what some other method happens to do.
       `SELECT sha256 FROM blobs
        WHERE created_at < ?
-         AND NOT EXISTS (SELECT 1 FROM blob_refs r WHERE r.sha256 = blobs.sha256)`,
+         AND NOT EXISTS (SELECT 1 FROM blob_refs r WHERE r.sha256 = blobs.sha256)
+         AND NOT EXISTS (SELECT 1 FROM publications p WHERE p.sha256 = blobs.sha256)`,
     );
     this.deleteBlobStmt = this.db.prepare(`DELETE FROM blobs WHERE sha256 = ?`);
     this.addBlobRefStmt = this.db.prepare(
@@ -847,12 +894,20 @@ export class Store {
     ];
   }
 
-  /** Every version of every document in a conversation, newest first. */
+  /**
+   * Every version of one document, newest first — each carrying its public
+   * token when that version has been published, so a reader of this list can
+   * tell which revisions are shared without a second query per row.
+   */
   artifactVersions(conversationId: string, name: string): ArtifactVersion[] {
     return this.db
       .prepare(
-        `SELECT name, version, sha256, title, mime, size, message_id AS messageId, created_at AS createdAt
-           FROM artifacts WHERE conversation_id = ? AND name = ? ORDER BY version DESC`,
+        `SELECT a.name, a.version, a.sha256, a.title, a.mime, a.size,
+                a.message_id AS messageId, a.created_at AS createdAt, p.token
+           FROM artifacts a
+           LEFT JOIN publications p
+             ON p.conversation_id = a.conversation_id AND p.name = a.name AND p.version = a.version
+          WHERE a.conversation_id = ? AND a.name = ? ORDER BY a.version DESC`,
       )
       .all(conversationId, name) as ArtifactVersion[];
   }
@@ -875,6 +930,87 @@ export class Store {
           ORDER BY a.created_at DESC`,
       )
       .all(conversationId) as ArtifactSummary[];
+  }
+
+  // ---- publications ------------------------------------------------------
+
+  /**
+   * Put one version of a document behind a public link, or hand back the link
+   * it already has.
+   *
+   * Idempotent on purpose: "publish" is a state the document is in, not an
+   * event, so pressing it twice should not scatter two live links for the same
+   * bytes — one of which the owner would never think to revoke.
+   */
+  publish(conversationId: string, name: string, version: number): Publication | null {
+    const doc = this.getArtifact(conversationId, name, version);
+    if (!doc) return null;
+    const existing = this.publicationFor(conversationId, name, version);
+    if (existing) return existing;
+    const token = randomUUID().replace(/-/g, "");
+    const row: Publication = {
+      token,
+      conversationId,
+      name: doc.name,
+      version: doc.version,
+      sha256: doc.sha256,
+      title: doc.title,
+      mime: doc.mime,
+      size: doc.size,
+      createdAt: Date.now(),
+    };
+    this.db
+      .prepare(
+        `INSERT INTO publications
+           (token, conversation_id, name, version, sha256, title, mime, size, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        row.token,
+        row.conversationId,
+        row.name,
+        row.version,
+        row.sha256,
+        row.title,
+        row.mime,
+        row.size,
+        row.createdAt,
+      );
+    return row;
+  }
+
+  /** A public document by its token — the only lookup the public path needs. */
+  getPublication(token: string): Publication | null {
+    return (
+      (this.db
+        .prepare(
+          `SELECT token, conversation_id AS conversationId, name, version, sha256, title, mime, size,
+                  created_at AS createdAt
+             FROM publications WHERE token = ?`,
+        )
+        .get(token) as Publication | null) ?? null
+    );
+  }
+
+  publicationFor(conversationId: string, name: string, version: number): Publication | null {
+    return (
+      (this.db
+        .prepare(
+          `SELECT token, conversation_id AS conversationId, name, version, sha256, title, mime, size,
+                  created_at AS createdAt
+             FROM publications WHERE conversation_id = ? AND name = ? AND version = ?`,
+        )
+        .get(conversationId, name, version) as Publication | null) ?? null
+    );
+  }
+
+  /** Revoke a link. Scoped to the conversation so a token alone can't unpublish. */
+  unpublish(conversationId: string, token: string): boolean {
+    return (
+      this.db
+        .prepare("DELETE FROM publications WHERE conversation_id = ? AND token = ?")
+        .run(conversationId, token).changes > 0
+    );
   }
 
   /** One document by name — its newest version, or a specific one. */
@@ -924,6 +1060,9 @@ export class Store {
           .all(id) as Array<{ sha256: string }>
       ).map((r) => r.sha256);
       this.db.prepare("DELETE FROM blob_refs WHERE conversation_id = ?").run(id);
+      // Deleting the conversation revokes every link it published. A link that
+      // outlived the only place its owner could see it would be unrevokable.
+      this.db.prepare("DELETE FROM publications WHERE conversation_id = ?").run(id);
       this.db.prepare("DELETE FROM events WHERE conversation_id = ?").run(id);
       this.db.prepare("DELETE FROM jobs WHERE conversation_id = ?").run(id);
       this.db.prepare("DELETE FROM conversations WHERE id = ?").run(id);

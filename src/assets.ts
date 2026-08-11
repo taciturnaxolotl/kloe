@@ -16,10 +16,12 @@
 import { brotliCompressSync, gzipSync, constants as zlib } from "node:zlib";
 
 const CLIENT_DIR = new URL("./client/", import.meta.url).pathname;
-// The whole app is one document now: the shell (index.html). Every section —
-// conversations, projects, project-detail, settings — is served by the shell and
-// mounted by the router from src/client/views/*.
-const ENTRY_HTML = ["index.html"];
+// Two documents, and the split is a trust boundary rather than a routing one.
+// The app shell (index.html) serves every signed-in section — conversations,
+// projects, project-detail, settings — mounted by the router from views/*.
+// share.html is what a reader with only a link gets: one published document, no
+// app, no session, none of the app's code.
+const ENTRY_HTML = ["index.html", "share.html"];
 
 /** A built output ready to serve: raw bytes plus precomputed encodings and its ETag. */
 export interface ServedAsset {

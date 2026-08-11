@@ -122,3 +122,67 @@ test("the sandbox sees one list of files: attachments and documents alike", () =
 test("a conversation with no files lists none", () => {
   expect(fresh().listFiles("c1")).toEqual([]);
 });
+
+// ---- publishing ------------------------------------------------------------
+
+test("publishing a version mints one link, and pressing it again returns the same one", () => {
+  const store = fresh();
+  record(store, "c1", "report.md", "a".repeat(64), "Draft");
+  record(store, "c1", "report.md", "b".repeat(64), "Final");
+
+  const first = store.publish("c1", "report.md", 2)!;
+  expect(first.token).toMatch(/^[0-9a-f]{32}$/);
+  expect(first).toMatchObject({ name: "report.md", version: 2, sha256: "b".repeat(64) });
+  // Idempotent: publishing twice must not scatter two live links for one document.
+  expect(store.publish("c1", "report.md", 2)!.token).toBe(first.token);
+
+  // A different version is a different document to share, so it gets its own.
+  const older = store.publish("c1", "report.md", 1)!;
+  expect(older.token).not.toBe(first.token);
+  expect(older.sha256).toBe("a".repeat(64));
+});
+
+test("publishing pins the bytes, so a later rewrite doesn't change what was shared", () => {
+  const store = fresh();
+  record(store, "c1", "report.md", "a".repeat(64), "Draft");
+  const pub = store.publish("c1", "report.md", 1)!;
+  record(store, "c1", "report.md", "b".repeat(64), "Rewritten");
+
+  expect(store.getPublication(pub.token)!.sha256).toBe("a".repeat(64));
+});
+
+test("a version that doesn't exist cannot be published", () => {
+  const store = fresh();
+  record(store, "c1", "report.md", "a".repeat(64));
+  expect(store.publish("c1", "report.md", 7)).toBeNull();
+  expect(store.publish("c1", "nope.md", 1)).toBeNull();
+});
+
+test("version history carries the public token, and unpublishing takes it away", () => {
+  const store = fresh();
+  record(store, "c1", "report.md", "a".repeat(64));
+  record(store, "c1", "report.md", "b".repeat(64));
+  const pub = store.publish("c1", "report.md", 1)!;
+
+  const versions = store.artifactVersions("c1", "report.md");
+  expect(versions.map((v) => [v.version, v.token ?? null])).toEqual([
+    [2, null],
+    [1, pub.token],
+  ]);
+
+  // Scoped to the conversation: a token alone is not authority to revoke.
+  expect(store.unpublish("other", pub.token)).toBe(false);
+  expect(store.getPublication(pub.token)).not.toBeNull();
+
+  expect(store.unpublish("c1", pub.token)).toBe(true);
+  expect(store.getPublication(pub.token)).toBeNull();
+  expect(store.artifactVersions("c1", "report.md")[1]!.token ?? null).toBeNull();
+});
+
+test("deleting a conversation revokes the links it published", () => {
+  const store = fresh();
+  record(store, "c1", "report.md", "a".repeat(64));
+  const pub = store.publish("c1", "report.md", 1)!;
+  store.deleteConversation("c1");
+  expect(store.getPublication(pub.token)).toBeNull();
+});

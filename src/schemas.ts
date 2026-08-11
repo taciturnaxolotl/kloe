@@ -76,3 +76,16 @@ export const ModelPatchBody = v.object({
   sortOrder: v.optional(v.number()),
 });
 export type ModelPatchBody = v.InferOutput<typeof ModelPatchBody>;
+
+/**
+ * POST /api/conversations/:id/publications — put one version of a document
+ * behind a public link. The version is required rather than defaulted to the
+ * newest: publishing is a deliberate act about a specific set of bytes, and
+ * "whatever is newest" would make the link's contents depend on when it was
+ * pressed.
+ */
+export const PublishBody = v.object({
+  name: v.pipe(v.string(), v.minLength(1), v.maxLength(200)),
+  version: v.pipe(v.number(), v.integer(), v.minValue(1)),
+});
+export type PublishBody = v.InferOutput<typeof PublishBody>;

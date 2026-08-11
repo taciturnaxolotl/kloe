@@ -9,6 +9,7 @@ import { apiRoutes, evictIdleActors, getActor } from "./src/http";
 import { initInference } from "./src/inference";
 import { handleLardCallback, handleLardConnect } from "./src/lard";
 import { getConfig } from "./src/settings";
+import { shareRoutes } from "./src/share";
 import { Store } from "./src/store";
 
 /**
@@ -202,6 +203,10 @@ if (import.meta.main) {
       "/conversations": page("index.html"), // SPA route — the shell mounts the conversations view
       "/projects": page("index.html"), // SPA route — the shell's router mounts the projects view
       "/p/:id": page("index.html"), // SPA route — the shell mounts the project-detail view
+      // A published document, for anyone with the link. Its own document, not
+      // the SPA: a reader here has no session and must never be bounced to a
+      // login for something their link already entitles them to.
+      "/s/:token": page("share.html"),
       // Auth (indiko OAuth). Inert unless auth.enabled — the SPA only navigates
       // here after a 401. /client-metadata.json is the public client document.
       "/client-metadata.json": () => clientMetadata(),
@@ -211,6 +216,9 @@ if (import.meta.main) {
       // Per-user lard link: auth-code + PKCE to lard's (shared) authorization server.
       "/lard/connect": (req: Request) => handleLardConnect(req, store),
       "/lard/callback": (req: Request) => handleLardCallback(req, store),
+      // Public read paths for published documents. Registered here rather than
+      // inside apiRoutes because everything there is wrapped by the auth gate.
+      ...shareRoutes({ store, blobs }),
       ...staticRoutes,
       ...vendorRoutes,
       ...assetRoutes,

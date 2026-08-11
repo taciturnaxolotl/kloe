@@ -74,6 +74,10 @@ self.addEventListener("fetch", function (e) {
   var url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
   if (url.pathname.indexOf("/auth/") === 0 || url.pathname.indexOf("/lard/") === 0) return;
+  // Share pages are a different document with a different shell. Letting them
+  // through `shellNetworkFirst` would cache one under "/" and hand the app's
+  // own offline fallback a published document.
+  if (url.pathname.indexOf("/s/") === 0 || url.pathname.indexOf("/api/public/") === 0) return;
 
   if (req.mode === "navigate") {
     e.respondWith(shellNetworkFirst(req));

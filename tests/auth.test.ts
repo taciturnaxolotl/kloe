@@ -1,4 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   clientMetadata,
   gateApi,
@@ -9,7 +12,9 @@ import {
   parseCookies,
   resetAuthCache,
 } from "../src/auth";
+import { FsBlobStore } from "../src/blobs";
 import { loadConfig, setConfig } from "../src/settings";
+import { shareRoutes } from "../src/share";
 import { Store } from "../src/store";
 
 function memStore(): Store {
@@ -212,4 +217,45 @@ test("logout drops the session and clears the cookie", () => {
       .getSetCookie()
       .some((c) => /kloe_session=;|kloe_session=; /.test(c) || c.startsWith("kloe_session=;")),
   ).toBe(true);
+});
+
+test("a public share link is readable with auth on — the gate never sees it", async () => {
+  // The point of the feature: a reader with a link has no session, and must not
+  // be bounced to a login. shareRoutes are registered beside the gated API in
+  // server.ts, not inside it, and this pins that arrangement.
+  enableAuth();
+  const store = memStore();
+  const dir = mkdtempSync(join(tmpdir(), "kloe-share-"));
+  try {
+    const blobs = new FsBlobStore(join(dir, "blobs"));
+    const bytes = new TextEncoder().encode("# public\n");
+    const ref = await blobs.put(bytes);
+    store.recordBlob(ref.sha256, "text/markdown", ref.size);
+    store.recordArtifact({
+      conversationId: "c1",
+      name: "note.md",
+      sha256: ref.sha256,
+      mime: "text/markdown",
+      size: ref.size,
+    });
+    const pub = store.publish("c1", "note.md", 1)!;
+
+    // The same gate that would 401 an API call…
+    const gated = gateApi(
+      { "/api/x": { GET: (_req: Request) => Response.json({ ok: true }) } },
+      store,
+    );
+    expect((await gated["/api/x"]!.GET(new Request("https://k/api/x"))).status).toBe(401);
+
+    // …is not in front of the public routes.
+    const routes = shareRoutes({ store, blobs });
+    const meta = await routes["/api/public/:token"].GET({
+      params: { token: pub.token },
+    } as unknown as Bun.BunRequest<"/api/public/:token">);
+    expect(meta.status).toBe(200);
+    expect(await meta.json()).toMatchObject({ name: "note.md" });
+  } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

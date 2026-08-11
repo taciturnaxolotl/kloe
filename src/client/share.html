@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Shared document · kloe</title>
+<!-- Links are unlisted, not secret-proof: keeping them out of search results is
+     the difference between "I sent this to someone" and "I posted this". -->
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#5577a3">
+<link rel="icon" href="./favicon.ico" sizes="any">
+<link rel="icon" href="./favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png">
+<link rel="stylesheet" href="./app.css">
+</head>
+<body>
+  <div class="sharepage">
+    <header class="sharehead">
+      <span class="sharetitle" id="shareTitle">Loading…</span>
+      <div class="shareactions">
+        <button class="panebtn" id="shareDownload" type="button" hidden>Download</button>
+        <a class="sharebrand" href="/" title="kloe">kloe</a>
+      </div>
+    </header>
+    <main class="sharebody" id="shareBody"></main>
+  </div>
+  <script type="module" src="./share.js"></script>
+</body>
+</html>
