@@ -687,10 +687,16 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
 
     // Documents this conversation's tools produced — newest version of each, for
     // the header list and the artifact pane. Bytes come from /api/blobs/:sha256.
+    //
+    // `?name=` narrows to one document and answers with its history instead:
+    // same resource, one level in. A path segment would have been the other
+    // shape, but names are filenames and filenames carry slashes.
     "/api/conversations/:id/artifacts": {
       GET: (req: Bun.BunRequest<"/api/conversations/:id/artifacts">) => {
         const denied = guardConv(req, req.params.id);
         if (denied) return denied;
+        const name = new URL(req.url).searchParams.get("name");
+        if (name) return Response.json({ versions: store.artifactVersions(req.params.id, name) });
         return Response.json({ artifacts: store.listArtifacts(req.params.id) });
       },
     },

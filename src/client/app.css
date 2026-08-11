@@ -1780,6 +1780,21 @@ body.resizing {
   color: var(--ink);
   background: var(--bg-sunk);
 }
+/* Which revision you're reading, and the way to the others. The chevron points
+   down because the history drops below the button. */
+.panever {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.panever[hidden] {
+  display: none;
+}
+.panever .chev {
+  width: 12px;
+  height: 12px;
+  transform: rotate(90deg);
+}
 /* Split button: the common action, and a chevron for the rest. Two real buttons
    sharing one outline — one border collapses between them so it reads as a
    single control while each half keeps its own hit area and focus ring. */

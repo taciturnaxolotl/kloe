@@ -868,3 +868,45 @@ test("an html blob is served defanged, an image is left alone", async () => {
   expect(img.headers.get("content-security-policy")).toBeNull();
   expect(img.headers.get("content-disposition")).toContain("inline");
 });
+
+test("GET /api/conversations/:id/artifacts?name= answers with that document's history", async () => {
+  const conv = "doc-history";
+  const rec = (sha: string, title: string) =>
+    store.recordArtifact({
+      conversationId: conv,
+      name: "report.md",
+      sha256: sha,
+      title,
+      mime: "text/markdown",
+      size: 10,
+    });
+  rec("a".repeat(64), "Draft");
+  rec("b".repeat(64), "Final");
+  store.recordArtifact({
+    conversationId: conv,
+    name: "other.md",
+    sha256: "c".repeat(64),
+    mime: "text/markdown",
+    size: 10,
+  });
+
+  // Without ?name it's still the one-row-per-document list.
+  const all = (await (await fetch(`${base}/api/conversations/${conv}/artifacts`)).json()) as {
+    artifacts: Array<{ name: string; version: number; versions: number }>;
+  };
+  expect(all.artifacts.map((a) => a.name).sort()).toEqual(["other.md", "report.md"]);
+
+  const res = await fetch(`${base}/api/conversations/${conv}/artifacts?name=report.md`);
+  const { versions } = (await res.json()) as {
+    versions: Array<{ version: number; sha256: string; title: string | null }>;
+  };
+  // Newest first, and only this document's.
+  expect(versions.map((v) => v.version)).toEqual([2, 1]);
+  expect(versions[0]!.title).toBe("Final");
+
+  // A name with no history is an empty list, not the whole conversation's.
+  const none = (await (
+    await fetch(`${base}/api/conversations/${conv}/artifacts?name=nope.md`)
+  ).json()) as { versions: unknown[] };
+  expect(none.versions).toEqual([]);
+});

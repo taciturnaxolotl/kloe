@@ -22,11 +22,14 @@ import * as smd from "streaming-markdown";
 import { requireAuth, setPfp } from "./authguard.js";
 import { mountDialogs } from "./confirm.js";
 import { mountConn } from "./conn.js";
+import { fmtConvDate } from "./convrow.js";
 import { showContextMenu } from "./ctxmenu.js";
 import { ditherFill } from "./dither.js";
 import {
+  CHECK_ICON as CHECK,
   CHEV_ICON as CHEV,
   FILE_ICON as FILE_SVG,
+  BLANK_ICON as ICON_BLANK,
   CLOCK_ICON as ICON_CLOCK,
   EXT_ICON as ICON_EXT,
   GLOBE_ICON as ICON_GLOBE,
@@ -1427,6 +1430,9 @@ import { mountSidebar } from "./sidebar.js";
   // HTML documents show their rendered self by default and their source on
   // request. Per-open rather than sticky: the point of the pane is the document.
   var paneSource = false;
+  // Every stored revision of the open document, newest first. Empty until the
+  // history comes back, and for a one-version document it stays that way.
+  var paneVersions = [];
   // The pane has two modes and one frame: the conversation's documents, and one
   // of them open. Same panel either way — a list that behaved like a dropdown
   // while the document behaved like a panel would be two idioms for one thing.
@@ -1445,6 +1451,7 @@ import { mountSidebar } from "./sidebar.js";
     // Only a document with a rendering distinct from its source has a source to
     // switch to; markdown in the pane already IS the rendering.
     $("paneSourceBtn").hidden = mode !== "doc" || !isHtmlDoc(paneDoc);
+    $("paneVersions").hidden = mode !== "doc" || paneVersions.length < 2;
     $("paneSourceBtn").textContent = paneSource ? "Preview" : "Source";
     // The header button and an open pane say the same thing, so only one of them
     // says it. Closing the pane brings the button back.
@@ -1593,14 +1600,78 @@ import { mountSidebar } from "./sidebar.js";
     }
     body.scrollTop = 0;
   }
-  function openPane(doc) {
+  // ---- document history ----------------------------------------------------
+  // Writing a file twice makes a version, not a new document, so a document in
+  // the pane is one of several revisions and the header says which. Fetched on
+  // open rather than carried on the card: a card records the bytes it produced
+  // and knows nothing about the rewrites that came after it.
+  /**
+   * The revision on screen, matched by sha256 rather than version number —
+   * that's the only thing a thread card and a history row are guaranteed to
+   * agree on.
+   */
+  function currentVersion() {
+    if (!paneDoc) return null;
+    for (var i = 0; i < paneVersions.length; i++)
+      if (paneVersions[i].sha256 === paneDoc.sha256) return paneVersions[i];
+    return null;
+  }
+  function fmtVersionTime(ms) {
+    return (
+      fmtConvDate(ms) +
+      " " +
+      new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+    );
+  }
+  function paintPaneVersions(versions) {
+    paneVersions = versions || [];
+    var btn = $("paneVersions");
+    // One revision is not a history, and the control for choosing among one
+    // thing is no control at all.
+    if (paneMode !== "doc" || paneVersions.length < 2) {
+      btn.hidden = true;
+      return;
+    }
+    var cur = currentVersion();
+    btn.hidden = false;
+    btn.textContent = "";
+    var label = document.createElement("span");
+    label.textContent = cur ? "v" + cur.version : paneVersions.length + " versions";
+    btn.appendChild(label);
+    btn.insertAdjacentHTML("beforeend", CHEV);
+    btn.title = paneVersions.length + " versions";
+  }
+  function loadPaneVersions(doc) {
+    paintPaneVersions([]);
+    if (!doc || !convId) return;
+    var want = doc.sha256;
+    fetch(
+      "/api/conversations/" +
+        encodeURIComponent(convId) +
+        "/artifacts?name=" +
+        encodeURIComponent(doc.name),
+    )
+      .then(function (r) {
+        return r.ok ? r.json() : { versions: [] };
+      })
+      .then(function (d) {
+        if (!paneDoc || paneDoc.sha256 !== want) return; // opened something else meanwhile
+        paintPaneVersions(d.versions || []);
+      })
+      .catch(function () {});
+  }
+  function openPane(doc, versions) {
     paneDoc = doc;
     paneSource = false; // a page opens rendered; the source is the deliberate click
+    paneVersions = versions || [];
     paneChrome("doc");
     $("paneTitle").textContent = doc.title || doc.name;
     var body = $("paneBody");
     body.innerHTML = "";
     showPane();
+    // Switching revisions already has the history in hand; opening fresh doesn't.
+    if (versions) paintPaneVersions(versions);
+    else loadPaneVersions(doc);
     var want = doc.sha256;
     fetch("/api/blobs/" + encodeURIComponent(doc.sha256))
       .then(function (r) {
@@ -1618,6 +1689,7 @@ import { mountSidebar } from "./sidebar.js";
   }
   function closePane() {
     paneDoc = null;
+    paneVersions = [];
     $("pane").hidden = true;
     $("paneBody").innerHTML = "";
     $("app").classList.remove("pane-open", "pane-full");
@@ -1743,6 +1815,32 @@ import { mountSidebar } from "./sidebar.js";
       paneSource = !paneSource;
       $("paneSourceBtn").textContent = paneSource ? "Preview" : "Source";
       paintPaneDoc();
+    });
+    // The history, newest first. Picking one re-opens the pane on those bytes;
+    // the list is already loaded, so it goes along rather than being refetched.
+    $("paneVersions").addEventListener("click", function (e) {
+      if (paneVersions.length < 2) return;
+      e.stopPropagation(); // the menu's own outside-click handler closes it
+      var btn = $("paneVersions");
+      var r = btn.getBoundingClientRect();
+      var cur = currentVersion();
+      var versions = paneVersions;
+      showContextMenu(
+        r.right,
+        r.bottom + 6,
+        versions.map(function (v) {
+          return {
+            // Every row reserves the tick's width, so the labels line up whether
+            // or not the row is the one you're looking at.
+            icon: cur && cur.version === v.version ? CHECK : ICON_BLANK,
+            label: "v" + v.version + " · " + fmtVersionTime(v.createdAt),
+            onClick: function () {
+              openPane(v, versions);
+            },
+          };
+        }),
+        { align: "right", trigger: btn },
+      );
     });
     $("paneCopy").addEventListener("click", function () {
       if (!paneDoc) return;

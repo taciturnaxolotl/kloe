@@ -9,6 +9,7 @@ import {
   ArrowUp,
   ArrowUpRight,
   Brain,
+  Check,
   ChevronRight,
   Clock,
   EllipsisVertical,
@@ -85,3 +86,7 @@ export var USERS_ICON = icon(Users, { "stroke-width": 1.8 });
 export var HASH_ICON = icon(Hash, { "stroke-width": 1.8 });
 export var BRAIN_ICON = icon(Brain, { "stroke-width": 1.7 });
 export var TERMINAL_ICON = icon(SquareTerminal, { "stroke-width": 1.8 });
+export var CHECK_ICON = icon(Check, { "stroke-width": 2.2 });
+/* An icon-shaped hole: holds a menu row's icon column open when the row has no
+   icon, so a list where only one item is ticked still reads as one column. */
+export var BLANK_ICON = '<svg viewBox="0 0 24 24"></svg>';
