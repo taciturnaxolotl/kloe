@@ -2445,25 +2445,6 @@ body.resizing {
 }
 /* The effort row hangs under the selected model in the picker, indented to
    belong to it, with its current value and a chevron into the level list. */
-.picker .effortrow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-left: 22px;
-}
-.picker .effortrow .name {
-  flex: 1;
-}
-.effortvalue {
-  color: var(--ink-faint);
-  font-size: 12.5px;
-}
-.picker .effortrow .chev {
-  width: 13px;
-  height: 13px;
-  color: var(--ink-faint);
-}
-
 /* ---- composer dock ----------------------------------------------------- */
 .dock {
   border-top: 0;
@@ -2815,21 +2796,21 @@ body.resizing {
   bottom: calc(100% + 6px);
   right: 0;
   z-index: 30;
-  min-width: 260px;
+  min-width: 264px;
   max-width: 340px;
-  max-height: 50vh;
-  overflow-y: auto;
   background: var(--bg-raise);
   border: 1px solid var(--rule-strong);
   border-radius: var(--radius-lg);
   padding: 6px;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 8px 30px rgb(0 0 0 / 18%);
 }
 .picker[hidden] {
   display: none;
 }
 .picker .opt {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
   text-align: left;
   font: inherit;
@@ -2839,22 +2820,96 @@ body.resizing {
   border-radius: var(--radius-md);
   padding: 8px 10px;
   cursor: pointer;
+  /* Hover is the only feedback a menu row gives, so it should arrive instantly
+     and leave gently — a fade-in makes a menu feel unresponsive under a moving
+     pointer, and a hard cut on the way out makes it feel twitchy. */
+  transition: background 0.16s ease;
 }
-.picker .opt:hover {
+.picker .opt:hover,
+.picker .opt:focus-visible {
+  background: var(--bg-sunk);
+  transition-duration: 0s;
+  outline: none;
+}
+/* The row whose flyout is open stays lit, so the panel beside it has a visible
+   parent rather than floating next to nothing. */
+.picker .opt[aria-expanded="true"] {
   background: var(--bg-sunk);
 }
-.picker .opt[aria-selected="true"] {
-  background: color-mix(in srgb, var(--accent) 12%, var(--bg-raise));
+.picker .optbody {
+  flex: 1;
+  min-width: 0;
 }
 .picker .opt .name {
+  display: block;
   font-weight: 500;
   font-size: 14px;
 }
 .picker .opt .sub {
+  display: block;
   font-family: var(--mono);
   font-size: 11px;
   color: var(--ink-faint);
   margin-top: 2px;
+}
+/* The current model is marked with a tick, not a filled background: the menu is
+   mostly one row, and a highlighted lone row reads as hover rather than state. */
+.picker .optcheck {
+  flex: none;
+  display: inline-flex;
+  color: var(--accent);
+}
+.picker .optcheck svg {
+  width: 15px;
+  height: 15px;
+}
+.picker .opt[aria-selected="true"] {
+  background: none;
+}
+.pickrule {
+  height: 1px;
+  margin: 5px 8px;
+  background: var(--rule);
+}
+/* Rows that lead somewhere: a value on the right, then a chevron. */
+.picker .siderow .chev {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--ink-faint);
+}
+.effortvalue {
+  flex: none;
+  color: var(--ink-faint);
+  font-size: 13px;
+}
+/* The rest of the models, beside the menu — anchored to the row that opened it
+   and opening away from the composer. */
+.pickflyout {
+  position: absolute;
+  right: calc(100% + 6px);
+  min-width: 220px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--bg-raise);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-lg);
+  padding: 6px;
+  box-shadow: 0 8px 30px rgb(0 0 0 / 18%);
+}
+/* No room beside it on a narrow screen: fall back to below, still anchored. */
+@media (max-width: 720px) {
+  .pickflyout {
+    position: static;
+    right: auto;
+    margin-top: 4px;
+    box-shadow: none;
+    border: 0;
+    border-top: 1px solid var(--rule);
+    border-radius: 0;
+    padding: 4px 0 0;
+    max-height: 40vh;
+  }
 }
 .picker .none {
   padding: 10px;

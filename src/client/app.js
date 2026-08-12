@@ -3571,81 +3571,94 @@ import { mountSidebar } from "./sidebar.js";
       picker.appendChild(none);
       return;
     }
-    models.forEach(function (m) {
-      var b = document.createElement("button");
-      b.className = "opt";
-      b.type = "button";
-      b.setAttribute("role", "option");
-      if (selected && m.ref === selected.ref) b.setAttribute("aria-selected", "true");
-      var sub = [];
-      if (m.contextWindow) sub.push(fmtCtx(m.contextWindow) + " ctx");
-      if (m.reasoningLevels && m.reasoningLevels.length) sub.push("reasoning");
-      if (m.supportsImages) sub.push("images");
-      b.innerHTML =
-        '<div class="name"></div>' +
-        (sub.length ? '<div class="sub">' + sub.join(" · ") + "</div>" : "");
-      b.querySelector(".name").textContent = m.name;
-      b.onclick = function () {
-        selected = m;
-        localStorage.setItem("kloe.model", m.ref);
-        renderPill();
-        renderPicker();
-        updateSend();
-        updateCtx();
-        closePicker();
-      };
-      picker.appendChild(b);
-      // The effort row belongs to the model above it: a level list is only
-      // meaningful next to the model whose levels they are.
-      if (selected && m.ref === selected.ref && levelsOf(m).length) {
-        picker.appendChild(effortRow(m));
-      }
-    });
+    // The menu is about the model you are USING: it, what it can do, and the two
+    // things you might change. Every other model is one row away rather than
+    // eight rows down — a list of everything makes the common case (glance at
+    // what is selected, adjust effort) hunt through the rare one.
+    if (selected) picker.appendChild(modelRow(selected, true));
+    if (selected && levelsOf(selected).length) {
+      picker.appendChild(divider());
+      picker.appendChild(effortRow(selected));
+    }
+    if (models.length > 1) {
+      picker.appendChild(divider());
+      picker.appendChild(moreRow());
+    }
   }
-  /**
-   * "Effort  High >" — a row under the selected model that opens its levels.
-   *
-   * A submenu rather than a row per level in the main list: the levels are a
-   * property of one model, and inlining four of them would bury the other
-   * models under whichever one happened to be selected.
-   */
-  function effortRow(m) {
+  function divider() {
+    var d = document.createElement("div");
+    d.className = "pickrule";
+    return d;
+  }
+  /** One model: its name, what it can do, and a tick when it is the current one. */
+  function modelRow(m, isCurrent) {
+    var b = document.createElement("button");
+    b.className = "opt";
+    b.type = "button";
+    b.setAttribute("role", "option");
+    if (isCurrent) b.setAttribute("aria-selected", "true");
+    var sub = [];
+    if (m.contextWindow) sub.push(fmtCtx(m.contextWindow) + " ctx");
+    if (levelsOf(m).length) sub.push("reasoning");
+    if (m.supportsImages) sub.push("images");
+    b.innerHTML =
+      '<span class="optbody"><span class="name"></span>' +
+      (sub.length ? '<span class="sub">' + sub.join(" · ") + "</span>" : "") +
+      "</span>";
+    b.querySelector(".name").textContent = m.name;
+    if (isCurrent) b.insertAdjacentHTML("beforeend", '<span class="optcheck">' + CHECK + "</span>");
+    b.onclick = function () {
+      selected = m;
+      localStorage.setItem("kloe.model", m.ref);
+      renderPill();
+      renderPicker();
+      updateSend();
+      updateCtx();
+      closePicker();
+    };
+    return b;
+  }
+  /** "More models ›" — everything that isn't selected, in a panel to the side. */
+  function moreRow() {
     var row = document.createElement("button");
-    row.className = "opt effortrow";
+    row.className = "opt siderow";
     row.type = "button";
-    var level = currentEffort();
-    var value = document.createElement("span");
-    value.className = "effortvalue";
-    value.textContent = level ? effortLabel(level) : "Default";
-    row.innerHTML = '<div class="name">Effort</div>';
-    row.appendChild(value);
+    row.innerHTML = '<span class="optbody"><span class="name">More models</span></span>';
     row.insertAdjacentHTML("beforeend", CHEV);
     row.onclick = function (e) {
       e.stopPropagation();
-      var r = row.getBoundingClientRect();
-      var items = [
-        {
-          label: "Default",
-          icon: level ? ICON_BLANK : CHECK,
-          onClick: function () {
-            setEffort(null);
-          },
-        },
-      ].concat(
-        levelsOf(m).map(function (l) {
-          return {
-            label: effortLabel(l),
-            icon: level === l ? CHECK : ICON_BLANK,
-            onClick: function () {
-              setEffort(l);
-            },
-          };
-        }),
-      );
-      showContextMenu(r.right, r.top, items, { align: "left", trigger: row });
+      toggleFlyout(row);
     };
     return row;
   }
+  /**
+   * The rest of the models, beside the menu rather than inside it.
+   *
+   * Its own element rather than the shared context menu: these rows carry a
+   * second line (context window, reasoning, images), which is most of what you
+   * are choosing between, and a menu of bare labels would drop it.
+   */
+  function toggleFlyout(anchor) {
+    var open = picker.querySelector(".pickflyout");
+    if (open) {
+      open.remove();
+      anchor.setAttribute("aria-expanded", "false");
+      return;
+    }
+    var fly = document.createElement("div");
+    fly.className = "pickflyout";
+    models.forEach(function (m) {
+      if (selected && m.ref === selected.ref) return; // it is already the row above
+      fly.appendChild(modelRow(m, false));
+    });
+    picker.appendChild(fly);
+    anchor.setAttribute("aria-expanded", "true");
+    // Open upward from the row that summoned it, and never off the top.
+    var pr = picker.getBoundingClientRect();
+    var ar = anchor.getBoundingClientRect();
+    fly.style.bottom = Math.max(0, pr.bottom - ar.bottom - 6) + "px";
+  }
+
   function openPicker() {
     picker.hidden = false;
     pill.setAttribute("aria-expanded", "true");
@@ -3653,6 +3666,10 @@ import { mountSidebar } from "./sidebar.js";
   function closePicker() {
     picker.hidden = true;
     pill.setAttribute("aria-expanded", "false");
+    // The flyout is a child of the picker, so hiding the picker hides it — but
+    // it must not be there on the next open, showing a list nobody asked for.
+    var fly = picker.querySelector(".pickflyout");
+    if (fly) fly.remove();
   }
 
   // ---- wiring ------------------------------------------------------------
