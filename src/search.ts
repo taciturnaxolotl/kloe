@@ -12,10 +12,27 @@ export interface SearchResult {
   title: string;
   url: string;
   snippet: string;
+  /**
+   * Page text, when the backend returns it with the result.
+   *
+   * Deliberately NOT part of what the tool hands the model: five results with
+   * five thousand characters each is a fetched page's worth of context spent on
+   * deciding which page to fetch. It is here because a search that already
+   * carries the text is a read the researcher may not have to pay for, and that
+   * is worth building on top of.
+   */
+  text?: string;
 }
 
 export interface SearchProvider {
   search(query: string): Promise<SearchResult[]>;
+  /**
+   * Several queries in one round trip, where the backend supports it.
+   *
+   * Optional, and every caller must cope without it: the default below simply
+   * runs them in parallel, which is the same answer a request later.
+   */
+  searchMany?(queries: string[]): Promise<SearchResult[][]>;
 }
 
 interface CeramicOptions {
@@ -163,6 +180,111 @@ interface HackClubResponse {
   results?: HackClubHit[];
 }
 
+interface LlmSolutionsOptions {
+  apiKey?: string;
+  endpoint?: string;
+  maxResults?: number;
+  fetchImpl?: typeof fetch;
+}
+
+/** How much of a returned page becomes the snippet the model reads. */
+const SNIPPET_CHARS = 600;
+
+/**
+ * llmsolutions.top — POST /v1/search, bearer key, and it returns page TEXT
+ * rather than a one-line description.
+ *
+ * That changes what a search result is worth here. The other backends hand back
+ * a sentence, which is a reason to open a page; this one hands back enough of
+ * the page to often settle the question. The snippet is cut from that text, and
+ * the full text is carried on the result for a caller that wants it — capped
+ * either way, because the point of a search result is still to choose what to
+ * read.
+ *
+ * The API also accepts `queries: [...]` for several searches in one request.
+ * That path is implemented and currently answers 503 on every multi-query call
+ * while single queries succeed, so `searchMany` falls back to running them in
+ * parallel. When the endpoint recovers, the batch is used with no change here.
+ */
+export class LlmSolutionsSearchProvider implements SearchProvider {
+  private readonly apiKey?: string;
+  private readonly endpoint: string;
+  private readonly maxResults: number;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(opts: LlmSolutionsOptions = {}) {
+    this.apiKey = opts.apiKey;
+    this.endpoint = opts.endpoint || "https://llmsolutions.top/v1/search";
+    this.maxResults = opts.maxResults ?? 5;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+  }
+
+  async search(query: string): Promise<SearchResult[]> {
+    const data = await this.post({ query, max_results: this.maxResults });
+    return this.normalize(data);
+  }
+
+  async searchMany(queries: string[]): Promise<SearchResult[][]> {
+    if (queries.length <= 1) return [await this.search(queries[0] ?? "")];
+    try {
+      const data = await this.post({ queries, max_results: this.maxResults });
+      // Results carry the query they answer, so they sort back into the order
+      // asked for rather than the order returned.
+      return queries.map((q) => this.normalize(data.filter((d) => d.query === q)));
+    } catch (e) {
+      // The batch endpoint is currently unreliable; one failed round trip must
+      // not cost the caller its searches.
+      console.warn("[search] batch failed, falling back to parallel:", (e as Error).message);
+      return Promise.all(queries.map((q) => this.search(q)));
+    }
+  }
+
+  private async post(body: Record<string, unknown>): Promise<LlmSolutionsHit[]> {
+    const res = await this.fetchImpl(this.endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const err = (await res.json()) as { error?: { message?: string; code?: string } };
+        if (err.error?.message) detail = err.error.message;
+        if (err.error?.code) detail += ` (${err.error.code})`;
+      } catch {
+        // non-JSON error body; keep the status text
+      }
+      throw new Error(`llmsolutions search failed: ${res.status} ${detail}`);
+    }
+    const data = (await res.json()) as { data?: LlmSolutionsHit[] };
+    return data.data ?? [];
+  }
+
+  private normalize(hits: LlmSolutionsHit[]): SearchResult[] {
+    return hits.slice(0, this.maxResults).map((h) => {
+      const text = (h.text ?? "").trim();
+      return {
+        title: h.title ?? "",
+        url: h.url ?? "",
+        // The returned text is the page, elisions and all. A snippet is the
+        // first readable stretch of it, not the whole thing.
+        snippet: text.length > SNIPPET_CHARS ? `${text.slice(0, SNIPPET_CHARS).trimEnd()}…` : text,
+        ...(text ? { text } : {}),
+      };
+    });
+  }
+}
+
+interface LlmSolutionsHit {
+  query?: string;
+  title?: string;
+  url?: string;
+  text?: string;
+}
+
 /**
  * Builds the configured search provider from `config.search`, or null when
  * search is disabled (`provider: "none"`, or a provider with no key). The
@@ -176,6 +298,14 @@ export function createSearchProvider(
     case "ceramic":
       return cfg.apiKey
         ? new CeramicSearchProvider({
+            apiKey: cfg.apiKey,
+            endpoint: cfg.endpoint,
+            maxResults: cfg.maxResults,
+          })
+        : null;
+    case "llmsolutions":
+      return cfg.apiKey
+        ? new LlmSolutionsSearchProvider({
             apiKey: cfg.apiKey,
             endpoint: cfg.endpoint,
             maxResults: cfg.maxResults,

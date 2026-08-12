@@ -129,7 +129,8 @@
           "enum": [
             "none",
             "ceramic",
-            "hackclub"
+            "hackclub",
+            "llmsolutions"
           ],
           "type": "string",
           "default": "none"

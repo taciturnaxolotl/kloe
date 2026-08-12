@@ -241,7 +241,7 @@ const ResearchSchema = v.object({
 
 /** Web-search backing for the `web_search` tool. Disabled by default. */
 const SearchSchema = v.object({
-  provider: v.optional(v.picklist(["none", "ceramic", "hackclub"]), "none"),
+  provider: v.optional(v.picklist(["none", "ceramic", "hackclub", "llmsolutions"]), "none"),
   apiKey: v.optional(v.string()),
   endpoint: v.optional(v.string()),
   maxResults: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 5),

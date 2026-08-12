@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { CeramicSearchProvider, createSearchProvider, HackClubSearchProvider } from "../src/search";
+import {
+  CeramicSearchProvider,
+  createSearchProvider,
+  HackClubSearchProvider,
+  LlmSolutionsSearchProvider,
+} from "../src/search";
 import { loadConfig, setConfig } from "../src/settings";
 import { toolSet } from "../src/tools";
 
@@ -73,6 +78,10 @@ test("createSearchProvider selects the backend (and disables gracefully)", () =>
   expect(createSearchProvider({ provider: "hackclub", apiKey: "k", maxResults: 5 })).toBeInstanceOf(
     HackClubSearchProvider,
   );
+  expect(createSearchProvider({ provider: "llmsolutions", maxResults: 5 })).toBeNull(); // no key
+  expect(
+    createSearchProvider({ provider: "llmsolutions", apiKey: "k", maxResults: 5 }),
+  ).toBeInstanceOf(LlmSolutionsSearchProvider);
 });
 
 // ---- Hack Club search ------------------------------------------------------
@@ -170,4 +179,97 @@ test("toolSet exposes web_search only when a search provider is configured", () 
   } finally {
     setConfig(null);
   }
+});
+
+// ---- llmsolutions ----------------------------------------------------------
+// The one backend that returns page text rather than a description, and the one
+// with a batch endpoint that is currently unreliable.
+
+test("LlmSolutionsSearchProvider posts the query and cuts a snippet from the page text", async () => {
+  let seen: { url: string; init: RequestInit } | null = null;
+  const long = "A".repeat(2000);
+  const fetchImpl = (async (url: string, init: RequestInit) => {
+    seen = { url, init };
+    return new Response(
+      JSON.stringify({
+        object: "search.results",
+        data: [{ query: "q", title: "T", url: "https://t.test", text: long }],
+      }),
+    );
+  }) as unknown as typeof fetch;
+
+  const [hit] = await new LlmSolutionsSearchProvider({ apiKey: "k", fetchImpl }).search("q");
+  // The snippet is bounded: a page's worth of text per result would spend a
+  // fetch's context on deciding what to fetch.
+  expect(hit!.snippet.length).toBeLessThan(700);
+  expect(hit!.snippet.endsWith("…")).toBe(true);
+  // …while the full text stays on the result for a caller that wants it.
+  expect(hit!.text).toBe(long);
+
+  const got = seen as unknown as { url: string; init: RequestInit };
+  expect(JSON.parse(String(got.init.body))).toEqual({ query: "q", max_results: 5 });
+  expect((got.init.headers as Record<string, string>).Authorization).toBe("Bearer k");
+});
+
+test("a batch is sent as one request and sorted back into the order asked for", async () => {
+  const fetchImpl = (async (_url: string, init: RequestInit) => {
+    const body = JSON.parse(String(init.body));
+    expect(body.queries).toEqual(["alpha", "beta"]);
+    // The API returns one flat list; each hit names the query it answers.
+    return new Response(
+      JSON.stringify({
+        data: [
+          { query: "beta", title: "B", url: "https://b.test", text: "b" },
+          { query: "alpha", title: "A", url: "https://a.test", text: "a" },
+        ],
+      }),
+    );
+  }) as unknown as typeof fetch;
+
+  const out = await new LlmSolutionsSearchProvider({ apiKey: "k", fetchImpl }).searchMany([
+    "alpha",
+    "beta",
+  ]);
+  expect(out.map((r) => r[0]!.title)).toEqual(["A", "B"]);
+});
+
+test("a failing batch falls back to running the queries in parallel", async () => {
+  // The batch endpoint currently 503s on every multi-query call while single
+  // queries succeed. A caller must not lose its searches to that.
+  let calls = 0;
+  const fetchImpl = (async (_url: string, init: RequestInit) => {
+    calls++;
+    const body = JSON.parse(String(init.body));
+    if (body.queries) {
+      return new Response(
+        JSON.stringify({
+          error: { message: "Search is unavailable right now.", code: "search_unavailable" },
+        }),
+        { status: 503 },
+      );
+    }
+    return new Response(
+      JSON.stringify({ data: [{ query: body.query, title: body.query, url: "https://x.test" }] }),
+    );
+  }) as unknown as typeof fetch;
+
+  const out = await new LlmSolutionsSearchProvider({ apiKey: "k", fetchImpl }).searchMany([
+    "one",
+    "two",
+  ]);
+  expect(out.map((r) => r[0]!.title)).toEqual(["one", "two"]);
+  expect(calls).toBe(3); // the failed batch, then one request per query
+});
+
+test("an API error surfaces the server's own message", async () => {
+  const p = new LlmSolutionsSearchProvider({
+    apiKey: "k",
+    fetchImpl: jsonFetch(
+      { error: { message: "Search is unavailable right now.", code: "search_unavailable" } },
+      503,
+    ),
+  });
+  await expect(p.search("q")).rejects.toThrow(
+    /503 Search is unavailable right now\. \(search_unavailable\)/,
+  );
 });
