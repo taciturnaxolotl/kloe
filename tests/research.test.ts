@@ -3,6 +3,7 @@ import type { FetchProvider, FetchResult } from "../src/fetch";
 import {
   bindCitations,
   linkCitations,
+  normalizeMarkers,
   reportFilename,
   researchBudget,
   runResearch,
@@ -457,4 +458,21 @@ test("thinning survives the round trip into a bound, linked report", () => {
 test("prose with no citations is returned untouched", () => {
   const plain = "A paragraph with nothing to cite. And a second sentence.";
   expect(thinCitations(plain)).toBe(plain);
+});
+
+test("grouped markers are split so validation can't be bypassed", () => {
+  // Found by the eval suite: a model writes [4,5] as naturally as [4][5], and
+  // the grouped form matched no validator — so it reached the reader pointing
+  // at sources that were never read.
+  expect(normalizeMarkers("A claim [4,5]. Another [7, 9]. A third [1;2].")).toBe(
+    "A claim [4][5]. Another [7][9]. A third [1][2].",
+  );
+  expect(normalizeMarkers("Ordinary [3] is untouched.")).toBe("Ordinary [3] is untouched.");
+
+  // The point of the fix: grouped markers pointing at nothing are now dropped
+  // like any other invalid one, instead of surviving as literal text.
+  const ledger = [{ n: 1, url: "https://a", title: "A" }];
+  const bound = bindCitations("A claim [4,5]. Another [1].", ledger);
+  expect(bound.report).toBe("A claim. Another [1].");
+  expect(bound.sources).toHaveLength(1);
 });

@@ -464,6 +464,29 @@ function sourceList(ledger: Source[]): string {
 }
 
 /**
+ * Split grouped markers into single ones: `[4,5]` becomes `[4][5]`.
+ *
+ * Found by the eval suite, which is the only reason it is here. Everything that
+ * validates a citation matches `[n]` — one bracket, one number — so a model
+ * that writes the equally natural `[4,5]` produced markers that passed straight
+ * through untouched: never checked against the ledger, never renumbered, and
+ * pointing at sources that did not exist in a four-source run. The report then
+ * carried confident references to nothing.
+ *
+ * Normalizing first means the guarantee holds for whatever the model writes,
+ * rather than for the one form it was expected to write. Both binding and
+ * thinning start here, so no caller can skip it.
+ */
+export function normalizeMarkers(text: string): string {
+  return text.replace(/\[(\d+(?:\s*[,;]\s*\d+)+)\]/g, (_whole, group: string) =>
+    group
+      .split(/\s*[,;]\s*/)
+      .map((n) => `[${n}]`)
+      .join(""),
+  );
+}
+
+/**
  * Thin out citation markers that carry no information.
  *
  * The synthesizer reaches for markers as a display of rigour: the same source
@@ -490,7 +513,8 @@ function sourceList(ledger: Source[]): string {
  */
 const MAX_MARKERS_PER_CLAIM = 2;
 
-export function thinCitations(text: string): string {
+export function thinCitations(raw: string): string {
+  const text = normalizeMarkers(raw);
   // How many times each source is cited in the whole document, so the last
   // mention of a page is never the one we drop.
   const remaining = new Map<number, number>();
@@ -555,9 +579,10 @@ export function thinCitations(text: string): string {
  * sees 1, 2, 3 rather than 2, 5, 9.
  */
 export function bindCitations(
-  text: string,
+  raw: string,
   ledger: Source[],
 ): { report: string; sources: Source[] } {
+  const text = normalizeMarkers(raw);
   const order: number[] = [];
   const report = text.replace(/\[(\d+)\]/g, (_marker, digits: string) => {
     const n = Number(digits);
