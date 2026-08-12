@@ -21,6 +21,7 @@ import {
 } from "./lard";
 import {
   ModelPatchBody,
+  PrefsPatchBody,
   ProjectAssignBody,
   ProjectCreateBody,
   ProjectPatchBody,
@@ -506,6 +507,15 @@ async function serveBlob(
   return new Response(blob, { headers });
 }
 
+/**
+ * Preferences the settings page may write.
+ *
+ * A closed set, because the run loop reads this table: an endpoint that stored
+ * any key anyone sent would make the table a place to put things, and the two
+ * that matter here decide which model spends the tokens.
+ */
+const KNOWN_PREFS = new Set(["research.leadModel", "research.workerModel"]);
+
 /** Mimes a browser will execute script from when it renders them as a document. */
 const ACTIVE_MIME =
   /^(text\/html|application\/xhtml\+xml|image\/svg\+xml|(?:text|application)\/xml)\b/i;
@@ -739,6 +749,27 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         store.unpublish(req.params.id, req.params.token);
         return Response.json({ ok: true });
       },
+    },
+
+    // Preferences the settings page owns. Deliberately a flat map: these are
+    // choices made by clicking, and each one should not cost an endpoint.
+    "/api/prefs": {
+      GET: () => Response.json({ prefs: store.listPrefs() }),
+      PATCH: withBody(PrefsPatchBody, (data) => {
+        for (const [key, value] of Object.entries(data)) {
+          // Only keys we know: an open key/value endpoint is an invitation to
+          // store whatever, and this table is read by the run loop.
+          if (!KNOWN_PREFS.has(key)) {
+            return Response.json({ error: `unknown preference "${key}"` }, { status: 422 });
+          }
+          if (value && key.endsWith("Model")) {
+            const rejected = requireKnownModel(value);
+            if (rejected) return rejected;
+          }
+        }
+        for (const [key, value] of Object.entries(data)) store.setPref(key, value);
+        return Response.json({ prefs: store.listPrefs() });
+      }),
     },
 
     // Content-addressed blobs: upload (raw body) → sha256; fetch by sha256.

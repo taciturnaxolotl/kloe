@@ -1047,3 +1047,32 @@ test("a following link serves the newest version, and keeps its token when repin
   expect(pinned.token).toBe(live.token);
   expect(await (await fetch(`${base}/api/public/${live.token}/raw`)).text()).toBe("first draft");
 });
+
+test("prefs are readable, writable, and closed to keys the run loop doesn't know", async () => {
+  setRegistry(new ProviderRegistry(Catalog.fromRaw([]), { config: { providers: [] } }));
+  expect((await (await fetch(`${base}/api/prefs`)).json()) as unknown).toEqual({ prefs: {} });
+
+  const patch = (body: unknown) =>
+    fetch(`${base}/api/prefs`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  // A model that exists can be chosen for a role.
+  const ok = await patch({ "research.leadModel": "echo" });
+  expect(ok.status).toBe(200);
+  expect(((await ok.json()) as { prefs: Record<string, string> }).prefs).toEqual({
+    "research.leadModel": "echo",
+  });
+
+  // A model that doesn't exist is refused, so a role can't name a ghost.
+  expect((await patch({ "research.workerModel": "acme/ghost" })).status).toBe(422);
+
+  // The table is read by the run loop, so it is not a place to put things.
+  expect((await patch({ "anything.else": "x" })).status).toBe(422);
+
+  // null clears a role back to "same as the chat model".
+  const cleared = await patch({ "research.leadModel": null });
+  expect(((await cleared.json()) as { prefs: Record<string, string> }).prefs).toEqual({});
+});

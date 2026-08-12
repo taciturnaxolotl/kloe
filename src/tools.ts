@@ -140,6 +140,8 @@ function deepResearch(
       const out = await runResearch({
         question,
         model,
+        leadModel: ctx.researchLead,
+        workerModel: ctx.researchWorker,
         search,
         fetcher,
         signal: abortSignal,
@@ -958,6 +960,12 @@ export interface ToolContext {
    */
   visionModel?: LanguageModel;
   modelReadsImages?: boolean;
+  /**
+   * Models for the two jobs inside a research run, when the deployment has
+   * chosen them. Resolved by the caller for the same reason `model` is.
+   */
+  researchLead?: LanguageModel;
+  researchWorker?: LanguageModel;
   /** Where a tool's output files go: agent artifacts share the user-upload store. */
   blobs?: BlobStore;
   /**

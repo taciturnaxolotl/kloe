@@ -37,11 +37,16 @@ var TEMPLATE =
   '<div class="chatscroll"><div class="setpage">' +
   '<div class="settabs" id="settabs" role="tablist">' +
   '<button class="settab active" type="button" data-tab="models" role="tab">Models</button>' +
+  '<button class="settab" type="button" data-tab="research" role="tab">Research</button>' +
   '<button class="settab" type="button" data-tab="memory" role="tab" hidden>Memory</button>' +
   "</div>" +
   '<section class="settabpanel" data-panel="models">' +
   '<p class="lede">Turn models on to add them to the chat picker, drag the enabled ones to set their order (⌘-click to move several at once), and give them display names.</p>' +
   '<div id="content">Loading…</div>' +
+  "</section>" +
+  '<section class="settabpanel" data-panel="research" hidden>' +
+  '<p class="lede">Deep research runs two jobs. The <strong>lead</strong> plans the angles, reads each round of notes to decide what to chase next, and writes the report. The <strong>workers</strong> search and read pages — far more tokens, on a much narrower job. Running a strong lead over cheaper workers is usually better than running one model for both.</p>' +
+  '<div class="rolepick" id="rolepick">Loading…</div>' +
   "</section>" +
   '<section class="settabpanel" data-panel="memory" hidden>' +
   '<div id="lardStatus" class="lardconn"></div>' +
@@ -93,6 +98,7 @@ export function mount(root, _params, ctx) {
 
   var byRef = Object.create(null);
   var allModels = [];
+  var prefs = {};
   var dragActive = false;
   var lardSubjects = []; // full listing, for search filtering
   var activeSubjectPath = null;
@@ -208,7 +214,75 @@ export function mount(root, _params, ctx) {
     return row;
   }
 
+  /** The two role pickers: enabled models, plus "same as the chat model". */
+  function renderRoles() {
+    var box = byId("rolepick");
+    if (!box) return;
+    box.innerHTML = "";
+    var enabled = allModels.filter(function (m) {
+      return m.visible;
+    });
+    if (!enabled.length) {
+      box.innerHTML = '<p class="lede">Enable some models first.</p>';
+      return;
+    }
+    [
+      { key: "research.leadModel", label: "Lead", hint: "Plans, directs and writes." },
+      { key: "research.workerModel", label: "Workers", hint: "Search and read." },
+    ].forEach(function (role) {
+      var row = document.createElement("label");
+      row.className = "rolerow";
+      var name = document.createElement("span");
+      name.className = "rolename";
+      name.textContent = role.label;
+      var hint = document.createElement("span");
+      hint.className = "rolehint";
+      hint.textContent = role.hint;
+      var sel = document.createElement("select");
+      sel.className = "roleselect";
+      // The default is not a model: it is "whatever the conversation is using",
+      // which is what a run does today and what it should keep doing until
+      // somebody deliberately chooses otherwise.
+      var same = document.createElement("option");
+      same.value = "";
+      same.textContent = "Same as the chat model";
+      sel.appendChild(same);
+      enabled.forEach(function (m) {
+        var o = document.createElement("option");
+        o.value = m.ref;
+        o.textContent = m.name || m.ref;
+        sel.appendChild(o);
+      });
+      sel.value = prefs[role.key] || "";
+      var saved = document.createElement("span");
+      saved.className = "saved";
+      sel.addEventListener("change", async function () {
+        var body = {};
+        body[role.key] = sel.value || null;
+        try {
+          var res = await fetch("/api/prefs", {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          if (!res.ok) throw new Error(String(res.status));
+          prefs = (await res.json()).prefs || {};
+          flash(saved, true);
+        } catch (_) {
+          sel.value = prefs[role.key] || ""; // put it back: nothing was saved
+          flash(saved, false);
+        }
+      });
+      row.appendChild(name);
+      row.appendChild(hint);
+      row.appendChild(sel);
+      row.appendChild(saved);
+      box.appendChild(row);
+    });
+  }
+
   function render() {
+    renderRoles();
     byRef = Object.create(null);
     allModels.forEach(function (m) {
       byRef[m.ref] = m;
@@ -789,12 +863,23 @@ export function mount(root, _params, ctx) {
   setupTabs();
   if (location.hash === "#memory") selectTab("memory");
   loadLard();
-  fetch("/api/models")
-    .then(function (r) {
+  // Models and preferences together: a role picker lists enabled models, so
+  // rendering it needs both and rendering it twice would flicker.
+  Promise.all([
+    fetch("/api/models").then(function (r) {
       return r.json();
-    })
-    .then(function (d) {
-      allModels = d.models || [];
+    }),
+    fetch("/api/prefs")
+      .then(function (r) {
+        return r.ok ? r.json() : { prefs: {} };
+      })
+      .catch(function () {
+        return { prefs: {} };
+      }),
+  ])
+    .then(function (both) {
+      allModels = both[0].models || [];
+      prefs = both[1].prefs || {};
       render();
     })
     .catch(function (e) {

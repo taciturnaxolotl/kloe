@@ -245,6 +245,22 @@ const ResearchSchema = v.object({
   /** How many times a run may look at what it has and send someone back out. */
   maxRounds: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(6)), 3),
   /**
+   * Models for the two jobs a research run contains.
+   *
+   * `leadModel` plans the angles, reads each round's notes to decide the next,
+   * and writes the report — judgement about a whole run. `workerModel` searches
+   * and reads pages, which is a great deal more tokens spent on a narrower job.
+   * Anthropic measured a strong lead over cheaper subagents beating a uniform
+   * strong model, so the split is worth having; unset, both fall back to the
+   * model the conversation is using, which is the old behaviour exactly.
+   *
+   * The settings page writes the same choice into the `prefs` table, and that
+   * wins over these — a value set by clicking should not be silently overridden
+   * by a file the clicker may not be able to edit.
+   */
+  leadModel: v.optional(v.string()),
+  workerModel: v.optional(v.string()),
+  /**
    * Wall clock for planning, the workers, synthesis and citations together.
    * Generous on purpose: a run reading a couple of hundred pages is a job you
    * come back to, and the ceiling is there to stop a hang, not to pace the work.

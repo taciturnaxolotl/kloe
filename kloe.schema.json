@@ -224,6 +224,12 @@
           "maximum": 6,
           "default": 3
         },
+        "leadModel": {
+          "type": "string"
+        },
+        "workerModel": {
+          "type": "string"
+        },
         "timeoutMs": {
           "type": "integer",
           "minimum": 1000,

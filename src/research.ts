@@ -764,7 +764,15 @@ export function researchBudget(override?: Partial<ResearchBudget>): ResearchBudg
 
 export async function runResearch(opts: {
   question: string;
+  /** The model for everything, and the fallback for both roles below. */
   model: LanguageModel;
+  /**
+   * Judgement about the whole run: planning the angles, reading each round's
+   * notes to decide the next, and writing the report.
+   */
+  leadModel?: LanguageModel;
+  /** Searching and reading — far more tokens, on a much narrower job. */
+  workerModel?: LanguageModel;
   search: SearchProvider;
   fetcher: FetchProvider;
   budget?: Partial<ResearchBudget>;
@@ -772,6 +780,8 @@ export async function runResearch(opts: {
   onProgress?: ProgressFn;
 }): Promise<ResearchResult> {
   const budget = researchBudget(opts.budget);
+  const lead = opts.leadModel ?? opts.model;
+  const worker = opts.workerModel ?? opts.model;
   const progress = opts.onProgress;
   const started = Date.now();
   const st: RunState = { ledger: [], searches: 0, reserved: 0 };
@@ -798,9 +808,7 @@ export async function runResearch(opts: {
   progress?.("planning", { question: opts.question, maxSources: budget.maxSources });
 
   // --- plan -------------------------------------------------------------
-  const plan = await planAngles(opts.model, opts.question, budget.maxAgents, signal, (u) =>
-    bill(u),
-  );
+  const plan = await planAngles(lead, opts.question, budget.maxAgents, signal, (u) => bill(u));
   const angles = plan.angles;
   progress?.("plan", { angles, planned: plan.planned });
 
@@ -839,7 +847,7 @@ export async function runResearch(opts: {
         progress?.("agent", { agent, angle, round });
         const filed: { notes?: string } = {};
         const loop = streamText({
-          model: opts.model,
+          model: worker,
           system: WORKER_SYSTEM,
           prompt: `Overall question: ${opts.question}\n\nYour angle: ${angle}`,
           tools: workerTools(opts.search, opts.fetcher, budget, st, filed, agent, progress),
@@ -917,7 +925,7 @@ export async function runResearch(opts: {
     .join("\n\n---\n\n");
   try {
     const synth = streamText({
-      model: opts.model,
+      model: lead,
       system: SYNTH_SYSTEM,
       prompt: `Question: ${opts.question}\n\nSources:\n${sourceList(st.ledger)}\n\nWorker notes:\n\n${brief}`,
       tools: reportTool(filed, progress),

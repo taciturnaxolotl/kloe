@@ -314,6 +314,15 @@ CREATE TABLE IF NOT EXISTS model_settings (
 
 -- Blob metadata (the bytes live in the BlobStore, keyed by sha256). Content-
 -- addressed, so a row is immutable once written; mime/size come from the upload.
+-- Deployment preferences a person sets in the UI, as opposed to the ops config
+-- a person sets in kloe.json. One flat key/value table rather than a column per
+-- setting: these are chosen by clicking, they change without a deploy, and a
+-- migration per checkbox is a bad trade.
+CREATE TABLE IF NOT EXISTS prefs (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS blobs (
   sha256 TEXT PRIMARY KEY,
   mime TEXT NOT NULL,
@@ -1120,6 +1129,38 @@ export class Store {
       const stillRef = this.db.prepare("SELECT 1 FROM blob_refs WHERE sha256 = ? LIMIT 1");
       return candidates.filter((sha) => stillRef.get(sha) == null);
     })();
+  }
+
+  // ---- preferences -------------------------------------------------------
+
+  /** One preference, or null when it has never been set. */
+  getPref(key: string): string | null {
+    const row = this.db.prepare("SELECT value FROM prefs WHERE key = ?").get(key) as
+      | { value: string }
+      | undefined;
+    return row?.value ?? null;
+  }
+
+  /** Set a preference, or clear it when the value is empty. */
+  setPref(key: string, value: string | null): void {
+    if (!value) {
+      this.db.prepare("DELETE FROM prefs WHERE key = ?").run(key);
+      return;
+    }
+    this.db
+      .prepare(
+        "INSERT INTO prefs (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      )
+      .run(key, value);
+  }
+
+  /** Every preference, for the settings page. */
+  listPrefs(): Record<string, string> {
+    const rows = this.db.prepare("SELECT key, value FROM prefs").all() as Array<{
+      key: string;
+      value: string;
+    }>;
+    return Object.fromEntries(rows.map((r) => [r.key, r.value]));
   }
 
   /** All curation rows (models with no row are hidden by default). */

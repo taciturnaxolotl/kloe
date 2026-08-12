@@ -271,6 +271,23 @@ export function resolveVisionModel(store: Store): string | null {
   ).ref;
 }
 
+/**
+ * A model chosen for one job in a research run: the preference set in the
+ * settings page, then the ops config, then nothing — which means "use whatever
+ * the conversation is using".
+ *
+ * A ref that is no longer enabled is ignored rather than honoured, the same as
+ * everywhere else: a model that has been turned off should not keep running
+ * because a stale row names it.
+ */
+export function resolveRoleModel(store: Store, role: "lead" | "worker"): string | null {
+  const enabled = new Set(enabledModels(store).map((m) => m.ref));
+  const pref = store.getPref(`research.${role}Model`);
+  if (pref && enabled.has(pref)) return pref;
+  const cfg = role === "lead" ? getConfig().research.leadModel : getConfig().research.workerModel;
+  return cfg && enabled.has(cfg) ? cfg : null;
+}
+
 /** Whether a model can accept image inputs (false for unknown refs). */
 export function modelSupportsImages(modelRef: string): boolean {
   return modelInfo(modelRef)?.supportsImages ?? false;
@@ -329,6 +346,10 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
   // the registry, which lives in this module.
   const modelReadsImages = modelSupportsImages(opts.model);
   const visionRef = !modelReadsImages && opts.store ? resolveVisionModel(opts.store) : null;
+  // Research can run its lead and its workers on different models; unset, both
+  // are the conversation's own model.
+  const leadRef = opts.store ? resolveRoleModel(opts.store, "lead") : null;
+  const workerRef = opts.store ? resolveRoleModel(opts.store, "worker") : null;
   const tools = toolSet({
     store: opts.store,
     owner: opts.owner,
@@ -337,6 +358,8 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
     model, // deep_research runs its subagent on the same model as the run
     modelReadsImages,
     visionModel: visionRef ? resolveModel(visionRef) : undefined,
+    researchLead: leadRef ? resolveModel(leadRef) : undefined,
+    researchWorker: workerRef ? resolveModel(workerRef) : undefined,
     onProgress: opts.onProgress,
   });
   const hasTools = Object.keys(tools).length > 0;

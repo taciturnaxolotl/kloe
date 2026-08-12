@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { Catalog } from "../src/catalog";
-import { resolveVisionModel, setRegistry } from "../src/inference";
+import { resolveRoleModel, resolveVisionModel, setRegistry } from "../src/inference";
 import { ProviderRegistry } from "../src/providers";
 import { loadConfig, setConfig } from "../src/settings";
 import { Store } from "../src/store";
@@ -135,4 +135,38 @@ test("a configured vision model wins, and a stale one falls back", () => {
   // resolve.
   configureVisionModel("acme/ghost");
   expect(resolveVisionModel(storeWith("acme/eyes", "acme/cheap-eyes"))).toBe("acme/cheap-eyes");
+});
+
+// ---- research roles --------------------------------------------------------
+// Which model does which job in a research run: a click in settings beats a
+// line in kloe.json, and both are ignored when they name a disabled model.
+
+test("a role prefers the clicked choice, then the config, then nothing", () => {
+  setRegistry(registry());
+  const store = storeWith("acme/big", "acme/small");
+
+  // Nothing set: the run uses whatever the conversation is using.
+  expect(resolveRoleModel(store, "lead")).toBeNull();
+
+  const base = loadConfig({ path: "/nonexistent", env: {} });
+  setConfig({ ...base, research: { ...base.research, leadModel: "acme/big" } });
+  expect(resolveRoleModel(store, "lead")).toBe("acme/big");
+
+  // A choice made by clicking wins over the file, which the clicker may not be
+  // able to edit.
+  store.setPref("research.leadModel", "acme/small");
+  expect(resolveRoleModel(store, "lead")).toBe("acme/small");
+
+  // …and a model that has since been turned off is ignored, not honoured.
+  store.setPref("research.leadModel", "acme/mystery");
+  expect(resolveRoleModel(store, "lead")).toBe("acme/big"); // falls back to config
+});
+
+test("the two roles are independent", () => {
+  setRegistry(registry());
+  const store = storeWith("acme/big", "acme/small");
+  store.setPref("research.leadModel", "acme/big");
+  store.setPref("research.workerModel", "acme/small");
+  expect(resolveRoleModel(store, "lead")).toBe("acme/big");
+  expect(resolveRoleModel(store, "worker")).toBe("acme/small");
 });

@@ -92,3 +92,10 @@ export const PublishBody = v.object({
   mode: v.optional(v.picklist(["pinned", "latest"]), "pinned"),
 });
 export type PublishBody = v.InferOutput<typeof PublishBody>;
+
+/**
+ * PATCH /api/prefs — deployment preferences set by clicking rather than by
+ * editing kloe.json. `null` clears one back to its configured default.
+ */
+export const PrefsPatchBody = v.record(v.string(), v.nullable(v.string()));
+export type PrefsPatchBody = v.InferOutput<typeof PrefsPatchBody>;
