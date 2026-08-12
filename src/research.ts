@@ -657,8 +657,14 @@ export function recoverRun(
     }
   }
   // The most recent unfinished attempt at this question, if there is one.
+  // Notes are what makes an attempt worth resuming, and a ledger without them
+  // is worse than nothing: the pages count as spent against the source budget,
+  // and the synthesizer is handed a numbered source list it has no notes about,
+  // so nothing can cite them. Runs from before workers filed their notes into
+  // the log look exactly like this — a real one in this database had 84 pages
+  // read and not a word recovered. Start those over.
   const candidates = [...attempts.values()].filter(
-    (a) => !a.done && a.question === question && (a.byAngle.size > 0 || a.ledger.length > 0),
+    (a) => !a.done && a.question === question && a.byAngle.size > 0,
   );
   const last = candidates[candidates.length - 1];
   if (!last) return null;

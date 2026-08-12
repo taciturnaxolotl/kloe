@@ -693,3 +693,17 @@ test("a resumed run sends a worker back to an angle that only jotted", async () 
     .map((p) => (p.data as { angle: string }).angle);
   expect(angles).toEqual(["the open angle"]); // reopened, not skipped
 });
+
+test("an attempt with pages but no notes is not resumed", () => {
+  // Found against the real database: runs from before workers filed notes into
+  // the log recover a ledger and nothing else. Inheriting that means the pages
+  // count as spent while nothing was learned from them, and the synthesizer
+  // gets a source list it cannot cite — strictly worse than starting over.
+  const events = [
+    progressEvent("planning", { question: "what happened" }),
+    progressEvent("read", { url: "https://a.test", title: "A" }),
+    progressEvent("read", { url: "https://b.test", title: "B" }),
+    progressEvent("agent-done", { agent: 0 }), // the old payload: no notes
+  ];
+  expect(recoverRun(events, "what happened")).toBeNull();
+});
