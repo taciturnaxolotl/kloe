@@ -127,13 +127,15 @@
       "properties": {
         "provider": {
           "enum": [
+            "default",
             "none",
             "ceramic",
             "hackclub",
-            "llmsolutions"
+            "llmsolutions",
+            "duckduckgo"
           ],
           "type": "string",
-          "default": "none"
+          "default": "default"
         },
         "apiKey": {
           "type": "string"
@@ -145,11 +147,37 @@
           "type": "integer",
           "minimum": 1,
           "default": 5
+        },
+        "backends": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "enum": [
+                  "ceramic",
+                  "hackclub",
+                  "llmsolutions",
+                  "duckduckgo"
+                ],
+                "type": "string"
+              },
+              "apiKey": {
+                "type": "string"
+              },
+              "endpoint": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "provider"
+            ]
+          }
         }
       },
       "required": [],
       "default": {
-        "provider": "none",
+        "provider": "default",
         "maxResults": 5
       }
     },

@@ -240,11 +240,33 @@ const ResearchSchema = v.object({
 });
 
 /** Web-search backing for the `web_search` tool. Disabled by default. */
+/** One backend in a blend: the same fields as the single-provider form. */
+const SearchBackendSchema = v.object({
+  provider: v.picklist(["ceramic", "hackclub", "llmsolutions", "duckduckgo"]),
+  apiKey: v.optional(v.string()),
+  endpoint: v.optional(v.string()),
+});
+
+/**
+ * Web search.
+ *
+ * Three shapes, in order of precedence. `backends: [...]` blends several
+ * engines into one ranked list — different engines are good at different
+ * questions, and the cost of asking two is one parallel request. A single
+ * `provider` is the ordinary case. And with neither set it falls back to
+ * DuckDuckGo, so a fresh checkout can search without a key; `provider: "none"`
+ * is how a deployment says it wants no search at all.
+ */
 const SearchSchema = v.object({
-  provider: v.optional(v.picklist(["none", "ceramic", "hackclub", "llmsolutions"]), "none"),
+  provider: v.optional(
+    v.picklist(["default", "none", "ceramic", "hackclub", "llmsolutions", "duckduckgo"]),
+    "default",
+  ),
   apiKey: v.optional(v.string()),
   endpoint: v.optional(v.string()),
   maxResults: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 5),
+  /** Blend these backends instead of the single `provider` above. */
+  backends: v.optional(v.array(SearchBackendSchema)),
 });
 
 /**

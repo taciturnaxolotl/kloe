@@ -1,9 +1,15 @@
 import { expect, test } from "bun:test";
 import {
+  BlendSearchProvider,
+  blend,
   CeramicSearchProvider,
   createSearchProvider,
+  DuckDuckGoSearchProvider,
+  dedupeKey,
   HackClubSearchProvider,
   LlmSolutionsSearchProvider,
+  type SearchProvider,
+  type SearchResult,
 } from "../src/search";
 import { loadConfig, setConfig } from "../src/settings";
 import { toolSet } from "../src/tools";
@@ -272,4 +278,118 @@ test("an API error surfaces the server's own message", async () => {
   await expect(p.search("q")).rejects.toThrow(
     /503 Search is unavailable right now\. \(search_unavailable\)/,
   );
+});
+
+// ---- blending --------------------------------------------------------------
+// Two engines are good at different questions. What makes running both worth
+// more than running either is what happens on the way back.
+
+function fixed(results: Array<Partial<SearchResult>>): SearchProvider {
+  return {
+    search: async () =>
+      results.map((r) => ({
+        title: r.title ?? "",
+        url: r.url ?? "",
+        snippet: r.snippet ?? "",
+        ...r,
+      })),
+  };
+}
+
+test("blend interleaves by rank so no single backend fills the list", () => {
+  const a = [
+    { title: "A1", url: "https://a1.test", snippet: "" },
+    { title: "A2", url: "https://a2.test", snippet: "" },
+  ];
+  const b = [
+    { title: "B1", url: "https://b1.test", snippet: "" },
+    { title: "B2", url: "https://b2.test", snippet: "" },
+  ];
+  // Each backend's best hit lands before either backend's second.
+  expect(blend([a, b], 4).map((r) => r.title)).toEqual(["A1", "B1", "A2", "B2"]);
+});
+
+test("the same page from two backends is one result carrying the best of each", () => {
+  const keyword = [{ title: "Docs", url: "https://x.test/docs", snippet: "a one-line summary" }];
+  const neural = [
+    {
+      title: "",
+      url: "https://www.x.test/docs/",
+      snippet: "much longer summary…",
+      text: "the whole page",
+    },
+  ];
+  const [only, ...rest] = blend([keyword, neural], 5);
+  expect(rest).toHaveLength(0); // `www.` and a trailing slash are the same page
+  // The prize: one backend found it, the other explains it.
+  expect(only!.title).toBe("Docs");
+  expect(only!.text).toBe("the whole page");
+  expect(only!.snippet).toBe("much longer summary…");
+});
+
+test("dedupeKey ignores noise but never merges genuinely different pages", () => {
+  expect(dedupeKey("https://www.a.test/p/?utm_source=x&fbclid=y")).toBe(
+    dedupeKey("http://a.test/p"),
+  );
+  // A query string is usually the page's identity, so it stays.
+  expect(dedupeKey("https://a.test/i?id=42")).not.toBe(dedupeKey("https://a.test/i?id=43"));
+});
+
+test("one backend failing is a thinner list, not a failed search", async () => {
+  const dead: SearchProvider = {
+    search: async () => {
+      throw new Error("503 upstream");
+    },
+  };
+  const live = fixed([{ title: "Live", url: "https://live.test" }]);
+  const out = await new BlendSearchProvider([dead, live], 5).search("q");
+  expect(out.map((r) => r.title)).toEqual(["Live"]);
+});
+
+test("search falls back to DuckDuckGo when nothing is configured, and off when told", () => {
+  // A fresh checkout can search without a key…
+  expect(createSearchProvider({ provider: "default", maxResults: 5 })).toBeInstanceOf(
+    DuckDuckGoSearchProvider,
+  );
+  // …and "none" is how a deployment says it wants no search at all.
+  expect(createSearchProvider({ provider: "none", maxResults: 5 })).toBeNull();
+});
+
+test("a configured blend builds every backend that has what it needs", () => {
+  const p = createSearchProvider({
+    provider: "default",
+    maxResults: 5,
+    backends: [
+      { provider: "llmsolutions", apiKey: "k" },
+      { provider: "duckduckgo" },
+      { provider: "ceramic" }, // no key: dropped rather than failing the blend
+    ],
+  });
+  expect(p).toBeInstanceOf(BlendSearchProvider);
+  // A blend of one is just that provider — no wrapper, no interleave to do.
+  const single = createSearchProvider({
+    provider: "default",
+    maxResults: 5,
+    backends: [{ provider: "hackclub", apiKey: "k" }],
+  });
+  expect(single).toBeInstanceOf(HackClubSearchProvider);
+});
+
+test("DuckDuckGo parses the lite page and unwraps its redirects", async () => {
+  const page = `<html><body>
+    <a class="result-link" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fcaniuse.com%2Fwebgpu&rut=abc">Can I use WebGPU</a>
+    <td class="result-snippet">Browser support tables.</td>
+    <a class="result-link" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fweb.dev%2Fwebgpu">web.dev</a>
+    <td class="result-snippet">Now supported.</td>
+  </body></html>`;
+  const fetchImpl = (async () => new Response(page)) as unknown as typeof fetch;
+  const out = await new DuckDuckGoSearchProvider({ fetchImpl }).search("webgpu");
+  expect(out).toEqual([
+    {
+      title: "Can I use WebGPU",
+      url: "https://caniuse.com/webgpu",
+      snippet: "Browser support tables.",
+    },
+    { title: "web.dev", url: "https://web.dev/webgpu", snippet: "Now supported." },
+  ]);
 });
