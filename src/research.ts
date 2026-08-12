@@ -525,13 +525,20 @@ export function thinCitations(raw: string): string {
 
   // Sentence-ish granularity: markers sit at the end of a claim, and a sentence
   // is the unit a reader experiences one of as belonging to.
-  const sentences = text.split(/(?<=[.!?])(\s+)/);
+  //
+  // A newline resets the "just cited" memory, and that is not a detail. A list
+  // of three payments, or a table of three prices, is three separate claims
+  // that happen to share a source — suppressing the repeat leaves items two and
+  // three looking unsupported, which is the exact failure this pass exists to
+  // prevent. Prose flows; a list does not.
+  const sentences = text.split(/(?<=[.!?])(\s+)|(\n+)/).filter((c) => c !== undefined);
   let previous = new Set<number>();
   const out: string[] = [];
 
   for (const chunk of sentences) {
-    // The split keeps separators as their own entries; pass whitespace through.
     if (!chunk.trim()) {
+      // Whitespace passes through, but a line break ends the passage.
+      if (chunk.includes("\n")) previous = new Set();
       out.push(chunk);
       continue;
     }
@@ -608,6 +615,23 @@ export function bindCitations(
  * points at, and the document ends with the list, so a downloaded `.md` carries
  * its own bibliography instead of a trail of bare numbers.
  */
+/**
+ * A URL safe to put inside a markdown link's parentheses.
+ *
+ * Found by reading a real report: a LibreTexts source whose path contains
+ * `(Barrett_Dawson_Ortmann)` produced `[6](https://…(Barrett_Dawson_Ortmann)/…)`,
+ * and every markdown parser ends the link at that first `)` — so the link broke
+ * and the rest of the URL spilled into the paragraph as literal text.
+ *
+ * Percent-encoding rather than angle-bracket destinations: `[text](<url>)` is
+ * valid CommonMark but relies on the reader's parser implementing it, and the
+ * one in this app is deliberately small. An encoded paren resolves identically
+ * on every server and parses everywhere.
+ */
+export function safeUrl(url: string): string {
+  return url.replace(/\(/g, "%28").replace(/\)/g, "%29");
+}
+
 export function linkCitations(report: string, sources: Source[]): string {
   if (!sources.length) return report;
   const byN = new Map(sources.map((s) => [s.n, s]));
@@ -618,9 +642,9 @@ export function linkCitations(report: string, sources: Source[]): string {
   // bracket shape — and the source's name — when it upgrades these to pills.
   const linked = report.replace(/\[(\d+)\]/g, (whole, digits: string) => {
     const src = byN.get(Number(digits));
-    return src ? `[${digits}](${src.url})` : whole;
+    return src ? `[${digits}](${safeUrl(src.url)})` : whole;
   });
-  const list = sources.map((s) => `${s.n}. [${s.title}](${s.url})`).join("\n");
+  const list = sources.map((s) => `${s.n}. [${s.title}](${safeUrl(s.url)})`).join("\n");
   return `${linked}\n\n## Sources\n\n${list}\n`;
 }
 

@@ -476,3 +476,39 @@ test("grouped markers are split so validation can't be bypassed", () => {
   expect(bound.report).toBe("A claim. Another [1].");
   expect(bound.sources).toHaveLength(1);
 });
+
+test("each item of a list keeps its own marker, however repetitive", () => {
+  // Found by reading a real report: three payments from one ledger page came
+  // out as one cited item and two that looked unsupported. A list is not a
+  // passage — every item is its own claim.
+  const text =
+    "1. $33,810 for the award [3]\n2. $10,000 for Sunbeam [3]\n3. $2,500 for Sleepover [3]";
+  expect(thinCitations(text)).toBe(text);
+
+  // Prose still collapses, which is the point of the pass.
+  expect(thinCitations("A claim [3]. The same source again [3].")).toBe(
+    "A claim [3]. The same source again.",
+  );
+});
+
+test("a URL containing parentheses survives becoming a markdown link", () => {
+  // A LibreTexts path with `(Barrett_Dawson_Ortmann)` ended every link at its
+  // first `)`, spilling the rest of the URL into the paragraph as plain text.
+  const sources = [
+    {
+      n: 1,
+      url: "https://med.libretexts.org/Book%3A_Ethics_(Barrett_Dawson)/02%3A_Topics",
+      title: "T",
+    },
+  ];
+  const out = linkCitations("A claim [1].", sources);
+  expect(out).toContain(
+    "[1](https://med.libretexts.org/Book%3A_Ethics_%28Barrett_Dawson%29/02%3A_Topics)",
+  );
+  // The bibliography carries the same URL and needs the same treatment.
+  expect(out).toContain(
+    "1. [T](https://med.libretexts.org/Book%3A_Ethics_%28Barrett_Dawson%29/02%3A_Topics)",
+  );
+  // Nothing after the link leaks into the prose.
+  expect(out).not.toContain("Barrett_Dawson)/02");
+});
