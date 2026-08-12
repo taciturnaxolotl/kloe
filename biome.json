@@ -6,13 +6,7 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": [
-      "**",
-      "!data",
-      "!vendor",
-      "!**/*.min.js",
-      "!kloe.schema.json"
-    ]
+    "includes": ["**", "!data", "!vendor", "!**/*.min.js", "!kloe.schema.json"]
   },
   "formatter": {
     "enabled": true,
@@ -26,9 +20,7 @@
       "semicolons": "always",
       "trailingCommas": "all"
     },
-    "globals": [
-      "Bun"
-    ]
+    "globals": ["Bun"]
   },
   "linter": {
     "enabled": true,

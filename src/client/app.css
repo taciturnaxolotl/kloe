@@ -2820,10 +2820,6 @@ body.resizing {
   border-radius: var(--radius-md);
   padding: 8px 10px;
   cursor: pointer;
-  /* Hover is the only feedback a menu row gives, so it should arrive instantly
-     and leave gently — a fade-in makes a menu feel unresponsive under a moving
-     pointer, and a hard cut on the way out makes it feel twitchy. */
-  transition: background 0.16s ease;
 }
 /* An INK tint, not `--bg-sunk`. Sunk is #f6f6f7 against a white panel — a 3%
    difference that reads as nothing, which is why this menu felt dead while
@@ -2834,7 +2830,6 @@ body.resizing {
 .picker .opt:hover,
 .picker .opt:focus-visible {
   background: color-mix(in srgb, var(--ink) 11%, transparent);
-  transition-duration: 0s;
   outline: none;
 }
 /* The row whose flyout is open stays lit — a shade past hover, so it still
