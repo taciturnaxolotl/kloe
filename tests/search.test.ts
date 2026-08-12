@@ -296,7 +296,7 @@ function fixed(results: Array<Partial<SearchResult>>): SearchProvider {
   };
 }
 
-test("blend interleaves by rank so no single backend fills the list", () => {
+test("blend gives every backend a turn before any backend gets a second", () => {
   const a = [
     { title: "A1", url: "https://a1.test", snippet: "" },
     { title: "A2", url: "https://a2.test", snippet: "" },
@@ -305,8 +305,26 @@ test("blend interleaves by rank so no single backend fills the list", () => {
     { title: "B1", url: "https://b1.test", snippet: "" },
     { title: "B2", url: "https://b2.test", snippet: "" },
   ];
-  // Each backend's best hit lands before either backend's second.
+  // With no overlap, fusion degenerates to fair interleaving: nobody's second
+  // hit outranks somebody else's first.
   expect(blend([a, b], 4).map((r) => r.title)).toEqual(["A1", "B1", "A2", "B2"]);
+});
+
+test("a page both engines found outranks a page only one engine loved", () => {
+  // The property that makes fusion worth more than interleaving: agreement
+  // between independent engines is itself evidence about a page.
+  const keyword = [
+    { title: "Only-A-loves-this", url: "https://solo.test", snippet: "" },
+    { title: "Both", url: "https://both.test", snippet: "" },
+    { title: "Filler", url: "https://f1.test", snippet: "" },
+  ];
+  const neural = [
+    { title: "Filler2", url: "https://f2.test", snippet: "" },
+    { title: "Both", url: "https://both.test", snippet: "" },
+    { title: "Filler3", url: "https://f3.test", snippet: "" },
+  ];
+  // "Both" is second in each list and beats a page ranked first by one engine.
+  expect(blend([keyword, neural], 3).map((r) => r.title)[0]).toBe("Both");
 });
 
 test("the same page from two backends is one result carrying the best of each", () => {

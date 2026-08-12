@@ -364,11 +364,10 @@ function ddgTarget(href: string): string | null {
  * cost of asking both is one parallel request. What makes this worth more than
  * either alone is the merge on the way back:
  *
- *   - Results are interleaved round-robin by RANK, so each backend contributes
- *     its best hit before any contributes its second. Concatenating would let
- *     whichever provider was listed first fill the whole list with its own
- *     ordering; a score-based merge would need scores that don't mean the same
- *     thing across engines.
+ *   - Ranked lists are fused by reciprocal rank fusion, so a page several
+ *     engines found outranks a page one engine loved. Agreement between
+ *     independent engines is evidence, and it is exactly what concatenating or
+ *     interleaving discards.
  *   - The same URL from two backends is one result, and it keeps the RICHEST
  *     version: Exa's page text plus whoever had the better summary. That merge
  *     is the actual prize — one backend finds it, another explains it.
@@ -398,29 +397,63 @@ export class BlendSearchProvider implements SearchProvider {
   }
 }
 
-/** Merge ranked lists: round-robin by position, deduped, richest copy wins. */
+/**
+ * The rank constant in reciprocal rank fusion.
+ *
+ * 60 is Cormack et al.'s original and what every implementation since has used.
+ * It sets how steeply rank matters: smaller weights the top hits far more
+ * heavily, larger flattens the curve. At 60 a first-place hit scores 1/61 and a
+ * tenth-place one 1/70 — close enough that agreement between engines can
+ * outweigh position, which is the entire point.
+ */
+const RRF_K = 60;
+
+/**
+ * Merge ranked lists by reciprocal rank fusion, deduped, richest copy wins.
+ *
+ * Each result scores `1/(k + rank)` in every list it appears in, and those
+ * scores add. The consequence worth understanding: a page both engines rank
+ * third (2 × 1/63 = 0.032) beats a page one engine ranks first and the other
+ * never returns (1/61 = 0.016). **Agreement between independent engines is
+ * itself evidence**, and it is the signal a plain interleave throws away — the
+ * earlier version of this function put both those pages in the same order they
+ * arrived and treated the corroborated one as unremarkable.
+ *
+ * Rank rather than score, because the scores are not comparable: a keyword
+ * engine's BM25 and a neural engine's cosine similarity live on different
+ * scales that no normalization makes commensurate. Rank is the one thing every
+ * engine agrees on the meaning of.
+ *
+ * RRF is not free — measured against carefully normalized score fusion on
+ * benchmark datasets it loses a few percent of NDCG. That trade is right here:
+ * we get no scores from these APIs at all, so the alternative isn't tuned score
+ * fusion, it's the interleave this replaces.
+ */
 export function blend(lists: SearchResult[][], maxResults: number): SearchResult[] {
-  const byUrl = new Map<string, SearchResult>();
-  const order: string[] = [];
-  const depth = Math.max(0, ...lists.map((l) => l.length));
-  for (let rank = 0; rank < depth; rank++) {
-    for (const list of lists) {
-      const hit = list[rank];
-      if (!hit?.url) continue;
+  const merged = new Map<string, { hit: SearchResult; score: number; seen: number }>();
+  for (const list of lists) {
+    list.forEach((hit, rank) => {
+      if (!hit?.url) return;
       const key = dedupeKey(hit.url);
-      const seen = byUrl.get(key);
-      if (!seen) {
-        byUrl.set(key, { ...hit });
-        order.push(key);
-        continue;
+      const points = 1 / (RRF_K + rank + 1); // ranks are 1-based in the formula
+      const found = merged.get(key);
+      if (!found) {
+        merged.set(key, { hit: { ...hit }, score: points, seen: 1 });
+        return;
       }
-      // Already have it from another backend: keep whichever fields are better.
-      if (!seen.text && hit.text) seen.text = hit.text;
-      if (hit.snippet.length > seen.snippet.length) seen.snippet = hit.snippet;
-      if (!seen.title && hit.title) seen.title = hit.title;
-    }
+      found.score += points;
+      found.seen++;
+      // Same page from another backend: keep whichever fields are better. One
+      // engine finds it, another explains it.
+      if (!found.hit.text && hit.text) found.hit.text = hit.text;
+      if (hit.snippet.length > found.hit.snippet.length) found.hit.snippet = hit.snippet;
+      if (!found.hit.title && hit.title) found.hit.title = hit.title;
+    });
   }
-  return order.slice(0, maxResults).map((k) => byUrl.get(k)!);
+  return [...merged.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxResults)
+    .map((m) => m.hit);
 }
 
 /**
