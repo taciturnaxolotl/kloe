@@ -162,6 +162,7 @@ function build() {
 
 export function openLightbox(list, index) {
   if (!list || !list.length) return;
+  closeLightbox(); // never stack two sheets, whatever state we were left in
   items = list;
   at = Math.max(0, Math.min(index || 0, list.length - 1));
   if (!el) el = build();
@@ -173,10 +174,19 @@ export function openLightbox(list, index) {
   el.focus();
 }
 
+/**
+ * Close, and leave nothing behind that could swallow the page.
+ *
+ * This overlay is `position: fixed; inset: 0`, so a copy left in the DOM is an
+ * invisible sheet over the whole app that eats every wheel event — the page
+ * looks fine and simply stops scrolling. That failure mode is bad enough, and
+ * silent enough, that closing does not trust its own bookkeeping: it sweeps any
+ * `.lightbox` node and clears the scroll lock whether or not this module thinks
+ * one is open.
+ */
 export function closeLightbox() {
-  if (!el) return;
   document.removeEventListener("keydown", onKey);
-  el.remove();
+  for (const stray of document.querySelectorAll(".lightbox")) stray.remove();
   el = null;
   items = [];
   document.body.classList.remove("lb-open");
