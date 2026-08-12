@@ -97,7 +97,7 @@ if (import.meta.main) {
         efficiency: 0,
         overall: 0,
         notes: `RUN FAILED: ${(e as Error).message}`,
-        cost: { tokens: 0, sources: 0, steps: 0, ms: Date.now() - started },
+        cost: { tokens: 0, sources: 0, steps: 0, ms: Date.now() - started, citeDensity: 0 },
       });
     }
   }

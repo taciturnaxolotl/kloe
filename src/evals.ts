@@ -53,7 +53,7 @@ export interface EvalScore extends Rubric {
   /** Two or three sentences on what was weak. The useful half of a bad score. */
   notes: string;
   /** Everything the run cost, so a score can be read against its price. */
-  cost: { tokens: number; sources: number; steps: number; ms: number };
+  cost: { tokens: number; sources: number; steps: number; ms: number; citeDensity: number };
 }
 
 const JUDGE_SYSTEM = [
@@ -185,6 +185,7 @@ export async function judgeRun(
       sources: result.stats.read,
       steps: result.stats.steps,
       ms: result.stats.ms,
+      citeDensity: result.stats.citeDensity,
     },
   };
 }

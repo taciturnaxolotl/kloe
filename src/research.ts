@@ -76,6 +76,8 @@ export interface ResearchResult {
     ms: number;
     /** Tokens the whole run spent — planner, every worker, and the synthesizer. */
     tokens: { input: number; output: number; total: number };
+    /** Citation markers per 1000 words of report — density, as a number to watch. */
+    citeDensity: number;
   };
 }
 
@@ -167,7 +169,8 @@ const SYNTH_SYSTEM = [
   "",
   "Merge rather than concatenate. The same fact will arrive from several workers; state it once. Where notes conflict, say so and say which is better supported. Structure the document around the question that was asked, not around who found what — the reader must not be able to tell that several workers were involved.",
   "",
-  "Cite as you write. You are given a numbered list of every page the workers read; put [n] at the end of each sentence a source supports, or [2][5] where several do. The workers noted the URL each fact came from, so match a fact to its number through that URL. A sentence nothing in the list supports gets no marker — that is a normal outcome, not a failure, and inventing a number is worse than leaving it bare.",
+  "Cite claims, not sentences. You are given a numbered list of every page the workers read; put [n] where a specific claim needs support — a figure, a date, a quotation, a contested statement — and match it to its number through the URL the workers noted. A run of sentences drawn from one source takes ONE marker at the end of the passage, not one per sentence. A sentence nothing in the list supports gets no marker: that is a normal outcome, not a failure, and inventing a number is worse than leaving it bare.",
+  "One source per claim is the default. Add a second only when it is doing work — corroborating a contested figure, or supporting a different half of the sentence. Three or more markers in a row say nothing except that several pages mentioned the topic, and they make the sentence harder to read while looking more rigorous than it is. Never stack markers as a display of effort.",
   "",
   "Call write_report exactly once with the whole document as markdown: a specific title, headings, and a lead that answers the question before the supporting detail. Close with what remains uncertain.",
   "",
@@ -461,6 +464,87 @@ function sourceList(ledger: Source[]): string {
 }
 
 /**
+ * Thin out citation markers that carry no information.
+ *
+ * The synthesizer reaches for markers as a display of rigour: the same source
+ * re-cited sentence after sentence, and stacks of four where one would do. Both
+ * are noise — `[2][5][7][9]` tells a reader only that several pages mentioned
+ * the topic, and re-citing [3] five times in a paragraph drawn entirely from [3]
+ * tells them nothing they didn't learn the first time.
+ *
+ * The prompt asks for restraint, and this enforces it, for the same reason the
+ * source budget lives in code: an instruction about density is a thing a model
+ * holds for two paragraphs and then forgets across three thousand words.
+ *
+ * Two rules, both conservative:
+ *
+ *   - A source cited in the immediately preceding sentence is dropped from this
+ *     one. Consecutive sentences from one source are one passage.
+ *   - A run of markers is capped at two. The first two survive, which are the
+ *     ones the synthesizer thought of first.
+ *
+ * Neither rule may remove a source's LAST marker anywhere in the document: an
+ * uncited source silently leaves the bibliography, and a source that was read
+ * and used should be listed. So a marker that is the only remaining mention of
+ * its page always stays, however dense its neighbourhood.
+ */
+const MAX_MARKERS_PER_CLAIM = 2;
+
+export function thinCitations(text: string): string {
+  // How many times each source is cited in the whole document, so the last
+  // mention of a page is never the one we drop.
+  const remaining = new Map<number, number>();
+  for (const m of text.matchAll(/\[(\d+)\]/g)) {
+    const n = Number(m[1]);
+    remaining.set(n, (remaining.get(n) ?? 0) + 1);
+  }
+
+  // Sentence-ish granularity: markers sit at the end of a claim, and a sentence
+  // is the unit a reader experiences one of as belonging to.
+  const sentences = text.split(/(?<=[.!?])(\s+)/);
+  let previous = new Set<number>();
+  const out: string[] = [];
+
+  for (const chunk of sentences) {
+    // The split keeps separators as their own entries; pass whitespace through.
+    if (!chunk.trim()) {
+      out.push(chunk);
+      continue;
+    }
+    const cited = new Set<number>();
+    let kept = 0;
+    let lastRunEnd = -1;
+    const rewritten = chunk.replace(/(\[\d+\])+/g, (run, _g, offset: number) => {
+      // A new run of markers starts a new claim, so the per-claim cap resets.
+      if (offset !== lastRunEnd) kept = 0;
+      lastRunEnd = offset + run.length;
+      const kept2: string[] = [];
+      for (const marker of run.match(/\[\d+\]/g) ?? []) {
+        const n = Number(marker.slice(1, -1));
+        const only = (remaining.get(n) ?? 0) <= 1;
+        const repeat = previous.has(n) || cited.has(n);
+        const over = kept >= MAX_MARKERS_PER_CLAIM;
+        if (!only && (repeat || over)) {
+          remaining.set(n, (remaining.get(n) ?? 1) - 1);
+          continue;
+        }
+        kept2.push(marker);
+        cited.add(n);
+        kept++;
+      }
+      return kept2.join("");
+    });
+    out.push(rewritten);
+    // Only a sentence that cited something changes what counts as "just said".
+    if (cited.size) previous = cited;
+  }
+  return out
+    .join("")
+    .replace(/ {2,}/g, " ")
+    .replace(/ ([.,;:)])/g, "$1");
+}
+
+/**
  * Keep only markers that point at a real source, then renumber what survives
  * from 1 in order of first appearance.
  *
@@ -656,14 +740,19 @@ export async function runResearch(opts: {
 
   // Whatever the synthesizer cited is now checked against what was actually
   // read: invalid markers dropped, survivors renumbered from 1.
-  const bound = bindCitations(draft, st.ledger);
+  const bound = bindCitations(thinCitations(draft), st.ledger);
   const report = linkCitations(bound.report, bound.sources);
+  const words = report.split(/\s+/).filter(Boolean).length;
+  const markers = (report.match(/\[\d+\]\(/g) ?? []).length;
   const stats = {
     steps,
     read: st.ledger.length,
     searches: st.searches,
     ms: Date.now() - started,
     tokens,
+    // Density rather than a count: a long report legitimately carries more
+    // markers, and what went wrong is markers per unit of prose.
+    citeDensity: words ? Math.round((markers / words) * 1000 * 10) / 10 : 0,
   };
   // The document travels on the progress channel, which the client renders and
   // the log keeps, but which no model is ever shown. The return value below is

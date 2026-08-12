@@ -28,6 +28,7 @@ const RESULT: ResearchResult = {
     searches: 4,
     ms: 1234,
     tokens: { input: 90, output: 10, total: 100 },
+    citeDensity: 12.5,
   },
 };
 
@@ -72,7 +73,7 @@ test("a filed grade is carried through, with the mean as one number", async () =
   expect(score.notes).toContain("second half");
   // The price rides with the score: a 0.9 that cost 400k tokens is a different
   // result from a 0.9 that cost 40k.
-  expect(score.cost).toEqual({ tokens: 100, sources: 3, steps: 7, ms: 1234 });
+  expect(score.cost).toEqual({ tokens: 100, sources: 3, steps: 7, ms: 1234, citeDensity: 12.5 });
 });
 
 test("scores outside the range are clamped, not trusted", async () => {
@@ -129,7 +130,7 @@ test("overall and aggregate average what they say they average", () => {
     efficiency: v,
     overall: v,
     notes: "",
-    cost: { tokens, sources: 1, steps: 1, ms: 1 },
+    cost: { tokens, sources: 1, steps: 1, ms: 1, citeDensity: 0 },
   });
   const agg = aggregate([s("a", 0.4, 10_000), s("b", 0.8, 30_000)]);
   expect(agg.overall).toBe(0.6);

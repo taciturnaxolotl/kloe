@@ -7,6 +7,7 @@ import {
   researchBudget,
   runResearch,
   type Source,
+  thinCitations,
 } from "../src/research";
 import type { SearchProvider, SearchResult } from "../src/search";
 import { loadConfig, setConfig } from "../src/settings";
@@ -407,4 +408,53 @@ test("a worker that fails doesn't sink the run", async () => {
 test("a run with nothing listening still works", async () => {
   const out = await simpleRun();
   expect(out.report).toBe("Findings.");
+});
+
+// ---- citation density ------------------------------------------------------
+// The synthesizer reaches for markers as a display of rigour. The prompt asks
+// for restraint; this enforces it, because an instruction about density is one
+// a model holds for two paragraphs and forgets across three thousand words.
+
+test("a source cited in the previous sentence is not re-cited in the next", () => {
+  const text = "Bun ships a bundler [3]. It also runs tests [3]. Deno differs [4].";
+  // One passage, one source: the second marker tells the reader nothing they
+  // didn't learn from the first.
+  expect(thinCitations(text)).toBe(
+    "Bun ships a bundler [3]. It also runs tests. Deno differs [4].",
+  );
+});
+
+test("stacks of markers are capped at two", () => {
+  const text =
+    "The figure is contested [1][2][3][4]. Later work agrees [1]. Others dissent [2]. A third view [3]. And a fourth [4].";
+  const out = thinCitations(text);
+  // The first two survive — the ones the synthesizer reached for first.
+  expect(out).toContain("contested [1][2].");
+  // …and every dropped source still appears where it does real work.
+  expect(out).toContain("A third view [3]");
+  expect(out).toContain("a fourth [4]");
+});
+
+test("a source's only marker is never dropped, however dense its neighbourhood", () => {
+  // [9] appears once, inside a stack, right after [9]'s neighbours were cited.
+  const text = "A claim [1][2][9]. Another [1].";
+  const out = thinCitations(text);
+  expect(out).toContain("[9]"); // dropping it would delete the page from the bibliography
+});
+
+test("thinning survives the round trip into a bound, linked report", () => {
+  const ledger = [
+    { n: 1, url: "https://a.test", title: "A" },
+    { n: 2, url: "https://b.test", title: "B" },
+  ];
+  const draft = "First claim [1]. Same source again [1]. A different one [2].";
+  const bound = bindCitations(thinCitations(draft), ledger);
+  expect(bound.report).toBe("First claim [1]. Same source again. A different one [2].");
+  // Both sources were used, so both keep their place in the bibliography.
+  expect(bound.sources.map((s) => s.url)).toEqual(["https://a.test", "https://b.test"]);
+});
+
+test("prose with no citations is returned untouched", () => {
+  const plain = "A paragraph with nothing to cite. And a second sentence.";
+  expect(thinCitations(plain)).toBe(plain);
 });
