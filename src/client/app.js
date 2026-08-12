@@ -3608,6 +3608,13 @@ import { mountSidebar } from "./sidebar.js";
     b.querySelector(".name").textContent = m.name;
     if (isCurrent) b.insertAdjacentHTML("beforeend", '<span class="optcheck">' + CHECK + "</span>");
     b.onclick = function () {
+      // Picking the model already in use is a way of saying "never mind": close,
+      // and change nothing. Re-selecting it would rebuild the menu under the
+      // pointer and write a preference that was already written.
+      if (isCurrent) {
+        closePicker();
+        return;
+      }
       selected = m;
       localStorage.setItem("kloe.model", m.ref);
       renderPill();

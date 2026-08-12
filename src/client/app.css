@@ -2859,7 +2859,10 @@ body.resizing {
   margin-top: 2px;
 }
 /* The current model is marked with a tick, not a filled background: the menu is
-   mostly one row, and a highlighted lone row reads as hover rather than state. */
+   mostly one row, and a highlighted lone row reads as hover rather than state.
+   Nothing else styles the selected row, deliberately — it used to carry
+   `background: none`, which sat after the hover rule at equal specificity and
+   silently killed hover on the one row you are most likely to point at. */
 .picker .optcheck {
   flex: none;
   display: inline-flex;
@@ -2868,9 +2871,6 @@ body.resizing {
 .picker .optcheck svg {
   width: 15px;
   height: 15px;
-}
-.picker .opt[aria-selected="true"] {
-  background: none;
 }
 .pickrule {
   height: 1px;
