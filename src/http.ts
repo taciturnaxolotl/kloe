@@ -516,6 +516,27 @@ async function serveBlob(
  */
 const KNOWN_PREFS = new Set(["research.leadModel", "research.workerModel"]);
 
+/**
+ * Preferences, and what they are overriding.
+ *
+ * Two sources decide these: a line in kloe.json and a click in the settings
+ * page, the click winning. A UI shown only its own half cannot tell "nobody
+ * chose" from "the file chose" — it would offer "same as the chat model" while
+ * the run used the configured model, which is a straightforward lie about what
+ * the deployment does. So the config value ships alongside, and clearing a
+ * preference visibly reverts to it rather than to nothing.
+ */
+function prefsPayload(store: Store) {
+  const cfg = getConfig().research;
+  return {
+    prefs: store.listPrefs(),
+    config: {
+      "research.leadModel": cfg.leadModel ?? null,
+      "research.workerModel": cfg.workerModel ?? null,
+    },
+  };
+}
+
 /** Mimes a browser will execute script from when it renders them as a document. */
 const ACTIVE_MIME =
   /^(text\/html|application\/xhtml\+xml|image\/svg\+xml|(?:text|application)\/xml)\b/i;
@@ -754,7 +775,7 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     // Preferences the settings page owns. Deliberately a flat map: these are
     // choices made by clicking, and each one should not cost an endpoint.
     "/api/prefs": {
-      GET: () => Response.json({ prefs: store.listPrefs() }),
+      GET: () => Response.json(prefsPayload(store)),
       PATCH: withBody(PrefsPatchBody, (data) => {
         for (const [key, value] of Object.entries(data)) {
           // Only keys we know: an open key/value endpoint is an invitation to
@@ -768,7 +789,7 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
           }
         }
         for (const [key, value] of Object.entries(data)) store.setPref(key, value);
-        return Response.json({ prefs: store.listPrefs() });
+        return Response.json(prefsPayload(store));
       }),
     },
 

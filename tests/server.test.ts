@@ -1050,7 +1050,12 @@ test("a following link serves the newest version, and keeps its token when repin
 
 test("prefs are readable, writable, and closed to keys the run loop doesn't know", async () => {
   setRegistry(new ProviderRegistry(Catalog.fromRaw([]), { config: { providers: [] } }));
-  expect((await (await fetch(`${base}/api/prefs`)).json()) as unknown).toEqual({ prefs: {} });
+  // The payload carries what kloe.json sets alongside what was clicked: a UI
+  // shown only its own half cannot tell "nobody chose" from "the file chose".
+  expect((await (await fetch(`${base}/api/prefs`)).json()) as unknown).toEqual({
+    prefs: {},
+    config: { "research.leadModel": null, "research.workerModel": null },
+  });
 
   const patch = (body: unknown) =>
     fetch(`${base}/api/prefs`, {
@@ -1072,7 +1077,13 @@ test("prefs are readable, writable, and closed to keys the run loop doesn't know
   // The table is read by the run loop, so it is not a place to put things.
   expect((await patch({ "anything.else": "x" })).status).toBe(422);
 
-  // null clears a role back to "same as the chat model".
+  // null clears the override; what it reverts TO is the config value, which is
+  // why the payload has to carry it.
   const cleared = await patch({ "research.leadModel": null });
-  expect(((await cleared.json()) as { prefs: Record<string, string> }).prefs).toEqual({});
+  expect(
+    (await cleared.json()) as { prefs: Record<string, string>; config: Record<string, unknown> },
+  ).toEqual({
+    prefs: {},
+    config: { "research.leadModel": null, "research.workerModel": null },
+  });
 });

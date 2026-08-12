@@ -99,6 +99,12 @@ export function mount(root, _params, ctx) {
   var byRef = Object.create(null);
   var allModels = [];
   var prefs = {};
+  var prefsConfig = {}; // what kloe.json sets, so a preference can say what it overrides
+  /** A model ref as its display name, falling back to the ref itself. */
+  function modelName(ref) {
+    var m = byRef[ref];
+    return (m && (m.name || m.ref)) || ref;
+  }
   var dragActive = false;
   var lardSubjects = []; // full listing, for search filtering
   var activeSubjectPath = null;
@@ -240,12 +246,16 @@ export function mount(root, _params, ctx) {
       hint.textContent = role.hint;
       var sel = document.createElement("select");
       sel.className = "roleselect";
-      // The default is not a model: it is "whatever the conversation is using",
-      // which is what a run does today and what it should keep doing until
-      // somebody deliberately chooses otherwise.
+      // What "no choice here" actually means depends on kloe.json: with nothing
+      // configured it is the conversation's own model, and with a line in the
+      // file it is that model. Labelling both cases the same way would tell
+      // someone the run uses the chat model while it uses something else.
+      var configured = prefsConfig[role.key];
       var same = document.createElement("option");
       same.value = "";
-      same.textContent = "Same as the chat model";
+      same.textContent = configured
+        ? "From kloe.json — " + modelName(configured)
+        : "Same as the chat model";
       sel.appendChild(same);
       enabled.forEach(function (m) {
         var o = document.createElement("option");
@@ -254,19 +264,41 @@ export function mount(root, _params, ctx) {
         sel.appendChild(o);
       });
       sel.value = prefs[role.key] || "";
+      // Where the effective value comes from, said plainly next to it — and,
+      // when it is a choice made here, how to take it back.
+      var source = document.createElement("span");
+      source.className = "rolesource";
+      var paintSource = function () {
+        if (prefs[role.key]) {
+          source.textContent = "set here";
+          source.title = configured
+            ? "Clearing reverts to " + modelName(configured) + ", from kloe.json"
+            : "Clearing reverts to the chat model";
+        } else if (configured) {
+          source.textContent = "from kloe.json";
+          source.title = "Choosing a model here overrides the file";
+        } else {
+          source.textContent = "";
+          source.title = "";
+        }
+      };
+      paintSource();
       var saved = document.createElement("span");
       saved.className = "saved";
       sel.addEventListener("change", async function () {
-        var body = {};
-        body[role.key] = sel.value || null;
+        var patchBody = {};
+        patchBody[role.key] = sel.value || null;
         try {
           var res = await fetch("/api/prefs", {
             method: "PATCH",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify(body),
+            body: JSON.stringify(patchBody),
           });
           if (!res.ok) throw new Error(String(res.status));
-          prefs = (await res.json()).prefs || {};
+          var body = await res.json();
+          prefs = body.prefs || {};
+          prefsConfig = body.config || {};
+          paintSource();
           flash(saved, true);
         } catch (_) {
           sel.value = prefs[role.key] || ""; // put it back: nothing was saved
@@ -276,6 +308,7 @@ export function mount(root, _params, ctx) {
       row.appendChild(name);
       row.appendChild(hint);
       row.appendChild(sel);
+      row.appendChild(source);
       row.appendChild(saved);
       box.appendChild(row);
     });
@@ -880,6 +913,7 @@ export function mount(root, _params, ctx) {
     .then(function (both) {
       allModels = both[0].models || [];
       prefs = both[1].prefs || {};
+      prefsConfig = both[1].config || {};
       render();
     })
     .catch(function (e) {
