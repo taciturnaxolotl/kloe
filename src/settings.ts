@@ -242,9 +242,16 @@ const ResearchSchema = v.object({
 /** Web-search backing for the `web_search` tool. Disabled by default. */
 /** One backend in a blend: the same fields as the single-provider form. */
 const SearchBackendSchema = v.object({
-  provider: v.picklist(["ceramic", "hackclub", "llmsolutions", "duckduckgo"]),
+  provider: v.picklist(["ceramic", "hackclub", "llmsolutions", "exa", "duckduckgo"]),
   apiKey: v.optional(v.string()),
   endpoint: v.optional(v.string()),
+  /**
+   * Exa only: its depth dial. "auto" (the default) balances relevance and
+   * latency; "fast"/"instant" trade relevance for speed; "deep" and
+   * "deep-reasoning" run several query variations and take seconds to tens of
+   * seconds, which suits a second tier rather than every search.
+   */
+  searchType: v.optional(v.string()),
 });
 
 /**
@@ -259,11 +266,13 @@ const SearchBackendSchema = v.object({
  */
 const SearchSchema = v.object({
   provider: v.optional(
-    v.picklist(["default", "none", "ceramic", "hackclub", "llmsolutions", "duckduckgo"]),
+    v.picklist(["default", "none", "ceramic", "hackclub", "llmsolutions", "exa", "duckduckgo"]),
     "default",
   ),
   apiKey: v.optional(v.string()),
   endpoint: v.optional(v.string()),
+  /** Exa only — see SearchBackendSchema. */
+  searchType: v.optional(v.string()),
   maxResults: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 5),
   /** Blend these backends instead of the single `provider` above. */
   backends: v.optional(v.array(SearchBackendSchema)),

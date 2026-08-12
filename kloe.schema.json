@@ -132,6 +132,7 @@
             "ceramic",
             "hackclub",
             "llmsolutions",
+            "exa",
             "duckduckgo"
           ],
           "type": "string",
@@ -141,6 +142,9 @@
           "type": "string"
         },
         "endpoint": {
+          "type": "string"
+        },
+        "searchType": {
           "type": "string"
         },
         "maxResults": {
@@ -158,6 +162,7 @@
                   "ceramic",
                   "hackclub",
                   "llmsolutions",
+                  "exa",
                   "duckduckgo"
                 ],
                 "type": "string"
@@ -166,6 +171,9 @@
                 "type": "string"
               },
               "endpoint": {
+                "type": "string"
+              },
+              "searchType": {
                 "type": "string"
               }
             },

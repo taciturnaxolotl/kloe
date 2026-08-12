@@ -6,6 +6,7 @@ import {
   createSearchProvider,
   DuckDuckGoSearchProvider,
   dedupeKey,
+  ExaSearchProvider,
   HackClubSearchProvider,
   LlmSolutionsSearchProvider,
   type SearchProvider,
@@ -410,4 +411,61 @@ test("DuckDuckGo parses the lite page and unwraps its redirects", async () => {
     },
     { title: "web.dev", url: "https://web.dev/webgpu", snippet: "Now supported." },
   ]);
+});
+
+// ---- exa -------------------------------------------------------------------
+
+test("ExaSearchProvider sends x-api-key and asks for highlights, not full text", async () => {
+  let seen: RequestInit | null = null;
+  const fetchImpl = (async (_url: string, init: RequestInit) => {
+    seen = init;
+    return new Response(
+      JSON.stringify({
+        results: [
+          {
+            title: "Zig docs",
+            url: "https://ziglang.org/x",
+            highlights: ["first passage", "second passage"],
+          },
+        ],
+      }),
+    );
+  }) as unknown as typeof fetch;
+
+  const [hit] = await new ExaSearchProvider({ apiKey: "k", fetchImpl, maxResults: 3 }).search(
+    "zig",
+  );
+  // Several highlights are several passages from one page, not continuous
+  // prose, and the snippet shows that.
+  expect(hit!.snippet).toBe("first passage … second passage");
+
+  const init = seen as unknown as RequestInit;
+  expect((init.headers as Record<string, string>)["x-api-key"]).toBe("k");
+  const body = JSON.parse(String(init.body));
+  expect(body).toEqual({
+    query: "zig",
+    type: "auto",
+    numResults: 3,
+    contents: { highlights: true },
+  });
+  // Full page text per result is what blows up an agent's context; highlights
+  // are the passages that matched.
+  expect(body.contents.text).toBeUndefined();
+});
+
+test("Exa's depth dial is configurable, for a second tier", async () => {
+  let body: Record<string, unknown> = {};
+  const fetchImpl = (async (_url: string, init: RequestInit) => {
+    body = JSON.parse(String(init.body));
+    return new Response(JSON.stringify({ results: [] }));
+  }) as unknown as typeof fetch;
+  await new ExaSearchProvider({ apiKey: "k", fetchImpl, searchType: "deep" }).search("q");
+  expect(body.type).toBe("deep");
+});
+
+test("createSearchProvider builds Exa, with its search type", () => {
+  expect(createSearchProvider({ provider: "exa", maxResults: 5 })).toBeNull(); // no key
+  expect(
+    createSearchProvider({ provider: "exa", apiKey: "k", searchType: "fast", maxResults: 5 }),
+  ).toBeInstanceOf(ExaSearchProvider);
 });

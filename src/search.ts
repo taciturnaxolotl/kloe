@@ -286,6 +286,91 @@ interface LlmSolutionsHit {
   text?: string;
 }
 
+interface ExaOptions {
+  apiKey?: string;
+  endpoint?: string;
+  maxResults?: number;
+  /** Exa's depth dial: auto, fast, instant, deep-lite, deep, deep-reasoning. */
+  searchType?: string;
+  fetchImpl?: typeof fetch;
+}
+
+/**
+ * Exa (api.exa.ai) — neural search, keyed by `x-api-key` rather than a bearer
+ * token, and returning query-relevant HIGHLIGHTS rather than a description.
+ *
+ * Highlights, not full text, and that is the whole content decision. Exa will
+ * return either; text is the entire page and blows up context, while highlights
+ * are the passages that actually match the query — which is what a snippet is
+ * supposed to be and almost never is. Their own guidance for agent workflows
+ * says the same, and a run that needs the whole page can still fetch it.
+ *
+ * `type` defaults to "auto", which picks between neural and keyword per query.
+ * The deeper modes (`deep`, `deep-reasoning`) run multiple query variations and
+ * take seconds to tens of seconds; they belong in a second tier, reached when
+ * the cheap search came back thin, not on the default path.
+ */
+export class ExaSearchProvider implements SearchProvider {
+  private readonly apiKey?: string;
+  private readonly endpoint: string;
+  private readonly maxResults: number;
+  private readonly searchType: string;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(opts: ExaOptions = {}) {
+    this.apiKey = opts.apiKey;
+    this.endpoint = opts.endpoint || "https://api.exa.ai/search";
+    this.maxResults = opts.maxResults ?? 5;
+    this.searchType = opts.searchType || "auto";
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+  }
+
+  async search(query: string): Promise<SearchResult[]> {
+    const res = await this.fetchImpl(this.endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(this.apiKey ? { "x-api-key": this.apiKey } : {}),
+      },
+      body: JSON.stringify({
+        query,
+        type: this.searchType,
+        numResults: this.maxResults,
+        contents: { highlights: true },
+      }),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const body = (await res.json()) as { error?: string; message?: string };
+        detail = body.error || body.message || detail;
+      } catch {
+        // non-JSON error body; keep the status text
+      }
+      throw new Error(`exa search failed: ${res.status} ${detail}`);
+    }
+    const data = (await res.json()) as {
+      results?: Array<{ title?: string; url?: string; highlights?: string[]; text?: string }>;
+    };
+    return (data.results ?? []).slice(0, this.maxResults).map((r) => {
+      // Several highlights are several passages from one page; joined with an
+      // ellipsis so the model can see they are not continuous prose.
+      const joined = (r.highlights ?? [])
+        .map((h) => h.trim())
+        .filter(Boolean)
+        .join(" … ");
+      const snippet = joined.length > SNIPPET_CHARS ? `${joined.slice(0, SNIPPET_CHARS)}…` : joined;
+      const text = r.text?.trim();
+      return {
+        title: r.title ?? "",
+        url: r.url ?? "",
+        snippet,
+        ...(text ? { text } : {}),
+      };
+    });
+  }
+}
+
 /**
  * DuckDuckGo, so search works with no key at all.
  *
@@ -493,7 +578,7 @@ export function createSearchProvider(
   // needs, and fall through to the single-provider path if none of them do.
   if (cfg.backends?.length) {
     const built = cfg.backends
-      .map((b) => backend(b.provider, b.apiKey, b.endpoint, cfg.maxResults))
+      .map((b) => backend(b.provider, b.apiKey, b.endpoint, cfg.maxResults, b.searchType))
       .filter((p): p is SearchProvider => p !== null);
     if (built.length === 1) return built[0]!;
     if (built.length > 1) return new BlendSearchProvider(built, cfg.maxResults);
@@ -502,7 +587,7 @@ export function createSearchProvider(
   if (cfg.provider === "default") {
     return cfg.apiKey ? null : new DuckDuckGoSearchProvider({ maxResults: cfg.maxResults });
   }
-  return backend(cfg.provider, cfg.apiKey, cfg.endpoint, cfg.maxResults);
+  return backend(cfg.provider, cfg.apiKey, cfg.endpoint, cfg.maxResults, cfg.searchType);
 }
 
 /** One backend by name, or null when it lacks the key it needs. */
@@ -511,6 +596,7 @@ function backend(
   apiKey: string | undefined,
   endpoint: string | undefined,
   maxResults: number,
+  searchType?: string,
 ): SearchProvider | null {
   switch (name) {
     case "ceramic":
@@ -519,6 +605,8 @@ function backend(
       return apiKey ? new LlmSolutionsSearchProvider({ apiKey, endpoint, maxResults }) : null;
     case "hackclub":
       return apiKey ? new HackClubSearchProvider({ apiKey, endpoint, maxResults }) : null;
+    case "exa":
+      return apiKey ? new ExaSearchProvider({ apiKey, endpoint, maxResults, searchType }) : null;
     case "duckduckgo":
       return new DuckDuckGoSearchProvider({ endpoint, maxResults });
     default:
