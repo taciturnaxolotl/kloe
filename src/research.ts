@@ -69,7 +69,14 @@ export interface ResearchResult {
   /** Only the sources the report actually cites, renumbered from 1. */
   sources: Source[];
   /** What the run spent — surfaced so the caller can see the shape of the work. */
-  stats: { steps: number; read: number; searches: number; ms: number };
+  stats: {
+    steps: number;
+    read: number;
+    searches: number;
+    ms: number;
+    /** Tokens the whole run spent — planner, every worker, and the synthesizer. */
+    tokens: { input: number; output: number; total: number };
+  };
 }
 
 /**
@@ -88,6 +95,24 @@ export interface ResearchResult {
  *   done        — { stats }
  */
 export type ProgressFn = (phase: string, data?: unknown) => void;
+
+/** What a provider reports for one call; fields are optional per provider. */
+type TokenSpend = { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+
+/**
+ * Await a usage promise without letting it fail the run.
+ *
+ * `totalUsage` is a PromiseLike, and on an aborted or errored stream it rejects
+ * — accounting must never be the thing that turns a partial report into no
+ * report, so an unavailable number is simply no number.
+ */
+async function settled(p: PromiseLike<TokenSpend>): Promise<TokenSpend | null> {
+  try {
+    return await p;
+  } catch {
+    return null;
+  }
+}
 
 export interface ResearchBudget {
   /** Provider round-trips per worker. */
@@ -381,6 +406,7 @@ export async function planAngles(
   question: string,
   maxAgents: number,
   signal?: AbortSignal,
+  onUsage?: (u: TokenSpend | null) => void,
 ): Promise<{ angles: string[]; planned: boolean }> {
   let angles: string[] = [];
   try {
@@ -413,6 +439,7 @@ export async function planAngles(
       abortSignal: signal,
     });
     await plan.consumeStream();
+    onUsage?.(await settled(plan.totalUsage));
   } catch (e) {
     console.warn("[research] planning failed:", (e as Error).message);
   }
@@ -518,10 +545,26 @@ export async function runResearch(opts: {
   const deadline = AbortSignal.timeout(budget.timeoutMs);
   const signal = opts.signal ? AbortSignal.any([opts.signal, deadline]) : deadline;
 
+  // Token spend, summed across every call the run makes.
+  //
+  // Worth measuring rather than estimating: on Anthropic's own analysis of a
+  // multi-agent research system, token usage alone explained ~80% of the
+  // variance in output quality. A run whose cost we do not record is a run we
+  // can only tune by taste.
+  const tokens = { input: 0, output: 0, total: 0 };
+  const bill = (u: TokenSpend | null) => {
+    if (!u) return;
+    tokens.input += u.inputTokens ?? 0;
+    tokens.output += u.outputTokens ?? 0;
+    tokens.total += u.totalTokens ?? (u.inputTokens ?? 0) + (u.outputTokens ?? 0);
+  };
+
   progress?.("planning", { question: opts.question, maxSources: budget.maxSources });
 
   // --- plan -------------------------------------------------------------
-  const plan = await planAngles(opts.model, opts.question, budget.maxAgents, signal);
+  const plan = await planAngles(opts.model, opts.question, budget.maxAgents, signal, (u) =>
+    bill(u),
+  );
   const angles = plan.angles;
   progress?.("plan", { angles, planned: plan.planned });
 
@@ -561,6 +604,7 @@ export async function runResearch(opts: {
           else if (part.type === "error") throw part.error;
         }
         steps += (await loop.steps).length;
+        bill(await settled(loop.totalUsage));
       } catch (e) {
         // One worker failing is a thinner report, not a failed run: the others
         // have already read pages the synthesizer can use. Only a run where
@@ -595,6 +639,7 @@ export async function runResearch(opts: {
       if (part.type === "error") throw part.error;
     }
     steps += (await synth.steps).length;
+    bill(await settled(synth.totalUsage));
   } catch (e) {
     console.warn("[research] synthesis failed:", (e as Error).message);
   }
@@ -618,6 +663,7 @@ export async function runResearch(opts: {
     read: st.ledger.length,
     searches: st.searches,
     ms: Date.now() - started,
+    tokens,
   };
   // The document travels on the progress channel, which the client renders and
   // the log keeps, but which no model is ever shown. The return value below is

@@ -13,7 +13,8 @@
     "check": "biome check --write",
     "ci": "biome ci . && tsc --noEmit && bun test",
     "schema": "bun scripts/gen-schema.ts",
-    "lard-login": "bun scripts/lard-login.ts"
+    "lard-login": "bun scripts/lard-login.ts",
+    "eval:research": "bun scripts/eval-research.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.27",
