@@ -88,7 +88,11 @@ export interface ResearchResult {
  *
  *   planning    — the question is in, the angles aren't decided yet
  *   plan        — { angles } the question split into parallel lines of enquiry
- *   agent       — { agent, angle } one worker started
+ *   round       — { round, angles, spent } a wave of workers is going out
+ *   followup    — { round, angles, why } what the last round surfaced, and
+ *                 whether it bought another wave. `angles: []` means the
+ *                 director judged the question answered — `why` says why.
+ *   agent       — { agent, angle, round } one worker started
  *   search      — { agent, query }
  *   read        — { agent, url, title, n } one page landed in the shared ledger
  *   agent-done  — { agent } that worker filed its notes
@@ -127,8 +131,12 @@ export interface ResearchBudget {
    * pool does that without anyone having to predict it in advance.
    */
   maxSources: number;
-  /** How many workers may run at once. */
+  /** Workers a run may spend in total, across every round. */
   maxAgents: number;
+  /** Workers in the opening round; the rest are earned by what it finds. */
+  firstWave: number;
+  /** How many times the run may review its notes and send someone back out. */
+  maxRounds: number;
   /** Wall clock for the whole thing, including synthesis and citations. */
   timeoutMs: number;
 }
@@ -458,6 +466,99 @@ export async function planAngles(
     : { angles: [question], planned: false };
 }
 
+const FOLLOWUP_SYSTEM = [
+  "You are directing a research run that is already under way. Workers have come back with notes; you decide whether to send anyone else out, and after what.",
+  "",
+  "Send a worker only for a thread worth pulling: a figure that contradicts another source, a claim everyone repeats and nobody evidences, a name or a document the notes point at but nobody opened, a part of the question the notes plainly do not answer. Each of those is a new angle, written as a self-contained question carrying the context the worker needs — a worker sees its angle and nothing else, and knows nothing about this conversation.",
+  "",
+  "Do NOT send anyone to 'confirm', 'expand on' or 'go deeper into' something the notes already establish. Repeating work that is done is how a run spends its budget and returns the same report.",
+  "",
+  "Finishing is the normal outcome and costs nothing. When the notes answer the question, or when what is missing is missing because it is not published anywhere, file no angles and say why in one sentence. A run that stops early with a good answer beats one that spends everything to say the same thing at greater length.",
+].join("\n");
+
+/**
+ * Look at what came back and decide where the rest of the budget goes.
+ *
+ * This is the difference between iterating and fanning out. A one-shot plan
+ * chooses every angle before anything is known, so the angle that turns out to
+ * matter gets one worker and so does the dead end. Here the opening wave maps
+ * the ground and what it finds buys the next wave — a contradiction between two
+ * sources, a document the notes point at that nobody opened, a part of the
+ * question nothing touched.
+ *
+ * Filing nothing is a first-class answer. The failure this guards against is
+ * not stopping too early; it is a run that keeps sending workers after
+ * material that does not exist, which is where an expensive question becomes an
+ * expensive question answered at greater length.
+ */
+export async function followUpAngles(
+  model: LanguageModel,
+  question: string,
+  notes: Array<{ angle: string; notes: string }>,
+  ledger: Source[],
+  room: { workers: number; sources: number },
+  signal?: AbortSignal,
+): Promise<{ angles: string[]; why: string }> {
+  if (room.workers <= 0 || room.sources <= 0) return { angles: [], why: "budget spent" };
+  let filed: { angles?: string[]; why?: string } = {};
+  try {
+    const run = streamText({
+      model,
+      system: FOLLOWUP_SYSTEM,
+      prompt: [
+        `Question: ${question}`,
+        "",
+        `Budget left: ${room.workers} worker(s), ${room.sources} page reads.`,
+        "",
+        `Pages already read (do not send anyone to re-read these):\n${sourceList(ledger) || "(none)"}`,
+        "",
+        "Notes so far:",
+        ...notes.map((n) => `## Angle: ${n.angle}\n\n${n.notes}`),
+      ].join("\n"),
+      tools: {
+        direct: tool({
+          description: "File the decision. Call this exactly once, with an empty list to finish.",
+          inputSchema: jsonSchema<{ angles: string[]; why: string }>({
+            type: "object",
+            properties: {
+              angles: {
+                type: "array",
+                items: { type: "string" },
+                description:
+                  "Self-contained questions, one per worker. Empty when the research is done.",
+              },
+              why: {
+                type: "string",
+                description: "One sentence: what these pull on, or why the run is finished.",
+              },
+            },
+            required: ["angles", "why"],
+            additionalProperties: false,
+          }),
+          execute: async (d) => {
+            filed = d;
+            return "Filed.";
+          },
+        }),
+      },
+      stopWhen: [stepCountIs(3), () => filed.angles !== undefined],
+      abortSignal: signal,
+    });
+    await run.consumeStream();
+  } catch (e) {
+    // A director that fails ends the run with what it has, which is a report.
+    console.warn("[research] follow-up planning failed:", (e as Error).message);
+  }
+  const angles = (filed.angles ?? [])
+    .map((a) => String(a).trim())
+    .filter(Boolean)
+    .slice(0, room.workers);
+  return {
+    angles,
+    why: filed.why?.trim() || (angles.length ? "following up" : "nothing left open"),
+  };
+}
+
 /** Sources rendered for the citation pass: enough to judge support, no more. */
 function sourceList(ledger: Source[]): string {
   return ledger.map((s) => `[${s.n}] ${s.title} — ${s.url}`).join("\n");
@@ -655,6 +756,8 @@ export function researchBudget(override?: Partial<ResearchBudget>): ResearchBudg
     maxSteps: override?.maxSteps ?? cfg.maxSteps,
     maxSources: override?.maxSources ?? cfg.maxSources,
     maxAgents: override?.maxAgents ?? cfg.maxAgents,
+    firstWave: override?.firstWave ?? cfg.firstWave,
+    maxRounds: override?.maxRounds ?? cfg.maxRounds,
     timeoutMs: override?.timeoutMs ?? cfg.timeoutMs,
   };
 }
@@ -701,52 +804,105 @@ export async function runResearch(opts: {
   const angles = plan.angles;
   progress?.("plan", { angles, planned: plan.planned });
 
-  // --- fan out ----------------------------------------------------------
-  // The workers are the reason this reads more than a handful of pages. Each
-  // holds its own context window and its own conversation with the model, so the
-  // run covers far more material than any single window could carry — and they
-  // wait on the network at the same time rather than one after another, which is
-  // most of what a long research run is doing.
+  // --- research, in rounds ---------------------------------------------
+  // A round is a small wave of workers in parallel, then a look at what they
+  // brought back. Parallel is what lets a run read far more than one context
+  // window holds; ROUNDS are what let it change its mind — the opening wave
+  // maps the ground, and a contradiction or an unopened document it surfaces is
+  // what buys the next wave.
+  //
+  // The cost is wall clock: rounds are sequential where a single fan-out is
+  // not. That is the trade being made deliberately — a question worth
+  // researching is worth the second look, and a run that spends everything up
+  // front cannot spend it on what it learns.
   let steps = 0;
-  const notes = await Promise.all(
-    angles.map(async (angle: string, agent: number) => {
-      progress?.("agent", { agent, angle });
-      const filed: { notes?: string } = {};
-      const loop = streamText({
-        model: opts.model,
-        system: WORKER_SYSTEM,
-        prompt: `Overall question: ${opts.question}\n\nYour angle: ${angle}`,
-        tools: workerTools(opts.search, opts.fetcher, budget, st, filed, agent, progress),
-        // Two ways to stop: the notes are in, or the step budget is gone.
-        stopWhen: [stepCountIs(budget.maxSteps), () => filed.notes !== undefined],
-        abortSignal: signal,
-      });
-      let narration = "";
-      try {
-        // Drain the stream to drive the loop, and keep the loose text only as a
-        // fallback for a worker that never files.
-        //
-        // None of it is reported. Narration and reasoning are the model talking
-        // to itself mid-search, and with several workers interleaving there is no
-        // stable place to put it — it lands as a flicker of half-sentences from
-        // whoever spoke last. What the run is doing is already legible from the
-        // angles and the sources; the chatter only made it jumpy.
-        for await (const part of loop.fullStream) {
-          if (part.type === "start-step") narration = "";
-          else if (part.type === "text-delta") narration += part.text;
-          else if (part.type === "error") throw part.error;
+  let agentNo = 0;
+  const notes: Array<{ angle: string; notes: string }> = [];
+  // Angles already sent out. The director is told not to repeat itself, and
+  // this is what makes that true: across rounds it sees its own earlier
+  // reasoning and reaches the same conclusion about what is worth pulling, so
+  // "do not repeat" is a request that a long run eventually declines. Spending
+  // a worker to research something twice is the cheapest waste available.
+  const asked = new Set<string>();
+  const isNew = (angle: string) => {
+    const key = angle.toLowerCase().replace(/\W+/g, " ").trim();
+    if (!key || asked.has(key)) return false;
+    asked.add(key);
+    return true;
+  };
+
+  const runWave = async (wave: string[], round: number) => {
+    progress?.("round", { round, angles: wave, spent: agentNo });
+    const done = await Promise.all(
+      wave.map(async (angle: string) => {
+        const agent = agentNo++;
+        progress?.("agent", { agent, angle, round });
+        const filed: { notes?: string } = {};
+        const loop = streamText({
+          model: opts.model,
+          system: WORKER_SYSTEM,
+          prompt: `Overall question: ${opts.question}\n\nYour angle: ${angle}`,
+          tools: workerTools(opts.search, opts.fetcher, budget, st, filed, agent, progress),
+          // Two ways to stop: the notes are in, or the step budget is gone.
+          stopWhen: [stepCountIs(budget.maxSteps), () => filed.notes !== undefined],
+          abortSignal: signal,
+        });
+        let narration = "";
+        try {
+          // Drain the stream to drive the loop, and keep the loose text only as
+          // a fallback for a worker that never files.
+          //
+          // None of it is reported. Narration and reasoning are the model
+          // talking to itself mid-search, and with several workers interleaving
+          // there is no stable place to put it — it lands as a flicker of
+          // half-sentences from whoever spoke last.
+          for await (const part of loop.fullStream) {
+            if (part.type === "start-step") narration = "";
+            else if (part.type === "text-delta") narration += part.text;
+            else if (part.type === "error") throw part.error;
+          }
+          steps += (await loop.steps).length;
+          bill(await settled(loop.totalUsage));
+        } catch (e) {
+          // One worker failing is a thinner report, not a failed run: the others
+          // have already read pages the synthesizer can use.
+          console.warn(`[research] worker ${agent} failed:`, (e as Error).message);
         }
-        steps += (await loop.steps).length;
-        bill(await settled(loop.totalUsage));
-      } catch (e) {
-        // One worker failing is a thinner report, not a failed run: the others
-        // have already read pages the synthesizer can use. Only a run where
-        // nobody got anywhere is a real failure, and that surfaces below.
-        console.warn(`[research] worker ${agent} failed:`, (e as Error).message);
-      }
-      return { angle, notes: filed.notes ?? narration.trim() };
-    }),
-  );
+        return { angle, notes: filed.notes ?? narration.trim() };
+      }),
+    );
+    notes.push(...done);
+  };
+
+  // The opening wave is deliberately small — see `firstWave`. A planner that
+  // proposed more angles than that keeps them: they are the queue the director
+  // draws from before inventing new ones.
+  const planned = plan.angles.filter(isNew);
+  await runWave(planned.slice(0, budget.firstWave), 1);
+  let queued = planned.slice(budget.firstWave);
+
+  for (let round = 2; round <= budget.maxRounds; round++) {
+    const room = {
+      workers: Math.max(0, budget.maxAgents - agentNo),
+      sources: Math.max(0, budget.maxSources - st.reserved),
+    };
+    if (room.workers <= 0 || room.sources <= 0) break;
+    let wave: string[];
+    let why: string;
+    if (queued.length) {
+      // Angles the planner already chose, before the director invents more.
+      wave = queued.slice(0, Math.min(budget.firstWave, room.workers));
+      queued = queued.slice(wave.length);
+      why = "from the opening plan";
+    } else {
+      const next = await followUpAngles(opts.model, opts.question, notes, st.ledger, room, signal);
+      wave = next.angles.filter(isNew);
+      why = next.why;
+    }
+    progress?.("followup", { round, angles: wave, why });
+    if (!wave.length) break; // the director says the question is answered
+    await runWave(wave, round);
+  }
 
   const usable = notes.filter((n: { notes: string }) => n.notes);
   if (!usable.length && !st.ledger.length) {

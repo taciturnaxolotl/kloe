@@ -212,6 +212,18 @@
           "maximum": 12,
           "default": 6
         },
+        "firstWave": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12,
+          "default": 2
+        },
+        "maxRounds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6,
+          "default": 3
+        },
         "timeoutMs": {
           "type": "integer",
           "minimum": 1000,
@@ -224,6 +236,8 @@
         "maxSteps": 400,
         "maxSources": 500,
         "maxAgents": 6,
+        "firstWave": 2,
+        "maxRounds": 3,
         "timeoutMs": 1800000
       }
     },

@@ -109,8 +109,8 @@ function stubFetch(pages: Record<string, Partial<FetchResult>>): FetchProvider {
  * distinguishes the roles in the real code too.
  */
 type Turn = { text?: string; calls?: Array<[string, unknown]> };
-function roleModel(roles: { plan?: Turn[]; worker?: Turn[]; synth?: Turn[] }) {
-  const seen = { plan: 0, worker: 0, synth: 0 };
+function roleModel(roles: { plan?: Turn[]; worker?: Turn[]; synth?: Turn[]; followup?: Turn[] }) {
+  const seen = { plan: 0, worker: 0, synth: 0, followup: 0 };
   return {
     specificationVersion: "v4",
     provider: "test",
@@ -120,9 +120,11 @@ function roleModel(roles: { plan?: Turn[]; worker?: Turn[]; synth?: Turn[] }) {
       const names = (opts.tools ?? []).map((t) => t.name);
       const role = names.includes("plan")
         ? "plan"
-        : names.includes("read_page")
-          ? "worker"
-          : "synth";
+        : names.includes("direct")
+          ? "followup"
+          : names.includes("read_page")
+            ? "worker"
+            : "synth";
       const script = roles[role] ?? [];
       const turn = script[Math.min(seen[role]++, script.length - 1)] ?? {};
       const parts: Array<Record<string, unknown>> = [];
@@ -158,6 +160,8 @@ function roleModel(roles: { plan?: Turn[]; worker?: Turn[]; synth?: Turn[] }) {
 
 const PLAN = (...angles: string[]): Turn => ({ calls: [["plan", { angles }]] });
 const NOTES = (notes: string): Turn => ({ calls: [["submit_findings", { notes }]] });
+/** The director's decision: which threads to pull next, or none to finish. */
+const DIRECT = (angles: string[], why: string): Turn => ({ calls: [["direct", { angles, why }]] });
 const FILE = (
   content: string,
   title = "T",
@@ -284,10 +288,71 @@ test("the question is split across parallel workers", async () => {
   expect(agents).toHaveLength(3);
   const planned = seen.find((p) => p.phase === "plan")?.data as { angles: string[] } | undefined;
   expect(planned?.angles).toEqual(["angle a", "angle b", "angle c"]);
-  // Every worker is started before any of them finishes: they run together.
+
+  // Research runs in ROUNDS, not one fan-out. The opening wave is small (see
+  // `firstWave`), and the angles the planner proposed beyond it are a queue the
+  // later rounds draw from — so a plan of three becomes 2 then 1.
+  const rounds = seen.filter((p) => p.phase === "round").map((p) => p.data as { angles: string[] });
+  expect(rounds.map((r) => r.angles.length)).toEqual([2, 1]);
+
+  // Within a round the workers still run together: both of round one start
+  // before either finishes.
   const phases = seen.map((p) => p.phase);
-  expect(phases.lastIndexOf("agent")).toBeLessThan(phases.indexOf("agent-done"));
+  const firstDone = phases.indexOf("agent-done");
+  expect(phases.indexOf("agent")).toBeLessThan(firstDone);
+  expect(phases.lastIndexOf("agent")).toBeGreaterThan(firstDone); // round two is later
   expect(phases.indexOf("synthesis")).toBeGreaterThan(phases.lastIndexOf("agent-done"));
+});
+
+test("what the first wave finds decides who goes out next", async () => {
+  // The point of rounds: an angle nobody could have planned up front, because
+  // it only exists once a worker has come back with something worth pulling on.
+  const seen: Array<{ phase: string; data?: unknown }> = [];
+  await runResearch({
+    question: "what",
+    model: roleModel({
+      plan: [PLAN("opening angle")],
+      worker: [NOTES("the filing mentions an unopened exhibit B")],
+      followup: [
+        DIRECT(["what does exhibit B say?"], "the notes point at a document nobody opened"),
+      ],
+      synth: [FILE("Done.")],
+    }),
+    search: stubSearch([]),
+    fetcher: stubFetch({}),
+    onProgress: (phase, data) => seen.push({ phase, data }),
+  });
+  const followed = seen.find((p) => p.phase === "followup")?.data as {
+    angles: string[];
+    why: string;
+  };
+  expect(followed.angles).toEqual(["what does exhibit B say?"]);
+  expect(followed.why).toContain("nobody opened");
+  // …and a worker actually went out on it.
+  const angles = seen
+    .filter((p) => p.phase === "agent")
+    .map((p) => (p.data as { angle: string }).angle);
+  expect(angles).toEqual(["opening angle", "what does exhibit B say?"]);
+});
+
+test("a run stops when the director says the question is answered", async () => {
+  // Finishing early is a first-class outcome: the failure mode this guards
+  // against is spending the whole budget to say the same thing at length.
+  const seen: string[] = [];
+  await runResearch({
+    question: "what",
+    model: roleModel({
+      plan: [PLAN("only angle")],
+      worker: [NOTES("complete answer")],
+      followup: [DIRECT([], "the notes answer the question")],
+      synth: [FILE("Done.")],
+    }),
+    search: stubSearch([]),
+    fetcher: stubFetch({}),
+    onProgress: (phase) => seen.push(phase),
+  });
+  expect(seen.filter((p) => p === "agent")).toHaveLength(1); // no second wave
+  expect(seen).toContain("synthesis");
 });
 
 test("a planner that fails still researches, as one angle", async () => {

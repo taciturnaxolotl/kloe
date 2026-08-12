@@ -230,7 +230,20 @@ const ResearchSchema = v.object({
    * This is what lets a run cover far more material than one window could hold —
    * and it costs roughly this multiple in tokens, so it's the expensive dial.
    */
+  /** Workers a run may spend in total, across every round. */
   maxAgents: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(12)), 6),
+  /**
+   * Workers in the opening round.
+   *
+   * Research is iterative: a small first wave maps the ground, and what it
+   * finds decides where the rest of the budget goes. Fanning the whole allowance
+   * out at once means every angle is chosen before anything is known — the
+   * angles that turn out to matter get one worker each, and so do the ones that
+   * turn out to be dead ends.
+   */
+  firstWave: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(12)), 2),
+  /** How many times a run may look at what it has and send someone back out. */
+  maxRounds: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(6)), 3),
   /**
    * Wall clock for planning, the workers, synthesis and citations together.
    * Generous on purpose: a run reading a couple of hundred pages is a job you
