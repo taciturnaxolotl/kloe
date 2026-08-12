@@ -994,6 +994,22 @@ body.selecting #selectBtn {
   content-visibility: auto;
   contain-intrinsic-size: auto 240px;
 }
+/* …with one exception, and it is the whole reason the scroll range can go
+   wrong: a SKIPPED element is not re-measured while it grows. The turn being
+   streamed into grows enormously — a long reply, then code blocks gaining a
+   highlighter — and if the reader has scrolled up, that growth happens while
+   the turn is offscreen and skipped. The browser keeps using the size it
+   remembered from when the turn was two lines, `scrollHeight` stays short by
+   the difference, and the bottom of the conversation is unreachable until a
+   reload re-measures everything.
+
+   The growing turn is always the last one, so the last one is never skipped.
+   Older turns are static by the time they leave the viewport, which is the
+   case content-visibility is actually good at. */
+.turn:last-child,
+.turn.generating {
+  content-visibility: visible;
+}
 .turn:first-child {
   border-top: 0;
 }
