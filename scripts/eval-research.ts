@@ -70,6 +70,7 @@ if (import.meta.main) {
   console.log(`cases  ${cases.length}\n`);
 
   const scores: EvalScore[] = [];
+  const reports: unknown[] = [];
   for (const c of cases) {
     const started = Date.now();
     process.stdout.write(`▸ ${c.id.padEnd(16)} `);
@@ -77,6 +78,18 @@ if (import.meta.main) {
       const result = await runResearch({ question: c.question, model, search, fetcher });
       const score = await judgeRun(judge, c, result);
       scores.push(score);
+      // Keep the artifact next to its score. A number with no way back to the
+      // text it graded can only be trusted, and the judge is one model's
+      // opinion — the first thing anyone does with a bad score is go and read
+      // what actually came out.
+      reports.push({
+        id: c.id,
+        question: c.question,
+        title: result.title,
+        report: result.report,
+        sources: result.sources,
+        stats: result.stats,
+      });
       console.log(
         `${bar(score.overall)} ${score.overall.toFixed(2)}  ` +
           `${score.cost.sources} src · ${(score.cost.tokens / 1000).toFixed(0)}k tok · ` +
@@ -118,5 +131,7 @@ if (import.meta.main) {
     path,
     JSON.stringify({ model: modelRef, judge: judgeRef, at: Date.now(), agg, scores }, null, 2),
   );
-  console.log(`\nwrote ${path}`);
+  const reportPath = path.replace(/\.json$/, "-reports.json");
+  writeFileSync(reportPath, JSON.stringify(reports, null, 2));
+  console.log(`\nwrote ${path}\nwrote ${reportPath}`);
 }
