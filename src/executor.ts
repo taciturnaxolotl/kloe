@@ -125,6 +125,31 @@ function shq(s: string): string {
  */
 const MAX_READ_BYTES = 256 * 1024;
 
+/**
+ * Is this docker complaining that there is no daemon, rather than about the
+ * container we asked for? The socket path varies by install (Docker Desktop,
+ * OrbStack, colima, a remote host over ssh), so the tells are the phrasings
+ * rather than any one path.
+ */
+export function isDaemonDown(stderr: string): boolean {
+  return /docker daemon|docker API|docker\.sock|Is the docker daemon running|connection refused|no such file or directory/i.test(
+    stderr,
+  );
+}
+
+/**
+ * What the model is told. Phrased to end the loop rather than describe the
+ * plumbing: it cannot fix a stopped daemon, and the useful move is to say so
+ * and carry on without the sandbox.
+ */
+const DAEMON_DOWN_MESSAGE =
+  "The sandbox is unavailable: the container runtime on the server is not running. " +
+  "This affects every sandbox tool and will not resolve during this turn — do not retry them. " +
+  "Tell the user the sandbox is down, and answer without it if you can.";
+
+/** How long one "the daemon is down" answer stands for the calls behind it. */
+const DAEMON_DOWN_MEMO_MS = 15_000;
+
 /** What a killed command reports back. coreutils `timeout` uses 124 already. */
 const TIMEOUT_EXIT = 124;
 
@@ -397,6 +422,9 @@ export class LocalDockerExecutor implements Executor {
     ];
   }
 
+  /** Set when the daemon answered "I am not here", so parallel calls fail fast. */
+  private daemonDownUntil = 0;
+
   private async startContainer(name: string): Promise<void> {
     // Adopt the conversation's existing sandbox when it still runs under today's
     // policy: a restart then costs nothing, and /workspace survives it.
@@ -432,6 +460,16 @@ export class LocalDockerExecutor implements Executor {
       r = await dockerRun(argv, this.env);
     }
     if (r.exitCode !== 0) {
+      // A daemon that isn't running is a different failure from a container
+      // that wouldn't start, and it deserves a different answer. It affects
+      // every sandbox tool, it will not fix itself inside this turn, and the
+      // model's natural response to "failed to start" is to try again — which
+      // is how one stopped Docker becomes six identical failures and a wasted
+      // turn. Say so once, in terms that end the retrying.
+      if (isDaemonDown(r.stderr)) {
+        this.daemonDownUntil = Date.now() + DAEMON_DOWN_MEMO_MS;
+        throw new Error(DAEMON_DOWN_MESSAGE);
+      }
       // The invocation, not just the complaint. Docker answers a bad flag with a
       // usage dump that names no flag ("See 'docker run --help'"), so the stderr
       // alone leaves you guessing which argument the daemon disliked — and these
@@ -446,6 +484,10 @@ export class LocalDockerExecutor implements Executor {
   private ensureSession(session: string): Session {
     let s = this.sessions.get(session);
     if (!s) {
+      // Six tool calls in one step would otherwise each wait out the docker CLI
+      // before learning the same thing. The memo is short: a daemon can come back
+      // between turns, and a stale "it's down" would be its own bug.
+      if (Date.now() < this.daemonDownUntil) throw new Error(DAEMON_DOWN_MESSAGE);
       const name = this.containerName(session);
       s = { name, ready: this.startContainer(name), lastUsed: Date.now() };
       this.sessions.set(session, s);

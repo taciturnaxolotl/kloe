@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { createExecutor, formatExecResult, LocalDockerExecutor } from "../src/executor";
+import {
+  createExecutor,
+  formatExecResult,
+  isDaemonDown,
+  LocalDockerExecutor,
+} from "../src/executor";
 
 // docker isn't guaranteed in CI; probe once and skip the live cases without it.
 async function dockerAvailable(): Promise<boolean> {
@@ -363,4 +368,34 @@ liveTest(
     }
   },
   120_000,
+);
+
+test("a stopped daemon is told apart from a container that wouldn't start", () => {
+  // The real message from a Mac with OrbStack shut down.
+  expect(
+    isDaemonDown(
+      "failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory",
+    ),
+  ).toBe(true);
+  expect(isDaemonDown("Cannot connect to the Docker daemon at unix:///var/run/docker.sock.")).toBe(
+    true,
+  );
+  // A container that genuinely failed is a different problem with a different
+  // answer, and must keep its own message.
+  expect(isDaemonDown("Error response from daemon: No such image: alpine:9.99")).toBe(false);
+  expect(isDaemonDown("invalid CapDrop: unknown capability")).toBe(false);
+});
+
+liveTest(
+  "the daemon-down answer tells the model to stop trying",
+  async () => {
+    // Pointed at a socket that cannot exist: what a stopped runtime looks like.
+    const e = new LocalDockerExecutor({ ...SANDBOX, dockerHost: "unix:///nope/docker.sock" });
+    const r = await e.run({ command: "echo hi", session: "test-down" }).catch((err: Error) => err);
+    expect(r).toBeInstanceOf(Error);
+    const msg = (r as Error).message;
+    expect(msg).toContain("sandbox is unavailable");
+    expect(msg).toContain("do not retry");
+  },
+  60_000,
 );
