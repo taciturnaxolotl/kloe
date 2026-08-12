@@ -647,3 +647,49 @@ test("a resumed run skips finished angles and keeps their pages", async () => {
   expect(out.sources).toEqual([{ n: 1, url: "https://a.test", title: "A" }]);
   expect(seen.some((p) => p.phase === "resumed")).toBe(true);
 });
+
+test("a worker's jot survives, and its angle stays open until someone finishes it", () => {
+  // The asymmetry with a conversation: what is worth saving from a worker is
+  // not its output but its reasoning over pages, and a jot is that reasoning
+  // small enough to write down repeatedly.
+  const events = [
+    progressEvent("planning", { question: "what happened" }),
+    progressEvent("read", { url: "https://a.test", title: "A" }),
+    progressEvent("agent-note", { agent: 0, angle: "the open angle", notes: "halfway there" }),
+    progressEvent("agent-note", { agent: 0, angle: "the open angle", notes: "further along" }),
+    progressEvent("agent-done", { agent: 1, angle: "the closed angle", notes: "complete" }),
+  ];
+  const out = recoverRun(events, "what happened")!;
+  // The later jot replaces the earlier one: last write wins.
+  expect(out.notes).toEqual([
+    { angle: "the open angle", notes: "further along" },
+    { angle: "the closed angle", notes: "complete" },
+  ]);
+  // Only the jotted angle is unfinished; the filed one is done.
+  expect(out.unfinished).toEqual(["the open angle"]);
+});
+
+test("a resumed run sends a worker back to an angle that only jotted", async () => {
+  const seen: Array<{ phase: string; data?: unknown }> = [];
+  await runResearch({
+    question: "what",
+    model: roleModel({
+      plan: [PLAN("the open angle")],
+      worker: [NOTES("finished this time")],
+      followup: [DIRECT([], "done")],
+      synth: [FILE("Body.")],
+    }),
+    search: stubSearch([]),
+    fetcher: stubFetch({}),
+    resume: {
+      notes: [{ angle: "the open angle", notes: "halfway there" }],
+      unfinished: ["the open angle"],
+      ledger: [],
+    },
+    onProgress: (phase, data) => seen.push({ phase, data }),
+  });
+  const angles = seen
+    .filter((p) => p.phase === "agent")
+    .map((p) => (p.data as { angle: string }).angle);
+  expect(angles).toEqual(["the open angle"]); // reopened, not skipped
+});
