@@ -1087,3 +1087,20 @@ test("prefs are readable, writable, and closed to keys the run loop doesn't know
     config: { "research.leadModel": null, "research.workerModel": null },
   });
 });
+
+test("a message's reasoning level reaches the job, and an unknown one is dropped", async () => {
+  setRegistry(new ProviderRegistry(Catalog.fromRaw([]), { config: { providers: [] } }));
+  const conv = "effortful";
+  const res = await fetch(`${base}/api/conversations/${conv}/prompt`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content: "think hard", model: "echo", effort: "xhigh" }),
+  });
+  expect(res.status).toBe(202);
+
+  // It rides on the job, so the level survives a restart between enqueue and run.
+  const row = store.claimExpiredExclusive(Date.now())!;
+  const params = parseJobParams(row.params) as { model: string; effort?: string };
+  expect(params).toMatchObject({ model: "echo", effort: "xhigh" });
+  store.markDone(row.id);
+});

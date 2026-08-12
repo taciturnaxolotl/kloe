@@ -288,6 +288,20 @@ export function resolveRoleModel(store: Store, role: "lead" | "worker"): string 
   return cfg && enabled.has(cfg) ? cfg : null;
 }
 
+/**
+ * The reasoning level to actually send: the requested one, but only when the
+ * model declares it.
+ *
+ * Providers answer an unknown effort with a 400, so an out-of-date picker, or a
+ * level remembered from a different model, would fail the run rather than
+ * degrade. Dropping it costs a preference; sending it costs the turn.
+ */
+export function effortFor(modelRef: string, requested?: string): string | null {
+  if (!requested) return null;
+  const levels = modelInfo(modelRef)?.reasoningLevels ?? [];
+  return levels.includes(requested) ? requested : null;
+}
+
 /** Whether a model can accept image inputs (false for unknown refs). */
 export function modelSupportsImages(modelRef: string): boolean {
   return modelInfo(modelRef)?.supportsImages ?? false;
@@ -311,6 +325,8 @@ export interface RunProject {
 export interface RunOptions {
   model: string;
   runId: string;
+  /** Reasoning level for this run, from the levels the model declares. */
+  effort?: string;
   abortSignal?: AbortSignal;
   temperature?: number;
   /** For per-user lard: the run's store + the conversation owner's `sub`. */
@@ -370,6 +386,18 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
   const maxOutputTokens =
     cfg?.maxOutputTokens || modelInfo(opts.model)?.defaultMaxTokens || undefined;
   const maxToolSteps = getConfig().agent.maxToolSteps;
+  // Per-provider options, plus this run's reasoning level when one was chosen
+  // and the model actually offers it. A level the model does not declare is
+  // dropped rather than sent: providers answer an unknown effort with a 400,
+  // and a run should not fail because a picker was out of date.
+  const effort = effortFor(opts.model, opts.effort);
+  const providerOpts: Record<string, JSONValue> | null =
+    cfg?.providerOptions || effort
+      ? {
+          ...((cfg?.providerOptions ?? {}) as Record<string, JSONValue>),
+          ...(effort ? { reasoning_effort: effort } : {}),
+        }
+      : null;
   // Per-user durable memory (lard): fold the owner's context bundle into the
   // prompt. Best-effort — a failed/absent fetch never blocks the run.
   let memory = "";
@@ -392,9 +420,7 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
     temperature: opts.temperature ?? 0.7,
     abortSignal: opts.abortSignal,
     ...(maxOutputTokens ? { maxOutputTokens } : {}),
-    ...(cfg?.providerOptions
-      ? { providerOptions: { [providerName]: cfg.providerOptions as Record<string, JSONValue> } }
-      : {}),
+    ...(providerOpts ? { providerOptions: { [providerName]: providerOpts } } : {}),
     // Tools + a step cap: streamText runs the agentic loop (call → execute →
     // feed back), bounded so a runaway can't loop forever.
     // 0 → unlimited: never force-stop, so the loop runs until the model stops

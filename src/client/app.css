@@ -2433,6 +2433,37 @@ body.resizing {
   }
 }
 
+/* The effort beside the model name in the pill: a qualifier of the model, not a
+   second choice of equal weight, so it is muted and it disappears entirely when
+   the provider's default is in use. */
+.pill .e {
+  color: var(--ink-faint);
+  margin-left: 5px;
+}
+.pill .e[hidden] {
+  display: none;
+}
+/* The effort row hangs under the selected model in the picker, indented to
+   belong to it, with its current value and a chevron into the level list. */
+.picker .effortrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 22px;
+}
+.picker .effortrow .name {
+  flex: 1;
+}
+.effortvalue {
+  color: var(--ink-faint);
+  font-size: 12.5px;
+}
+.picker .effortrow .chev {
+  width: 13px;
+  height: 13px;
+  color: var(--ink-faint);
+}
+
 /* ---- composer dock ----------------------------------------------------- */
 .dock {
   border-top: 0;

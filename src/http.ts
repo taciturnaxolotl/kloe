@@ -377,6 +377,7 @@ function startRun(
     messageId,
     prompt: data.content,
     model: data.model,
+    ...(data.effort ? { effort: data.effort } : {}),
   });
 
   // Enqueue decouples the response from the run: the client opens the stream
@@ -400,7 +401,7 @@ function startSteer(conversationId: string, data: SteerBody, store: Store): Resp
 
   const actor = getActor(conversationId, store);
   const runId = data.runId ?? randomUUID();
-  actor.queueSteer(data.content, data.model, runId, data.attachments);
+  actor.queueSteer(data.content, data.model, runId, data.attachments, data.effort);
 
   // One flush job is enough to drain the whole queue; skip it when one is
   // already waiting (it drains everything queued by the time it runs).

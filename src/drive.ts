@@ -27,6 +27,8 @@ interface RunSpec {
   runId: string;
   messageId: string;
   model: string;
+  /** The reasoning level the sender chose, when the model offers levels. */
+  effort?: string;
 }
 
 /**
@@ -138,7 +140,10 @@ export class JobDriver {
       {
         runId: msgs[0]!.runId,
         messageId: randomUUID(),
+        // The newest message's choices win, model and effort alike: a batched
+        // flush runs once, and the last thing the user picked is what they meant.
         model: msgs[msgs.length - 1]!.model,
+        effort: msgs[msgs.length - 1]!.effort,
       },
       timing,
     );
@@ -242,6 +247,7 @@ export class JobDriver {
     for await (const step of run(messages, {
       runId: spec.runId,
       model: spec.model,
+      effort: spec.effort,
       abortSignal: signal,
       store: this.store,
       blobs: this.blobs,

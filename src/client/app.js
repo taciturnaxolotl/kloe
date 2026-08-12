@@ -3078,6 +3078,10 @@ import { mountSidebar } from "./sidebar.js";
   function bodyFor(content, runId, attachments) {
     var b = { content: content, model: selected.ref, runId: runId };
     if (attachments && attachments.length) b.attachments = attachments;
+    // Per message, so a chat can hold "what's this error" and "design the
+    // migration" without them sharing a thinking budget.
+    var effort = currentEffort();
+    if (effort) b.effort = effort;
     return JSON.stringify(b);
   }
   // Optimistic apply now, POST after: the user's turn is on screen before the
@@ -3518,9 +3522,45 @@ import { mountSidebar } from "./sidebar.js";
     updateSend();
     updateCtx();
   }
+  /**
+   * The chosen effort for the chosen model.
+   *
+   * Per model, not global: the levels differ (one offers none/low/high/xhigh,
+   * another high/max), so a single remembered word would be meaningless on half
+   * of them. Absent means "the provider's own default", which is what every run
+   * did before this existed.
+   */
+  function effortKey(ref) {
+    return "kloe.effort:" + ref;
+  }
+  function levelsOf(m) {
+    return (m && m.reasoningLevels) || [];
+  }
+  function currentEffort() {
+    if (!selected || !levelsOf(selected).length) return null;
+    var saved = localStorage.getItem(effortKey(selected.ref));
+    return saved && levelsOf(selected).indexOf(saved) >= 0 ? saved : null;
+  }
+  function setEffort(level) {
+    if (!selected) return;
+    if (level) localStorage.setItem(effortKey(selected.ref), level);
+    else localStorage.removeItem(effortKey(selected.ref));
+    renderPill();
+    renderPicker();
+  }
+  /** "xhigh" → "Xhigh"; the levels are provider words, shown as they are. */
+  function effortLabel(level) {
+    return level ? level.charAt(0).toUpperCase() + level.slice(1) : "";
+  }
   function renderPill() {
     pill.disabled = models.length === 0;
     pillModel.textContent = selected ? selected.name : models.length ? "Select model" : "No models";
+    // The effort rides beside the model name, muted — it is a qualifier of the
+    // model rather than a second choice of equal weight.
+    var eff = $("pillEffort");
+    var level = currentEffort();
+    eff.textContent = level ? effortLabel(level) : "";
+    eff.hidden = !level;
   }
   function renderPicker() {
     picker.innerHTML = "";
@@ -3555,7 +3595,56 @@ import { mountSidebar } from "./sidebar.js";
         closePicker();
       };
       picker.appendChild(b);
+      // The effort row belongs to the model above it: a level list is only
+      // meaningful next to the model whose levels they are.
+      if (selected && m.ref === selected.ref && levelsOf(m).length) {
+        picker.appendChild(effortRow(m));
+      }
     });
+  }
+  /**
+   * "Effort  High >" — a row under the selected model that opens its levels.
+   *
+   * A submenu rather than a row per level in the main list: the levels are a
+   * property of one model, and inlining four of them would bury the other
+   * models under whichever one happened to be selected.
+   */
+  function effortRow(m) {
+    var row = document.createElement("button");
+    row.className = "opt effortrow";
+    row.type = "button";
+    var level = currentEffort();
+    var value = document.createElement("span");
+    value.className = "effortvalue";
+    value.textContent = level ? effortLabel(level) : "Default";
+    row.innerHTML = '<div class="name">Effort</div>';
+    row.appendChild(value);
+    row.insertAdjacentHTML("beforeend", CHEV);
+    row.onclick = function (e) {
+      e.stopPropagation();
+      var r = row.getBoundingClientRect();
+      var items = [
+        {
+          label: "Default",
+          icon: level ? ICON_BLANK : CHECK,
+          onClick: function () {
+            setEffort(null);
+          },
+        },
+      ].concat(
+        levelsOf(m).map(function (l) {
+          return {
+            label: effortLabel(l),
+            icon: level === l ? CHECK : ICON_BLANK,
+            onClick: function () {
+              setEffort(l);
+            },
+          };
+        }),
+      );
+      showContextMenu(r.right, r.top, items, { align: "left", trigger: row });
+    };
+    return row;
   }
   function openPicker() {
     picker.hidden = false;

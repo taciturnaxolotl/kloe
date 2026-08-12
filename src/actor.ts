@@ -250,12 +250,14 @@ export class ConversationActor {
     model: string,
     runId: string = randomUUID(),
     attachments?: AttachmentRef[],
+    effort?: string,
   ): string {
     this.persist(Event.Queued, {
       threadId: this.conversationId,
       runId,
       content: truncateUtf8(content),
       model,
+      ...(effort ? { effort } : {}),
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
     });
     // Register refs now (not just on promotion) so a staged steer's blob is

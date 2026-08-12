@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import type { ModelMessage } from "ai";
-import { promptChars, usageFor } from "../src/inference";
+import { Catalog } from "../src/catalog";
+import { effortFor, promptChars, setRegistry, usageFor } from "../src/inference";
+import { ProviderRegistry } from "../src/providers";
 
 test("context occupancy comes from the final step, not the summed steps", () => {
   // A tool loop re-sends the whole conversation each step, so the run total is a
@@ -100,4 +102,36 @@ test("an attached image costs a flat allowance, not its byte length", () => {
     },
   ];
   expect(promptChars(msgs)).toBeLessThan(20_000);
+});
+
+test("a reasoning level the model doesn't offer is dropped, not sent", () => {
+  // Providers answer an unknown effort with a 400, and a run should not fail
+  // because a client's picker was out of date — or because the level came from
+  // a different model that happened to be selected earlier.
+  setRegistry(
+    new ProviderRegistry(
+      Catalog.fromRaw([
+        {
+          id: "acme",
+          name: "Acme",
+          type: "openai-compat",
+          api_endpoint: "https://acme.test/v1",
+          models: [
+            {
+              id: "thinker",
+              name: "Thinker",
+              context_window: 8000,
+              reasoning_levels: ["low", "high"],
+            },
+            { id: "plain", name: "Plain", context_window: 8000 },
+          ],
+        },
+      ]),
+      { config: { providers: [{ id: "acme", apiKey: "$K" }] } },
+    ),
+  );
+  expect(effortFor("acme/thinker", "high")).toBe("high");
+  expect(effortFor("acme/thinker", "xhigh")).toBeNull(); // not a level it offers
+  expect(effortFor("acme/plain", "high")).toBeNull(); // offers none at all
+  expect(effortFor("acme/thinker", undefined)).toBeNull();
 });

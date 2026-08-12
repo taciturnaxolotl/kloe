@@ -27,6 +27,13 @@ export const PromptBody = v.object({
   model: v.pipe(v.string(), v.minLength(1, "model is required")),
   runId: v.optional(v.string()),
   attachments: v.optional(v.array(Attachment)),
+  /**
+   * How hard the model should think, from the levels it declares (e.g. "low",
+   * "high", "xhigh"). Per message rather than per conversation: the same chat
+   * holds "what's this error" and "design the migration", and they do not want
+   * the same budget.
+   */
+  effort: v.optional(v.pipe(v.string(), v.maxLength(20))),
 });
 export type PromptBody = v.InferOutput<typeof PromptBody>;
 

@@ -24,6 +24,8 @@ export interface RunJobParams {
   messageId: string;
   prompt: string;
   model: string;
+  /** Reasoning level for this run, when the sender chose one. */
+  effort?: string;
 }
 
 /**
@@ -42,6 +44,8 @@ export interface PendingMessage {
   runId: string;
   content: string;
   model: string;
+  /** The reasoning level this steer was sent at, when one was chosen. */
+  effort?: string;
   attachments?: AttachmentRef[];
 }
 
@@ -73,6 +77,7 @@ export function parseJobParams(params: string): JobParams {
     messageId: p.messageId as string,
     prompt: p.prompt as string,
     model: p.model as string,
+    ...(typeof p.effort === "string" ? { effort: p.effort } : {}),
   };
 }
 
@@ -1578,6 +1583,7 @@ export class Store {
           typeof d.model === "string"
         ) {
           const msg: PendingMessage = { runId: d.runId, content: d.content, model: d.model };
+          if (typeof d.effort === "string") msg.effort = d.effort;
           if (Array.isArray(d.attachments)) msg.attachments = d.attachments as AttachmentRef[];
           out.push(msg);
         }
