@@ -473,3 +473,43 @@ test("a renderer that errors leaves the failure explained, not swallowed", async
   const r = new FlareSolverrRenderer({ endpoint: "http://box:8191/v1", timeoutMs: 100, fetchImpl });
   await expect(r.render("https://x.test/")).rejects.toThrow(/Challenge not solved/);
 });
+
+test("a rewritten URL is fetched but the page is what gets cited", async () => {
+  // A GitHub repo is READ as a raw README because that is where the text is.
+  // A citation pointing there sends a reader to a plain-text file on a hostname
+  // they have no reason to trust, instead of the repository they were told
+  // about — so the rewrite stays an implementation detail of fetching.
+  let fetched = "";
+  const p = new LocalFetchProvider(
+    opts({
+      archive: false,
+      fetchImpl: async (url: string) => {
+        fetched = url;
+        return new Response("# Bun\n\n" + "A readme with real prose in it. ".repeat(12), {
+          headers: { "content-type": "text/plain" },
+        });
+      },
+    }),
+  );
+  const r = await p.fetch("https://github.com/oven-sh/bun");
+  expect(fetched).toBe("https://raw.githubusercontent.com/oven-sh/bun/HEAD/README.md");
+  expect(r.url).toBe("https://github.com/oven-sh/bun");
+  // Where the bytes came from is kept, for anyone debugging the extraction.
+  expect(r.fetchedUrl).toBe("https://raw.githubusercontent.com/oven-sh/bun/HEAD/README.md");
+});
+
+test("a redirect still moves the citation, because the page really moved", async () => {
+  // The distinction: a rewrite is ours, a redirect is the web's.
+  const p = new LocalFetchProvider(
+    opts({
+      archive: false,
+      fetchImpl: async (url: string) =>
+        url.includes("/old")
+          ? new Response(null, { status: 301, headers: { location: "https://a.test/new" } })
+          : htmlRes("<article><p>" + "Moved and readable. ".repeat(12) + "</p></article>"),
+    }),
+  );
+  const r = await p.fetch("https://a.test/old");
+  expect(r.url).toBe("https://a.test/new");
+  expect(r.fetchedUrl).toBeUndefined();
+});

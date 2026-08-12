@@ -38,8 +38,21 @@ export interface FetchResult {
   via?: FetchVia;
   /** What was in the way, when something was. */
   note?: string;
-  /** The final URL after redirects. */
+  /**
+   * The URL to SHOW a reader — the page this content belongs to.
+   *
+   * Not always the URL we fetched. A GitHub repo is read as a raw README off
+   * raw.githubusercontent.com because that is where the text is, but a citation
+   * pointing there sends the reader to a plain-text file on a hostname they
+   * have no reason to trust, instead of the repository they were told about.
+   * Rewrites are a fetching strategy, not a fact about where a page lives.
+   *
+   * Redirects are different and still followed here: if a link genuinely moved,
+   * where it moved to IS the page.
+   */
   url: string;
+  /** What was actually fetched, when a rewrite made that a different URL. */
+  fetchedUrl?: string;
   title: string;
   /** Extracted/negotiated markdown, or raw text (JSON, plain text, generic XML). */
   content: string;
@@ -699,13 +712,24 @@ export class LocalFetchProvider implements FetchProvider {
    * get past a paywall, and only the first is here.
    */
   async fetch(rawUrl: string): Promise<FetchResult> {
+    // A rewrite is ours, so a citation points at what the user asked for; a
+    // redirect is the web's, so it points where the web went.
+    const rewritten = rewriteForFetch(rawUrl);
+    const display = rewritten === rawUrl ? undefined : rawUrl;
     const direct = await this.direct(rawUrl);
     if (direct.ok) {
-      const out = this.toResult(direct.text, direct.contentType, direct.url, rawUrl, direct.capped);
+      const out = this.toResult(
+        direct.text,
+        direct.contentType,
+        direct.url,
+        rawUrl,
+        direct.capped,
+        display,
+      );
       if (!isThin(out, direct.text, direct.contentType)) return out;
       // Read fine, said nothing: a JS shell, or an article Readability didn't
       // recognize. Try the page's own static twin, then its metadata.
-      const rescued = await this.rescue(direct.text, direct.url, rawUrl);
+      const rescued = await this.rescue(direct.text, direct.url, rawUrl, display);
       if (rescued) return rescued;
     }
     const blocked = direct.ok ? null : direct.blockage;
@@ -823,6 +847,7 @@ export class LocalFetchProvider implements FetchProvider {
     current: string,
     rawUrl: string,
     capped: boolean,
+    display?: string,
   ): FetchResult {
     let title = current;
     let content: string;
@@ -887,18 +912,45 @@ export class LocalFetchProvider implements FetchProvider {
       faviconSvg = known.svg;
       faviconDark = known.dark;
     }
-    return { url: current, title, content, format, truncated, faviconSvg, faviconDark };
+    // `display` is the page a citation should point at; `current` is where the
+    // bytes came from. They differ only when we rewrote the URL ourselves.
+    const shown = display ?? current;
+    return {
+      url: shown,
+      ...(shown === current ? {} : { fetchedUrl: current }),
+      title,
+      content,
+      format,
+      truncated,
+      faviconSvg,
+      faviconDark,
+    };
   }
 
   /** The page's own static twin, then whatever it ships for search engines. */
-  private async rescue(html: string, current: string, rawUrl: string): Promise<FetchResult | null> {
+  private async rescue(
+    html: string,
+    current: string,
+    rawUrl: string,
+    display?: string,
+  ): Promise<FetchResult | null> {
     const amp = ampLink(html, current);
     if (amp) {
       const got = await this.direct(amp).catch(() => null);
       if (got?.ok) {
-        const out = this.toResult(got.text, got.contentType, got.url, rawUrl, got.capped);
+        // An AMP twin is our escalation, not the page's address: cite the
+        // page the reader asked about.
+        const out = this.toResult(
+          got.text,
+          got.contentType,
+          got.url,
+          rawUrl,
+          got.capped,
+          display ?? rawUrl,
+        );
         if (!isThin(out, got.text, got.contentType)) {
           out.via = "amp";
+          out.fetchedUrl = got.url;
           return out;
         }
       }
@@ -906,7 +958,7 @@ export class LocalFetchProvider implements FetchProvider {
     const rescued = structuredRescue(html, current);
     if (!rescued) return null;
     return {
-      url: current,
+      url: display ?? current,
       title: rescued.title,
       // Labelled, because it usually isn't the article: JSON-LD `articleBody`
       // is often a summary, and a description is definitely one.
@@ -928,7 +980,15 @@ export class LocalFetchProvider implements FetchProvider {
       this.opts.lookupImpl ?? ((h: string) => dnsLookup(h, { all: true, verbatim: true }));
     const url = await assertAllowedUrl(rewriteForFetch(rawUrl), this.opts.allowPrivate, lookup);
     const out = await this.opts.renderer.render(url.href);
-    const result = this.toResult(out.html, "text/html", out.url, rawUrl, false);
+    const rewritten = rewriteForFetch(rawUrl);
+    const result = this.toResult(
+      out.html,
+      "text/html",
+      out.url,
+      rawUrl,
+      false,
+      rewritten === rawUrl ? undefined : rawUrl,
+    );
     // A browser that renders the page and still yields nothing has told us the
     // page has nothing, and the ladder should move on rather than return it.
     if (isThin(result, out.html, "text/html")) return null;
