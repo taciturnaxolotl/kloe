@@ -4,6 +4,7 @@ import {
   bindCitations,
   linkCitations,
   normalizeMarkers,
+  recoverRun,
   reportFilename,
   researchBudget,
   runResearch,
@@ -576,4 +577,73 @@ test("a URL containing parentheses survives becoming a markdown link", () => {
   );
   // Nothing after the link leaks into the prose.
   expect(out).not.toContain("Barrett_Dawson)/02");
+});
+
+// ---- resuming after a restart ----------------------------------------------
+// A run is minutes of wall clock and millions of tokens. A server restart used
+// to throw all of it away: the job came back, the model reissued the tool call,
+// and every worker started over on the same pages.
+
+const progressEvent = (phase: string, data: unknown, toolCallId = "call-1") => ({
+  event: "tool-progress",
+  data: { toolCallId, toolName: "deep_research", phase, data },
+});
+
+test("an interrupted run's notes and pages are recovered from the event log", () => {
+  const events = [
+    progressEvent("planning", { question: "what happened" }),
+    progressEvent("read", { url: "https://a.test", title: "A" }),
+    progressEvent("read", { url: "https://b.test", title: "B" }),
+    progressEvent("agent-done", { agent: 0, angle: "the first angle", notes: "what A said" }),
+    // …and then the server died: no `done` phase.
+  ];
+  const out = recoverRun(events, "what happened");
+  expect(out?.notes).toEqual([{ angle: "the first angle", notes: "what A said" }]);
+  expect(out?.ledger).toEqual([
+    { n: 1, url: "https://a.test", title: "A" },
+    { n: 2, url: "https://b.test", title: "B" },
+  ]);
+});
+
+test("a finished run is not resumed — asking again means researching again", () => {
+  const events = [
+    progressEvent("planning", { question: "what happened" }),
+    progressEvent("agent-done", { agent: 0, angle: "a", notes: "n" }),
+    progressEvent("done", { stats: {} }),
+  ];
+  expect(recoverRun(events, "what happened")).toBeNull();
+  // Nor is a different question's work borrowed.
+  expect(recoverRun(events.slice(0, 2), "a different question")).toBeNull();
+});
+
+test("a resumed run skips finished angles and keeps their pages", async () => {
+  const seen: Array<{ phase: string; data?: unknown }> = [];
+  const out = await runResearch({
+    question: "what",
+    model: roleModel({
+      plan: [PLAN("angle a", "angle b")],
+      worker: [NOTES("fresh notes")],
+      followup: [DIRECT([], "done")],
+      synth: [FILE("Report body [1].")],
+    }),
+    search: stubSearch([]),
+    fetcher: stubFetch({}),
+    resume: {
+      notes: [{ angle: "angle a", notes: "notes from before the restart" }],
+      ledger: [{ n: 1, url: "https://a.test", title: "A" }],
+    },
+    onProgress: (phase, data) => seen.push({ phase, data }),
+  });
+
+  // Only the unfinished angle went back out.
+  const angles = seen
+    .filter((p) => p.phase === "agent")
+    .map((p) => (p.data as { angle: string }).angle);
+  expect(angles).toEqual(["angle b"]);
+
+  // The recovered notes reach the synthesizer, and the recovered page keeps its
+  // place in the bibliography — a citation must still resolve after a restart.
+  expect(out.report).toContain("[1](https://a.test)");
+  expect(out.sources).toEqual([{ n: 1, url: "https://a.test", title: "A" }]);
+  expect(seen.some((p) => p.phase === "resumed")).toBe(true);
 });

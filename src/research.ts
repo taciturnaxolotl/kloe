@@ -95,7 +95,10 @@ export interface ResearchResult {
  *   agent       — { agent, angle, round } one worker started
  *   search      — { agent, query }
  *   read        — { agent, url, title, n } one page landed in the shared ledger
- *   agent-done  — { agent } that worker filed its notes
+ *   agent-done  — { agent, angle, notes } that worker filed its notes. The
+ *                 notes ride along because this log is what a restarted server
+ *                 resumes from (see `recoverRun`).
+ *   resumed     — { notes, read } an interrupted attempt was inherited
  *   synthesis   — every worker is in; one model is writing the report
  *   report      — { title, filename } the report was filed
  *   done        — { stats }
@@ -258,6 +261,7 @@ function workerTools(
   filed: { notes?: string },
   agent: number,
   progress?: ProgressFn,
+  angle = "",
 ): ToolSet {
   return {
     submit_findings: tool({
@@ -279,7 +283,11 @@ function workerTools(
       }),
       execute: async ({ notes }) => {
         filed.notes = notes;
-        progress?.("agent-done", { agent });
+        // The notes ride on the progress event, which the actor persists. That
+        // is what makes a run resumable: a worker's notes are the distilled
+        // product of every search and page it read, and a restart that loses
+        // them pays for all of that again.
+        progress?.("agent-done", { agent, angle, notes });
         return "Notes filed. Your part is complete — stop here.";
       },
     }),
@@ -559,6 +567,66 @@ export async function followUpAngles(
   };
 }
 
+/**
+ * Rebuild what an interrupted run of this question already established.
+ *
+ * The event log is the durable store, and a research run already writes its
+ * progress into it — the pages it read, and (now) the notes each worker filed.
+ * So resumption needs no second store and no bookkeeping the run has to
+ * remember to do: it reads back the same events the UI renders.
+ *
+ * Scoped to the LAST attempt at this exact question, and only when that attempt
+ * never reported `done`. A finished run is already in the transcript as a tool
+ * result, so re-running it means the model asked again, and asking again should
+ * research again.
+ */
+export function recoverRun(
+  events: Array<{ event: string; data: unknown }>,
+  question: string,
+): { notes: Array<{ angle: string; notes: string }>; ledger: Source[] } | null {
+  const attempts = new Map<
+    string,
+    {
+      question?: string;
+      done: boolean;
+      notes: Array<{ angle: string; notes: string }>;
+      ledger: Source[];
+    }
+  >();
+  for (const e of events) {
+    if (e.event !== "tool-progress") continue;
+    const p = e.data as { toolCallId?: string; toolName?: string; phase?: string; data?: unknown };
+    if (p.toolName !== "deep_research" || !p.toolCallId) continue;
+    let at = attempts.get(p.toolCallId);
+    if (!at) {
+      at = { done: false, notes: [], ledger: [] };
+      attempts.set(p.toolCallId, at);
+    }
+    const d = (p.data ?? {}) as Record<string, unknown>;
+    if (p.phase === "planning")
+      at.question = typeof d.question === "string" ? d.question : undefined;
+    else if (p.phase === "done") at.done = true;
+    else if (p.phase === "read" && typeof d.url === "string") {
+      at.ledger.push({
+        n: at.ledger.length + 1, // renumbered on the way in: gaps would break citations
+        url: d.url,
+        title: typeof d.title === "string" ? d.title : d.url,
+      });
+    } else if (p.phase === "agent-done" && typeof d.notes === "string" && d.notes.trim()) {
+      at.notes.push({
+        angle: typeof d.angle === "string" ? d.angle : "an earlier angle",
+        notes: d.notes,
+      });
+    }
+  }
+  // The most recent unfinished attempt at this question, if there is one.
+  const candidates = [...attempts.values()].filter(
+    (a) => !a.done && a.question === question && (a.notes.length > 0 || a.ledger.length > 0),
+  );
+  const last = candidates[candidates.length - 1];
+  return last ? { notes: last.notes, ledger: last.ledger } : null;
+}
+
 /** Sources rendered for the citation pass: enough to judge support, no more. */
 function sourceList(ledger: Source[]): string {
   return ledger.map((s) => `[${s.n}] ${s.title} — ${s.url}`).join("\n");
@@ -773,6 +841,17 @@ export async function runResearch(opts: {
   leadModel?: LanguageModel;
   /** Searching and reading — far more tokens, on a much narrower job. */
   workerModel?: LanguageModel;
+  /**
+   * What a previous, interrupted attempt at this question already established.
+   *
+   * A research run is minutes of wall clock and millions of tokens, and a
+   * server restart in the middle of one used to throw all of it away: the job
+   * came back, the model reissued the tool call, and every worker started over
+   * on the same pages. Filed notes and the pages behind them are the durable
+   * part, so a resumed run inherits them and spends its budget on the angles
+   * nobody finished.
+   */
+  resume?: { notes: Array<{ angle: string; notes: string }>; ledger: Source[] };
   search: SearchProvider;
   fetcher: FetchProvider;
   budget?: Partial<ResearchBudget>;
@@ -784,7 +863,14 @@ export async function runResearch(opts: {
   const worker = opts.workerModel ?? opts.model;
   const progress = opts.onProgress;
   const started = Date.now();
-  const st: RunState = { ledger: [], searches: 0, reserved: 0 };
+  const recovered = opts.resume?.notes ?? [];
+  const st: RunState = {
+    ledger: [...(opts.resume?.ledger ?? [])],
+    searches: 0,
+    // Pages already read are already spent: a resumed run must not get a fresh
+    // allowance and re-read the web.
+    reserved: opts.resume?.ledger?.length ?? 0,
+  };
 
   // One clock for the whole thing. The caller's signal (a cancelled run) and our
   // own ceiling both abort the same way; whichever fires first wins.
@@ -825,7 +911,7 @@ export async function runResearch(opts: {
   // front cannot spend it on what it learns.
   let steps = 0;
   let agentNo = 0;
-  const notes: Array<{ angle: string; notes: string }> = [];
+  const notes: Array<{ angle: string; notes: string }> = [...recovered];
   // Angles already sent out. The director is told not to repeat itself, and
   // this is what makes that true: across rounds it sees its own earlier
   // reasoning and reaches the same conclusion about what is worth pulling, so
@@ -850,7 +936,7 @@ export async function runResearch(opts: {
           model: worker,
           system: WORKER_SYSTEM,
           prompt: `Overall question: ${opts.question}\n\nYour angle: ${angle}`,
-          tools: workerTools(opts.search, opts.fetcher, budget, st, filed, agent, progress),
+          tools: workerTools(opts.search, opts.fetcher, budget, st, filed, agent, progress, angle),
           // Two ways to stop: the notes are in, or the step budget is gone.
           stopWhen: [stepCountIs(budget.maxSteps), () => filed.notes !== undefined],
           abortSignal: signal,
@@ -885,6 +971,12 @@ export async function runResearch(opts: {
   // The opening wave is deliberately small — see `firstWave`. A planner that
   // proposed more angles than that keeps them: they are the queue the director
   // draws from before inventing new ones.
+  // Angles a previous attempt already filed are done, and must not be asked
+  // again — that is the whole saving.
+  for (const done of recovered) isNew(done.angle);
+  if (recovered.length) {
+    progress?.("resumed", { notes: recovered.length, read: st.ledger.length });
+  }
   const planned = plan.angles.filter(isNew);
   await runWave(planned.slice(0, budget.firstWave), 1);
   let queued = planned.slice(budget.firstWave);

@@ -20,7 +20,7 @@ import {
   memoryRead,
   memoryWrite,
 } from "./lard";
-import { runResearch } from "./research";
+import { recoverRun, runResearch } from "./research";
 import { createSearchProvider, type SearchProvider } from "./search";
 import { getConfig } from "./settings";
 import type { Store } from "./store";
@@ -137,9 +137,17 @@ function deepResearch(
       additionalProperties: false,
     }),
     execute: async ({ question }, { toolCallId, abortSignal }) => {
+      // A server restart re-claims the job and the model reissues this call.
+      // Anything the interrupted attempt filed is in the event log; inheriting
+      // it is the difference between resuming and starting over.
+      const prior =
+        ctx.store && ctx.conversationId
+          ? recoverRun(ctx.store.replay(ctx.conversationId, 0), question)
+          : null;
       const out = await runResearch({
         question,
         model,
+        resume: prior ?? undefined,
         leadModel: ctx.researchLead,
         workerModel: ctx.researchWorker,
         search,
