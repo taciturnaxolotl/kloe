@@ -233,7 +233,15 @@ function readArtifact(store: Store, blobs: BlobStore, conversationId: string) {
       }
       const blob = await blobs.get(doc.sha256);
       if (!blob) return `The bytes for "${name}" are missing from the blob store.`;
-      return await blob.text();
+      // Shaped rather than a bare string: the model reads `content`, and the UI
+      // gets enough to render the step as "the document you can see", with its
+      // name and revision, instead of an anonymous wall of text.
+      return {
+        name: doc.name,
+        title: doc.title ?? doc.name,
+        version: doc.version,
+        content: await blob.text(),
+      };
     },
   });
 }

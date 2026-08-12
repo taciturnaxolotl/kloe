@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { LanguageModel, ToolSet } from "ai";
-import type { BlobStore } from "../src/blobs";
+import { type BlobStore, FsBlobStore } from "../src/blobs";
 import { Store } from "../src/store";
 import { harden, sandboxDescription, toolSet } from "../src/tools";
 
@@ -159,4 +162,42 @@ test("read_image is withheld when it would add nothing", () => {
       }),
     ),
   ).not.toContain("read_image");
+});
+
+test("read_artifact returns a shaped result, so a step can name what it read", async () => {
+  // It used to return the bare document text, and the client's step renderer
+  // read an `input.filename` the tool has never sent — so every one of these
+  // rendered as the literal string "read_artifact" over an anonymous wall of
+  // text. The name and revision are part of the result now.
+  const dir = mkdtempSync(join(tmpdir(), "kloe-art-"));
+  try {
+    const store = new Store(":memory:");
+    const blobs = new FsBlobStore(join(dir, "blobs"));
+    const bytes = new TextEncoder().encode("# Funding\n\nThe report body.");
+    const ref = await blobs.put(bytes);
+    store.recordBlob(ref.sha256, "text/markdown", ref.size);
+    store.recordArtifact({
+      conversationId: "c1",
+      name: "funding.md",
+      sha256: ref.sha256,
+      title: "How it's funded",
+      mime: "text/markdown",
+      size: ref.size,
+    });
+
+    const tools = toolSet({ store, blobs, conversationId: "c1" });
+    const read = tools.read_artifact as { execute: (i: unknown, o: unknown) => Promise<unknown> };
+    const out = (await read.execute({ name: "funding.md" }, { toolCallId: "c", messages: [] })) as {
+      name: string;
+      title: string;
+      version: number;
+      content: string;
+    };
+    expect(out.name).toBe("funding.md");
+    expect(out.title).toBe("How it's funded");
+    expect(out.version).toBe(1);
+    expect(out.content).toContain("The report body.");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

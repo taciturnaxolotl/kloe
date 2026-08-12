@@ -2371,6 +2371,15 @@ body.resizing {
   }
 }
 
+/* The header on a document read back into the conversation: what it was and
+   how much of it, above the document itself. */
+.docread {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  margin-bottom: 10px;
+}
+
 /* ---- composer dock ----------------------------------------------------- */
 .dock {
   border-top: 0;

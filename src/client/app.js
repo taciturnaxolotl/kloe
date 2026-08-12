@@ -2437,14 +2437,38 @@ import { mountSidebar } from "./sidebar.js";
         return (active ? "Loading " : "Loaded ") + (n || "a file") + " into the sandbox";
       },
     },
+    // Reading back a document this conversation produced. The input is
+    // `{ name, version }` — it named a `filename` that the tool has never sent,
+    // so every step of this rendered as the literal string "read_artifact".
     read_artifact: {
-      icon: ICON_RESEARCH,
+      icon: ICON_PAGE,
       row: function (input) {
-        return (input && input.filename) || "read_artifact";
+        if (!input || !input.name) return "read_artifact";
+        return input.version ? input.name + " · v" + input.version : input.name;
       },
       summary: function (steps, active) {
-        var f = lastInput(steps).filename;
-        return (active ? "Reading " : "Read ") + (f || "a document");
+        var verb = active ? "Reading" : "Read";
+        if (steps.length > 1) return verb + " " + steps.length + " documents";
+        var last = lastInput(steps);
+        return verb + " " + (last.name || "a document");
+      },
+      // The document itself, rendered as a document — the same markdown path
+      // the pane uses, so a report read back mid-turn looks like the report and
+      // not like a tool dump.
+      result: function (t, output) {
+        if (!output || typeof output !== "object" || typeof output.content !== "string") {
+          defaultResult(t, output);
+          return;
+        }
+        var head = document.createElement("div");
+        head.className = "docread";
+        head.textContent =
+          (output.title || output.name) +
+          (output.version > 1 ? " · v" + output.version : "") +
+          " · " +
+          fmtBytes(output.content.length);
+        t.body.appendChild(head);
+        renderStaticMd(t.body, output.content);
       },
     },
     run_shell: {
