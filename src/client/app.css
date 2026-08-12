@@ -2825,16 +2825,22 @@ body.resizing {
      pointer, and a hard cut on the way out makes it feel twitchy. */
   transition: background 0.16s ease;
 }
+/* An INK tint, not `--bg-sunk`. Sunk is #f6f6f7 against a white panel — a 3%
+   difference that reads as nothing, which is why this menu felt dead while
+   every other one felt right. The context menus have always mixed ink into
+   transparent; this is that, harder, because a picker row is a bigger target
+   and the feedback should be unmistakable. It also flips correctly in dark
+   mode, where a fixed grey would go the wrong way. */
 .picker .opt:hover,
 .picker .opt:focus-visible {
-  background: var(--bg-sunk);
+  background: color-mix(in srgb, var(--ink) 11%, transparent);
   transition-duration: 0s;
   outline: none;
 }
-/* The row whose flyout is open stays lit, so the panel beside it has a visible
-   parent rather than floating next to nothing. */
+/* The row whose flyout is open stays lit — a shade past hover, so it still
+   reads as "open" while the pointer is off in the panel beside it. */
 .picker .opt[aria-expanded="true"] {
-  background: var(--bg-sunk);
+  background: color-mix(in srgb, var(--ink) 14%, transparent);
 }
 .picker .optbody {
   flex: 1;
