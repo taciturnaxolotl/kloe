@@ -1042,25 +1042,23 @@ body.selecting #selectBtn {
 .turn.generating .meta {
   opacity: 1;
 }
-/* The message's own footer: quiet until you go looking for it, the same way the
-   token meta is. A control that is always at full contrast competes with the
+/* Copy, in the label row beside the sender. Quiet until you go looking for it,
+   the same way the token meta is: a control at full contrast competes with the
    text it belongs to, and this one is wanted perhaps once a session. */
-.turnfoot {
-  display: flex;
-  gap: 4px;
-  margin-top: 10px;
-}
 .copymsg {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 20px;
+  height: 20px;
   padding: 0;
+  /* The label row is baseline-aligned for text; an icon button needs nudging
+     off that baseline to sit level with the name. */
+  align-self: center;
   color: var(--ink-faint);
   background: none;
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xs);
   cursor: pointer;
   opacity: 0;
   transition:
@@ -1069,8 +1067,8 @@ body.selecting #selectBtn {
     background 0.12s ease;
 }
 .copymsg svg {
-  width: 15px;
-  height: 15px;
+  width: 13px;
+  height: 13px;
 }
 /* Revealed by hovering the message, by keyboard focus, and permanently once it
    has just been pressed — a tick that faded out with the pointer would leave

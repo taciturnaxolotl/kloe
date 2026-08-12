@@ -726,9 +726,8 @@ import { mountSidebar } from "./sidebar.js";
   function markCopyable(turn, md) {
     if (!turn || !md || !md.trim()) return;
     turnMd.set(turn, md);
-    if (turn.querySelector(".turnfoot")) return;
-    var foot = document.createElement("div");
-    foot.className = "turnfoot";
+    var label = turn.querySelector(".label");
+    if (!label || label.querySelector(".copymsg")) return;
     var btn = document.createElement("button");
     btn.type = "button";
     btn.className = "copymsg";
@@ -749,8 +748,11 @@ import { mountSidebar } from "./sidebar.js";
         }, 1400);
       });
     });
-    foot.appendChild(btn);
-    turn.appendChild(foot); // after the body and any documents: the end of the message
+    // In the label row, right after the sender: the message's own header is
+    // where you look to find out what a message is, so it is also where you
+    // reach for something to do with it. The old footer sat below any documents
+    // the turn produced, which put it a long scroll from the text it copies.
+    label.insertBefore(btn, label.querySelector(".meta"));
   }
   /** An assistant turn's answer: its prose segments, minus the tool traces. */
   function answerMarkdown(rec) {
