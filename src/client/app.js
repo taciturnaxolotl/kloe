@@ -3618,6 +3618,50 @@ import { mountSidebar } from "./sidebar.js";
     };
     return b;
   }
+  /**
+   * The level list for the selected model, in a submenu.
+   *
+   * A submenu rather than a row per level: the levels belong to one model, and
+   * inlining four of them would push everything else down for a choice most
+   * turns never make.
+   */
+  function effortRow(m) {
+    var row = document.createElement("button");
+    row.className = "opt siderow effortrow";
+    row.type = "button";
+    var level = currentEffort();
+    var value = document.createElement("span");
+    value.className = "effortvalue";
+    value.textContent = level ? effortLabel(level) : "Default";
+    row.innerHTML = '<span class="optbody"><span class="name">Effort</span></span>';
+    row.appendChild(value);
+    row.insertAdjacentHTML("beforeend", CHEV);
+    row.onclick = function (e) {
+      e.stopPropagation();
+      var r = row.getBoundingClientRect();
+      var items = [
+        {
+          label: "Default",
+          icon: level ? ICON_BLANK : CHECK,
+          onClick: function () {
+            setEffort(null);
+          },
+        },
+      ].concat(
+        levelsOf(m).map(function (l) {
+          return {
+            label: effortLabel(l),
+            icon: level === l ? CHECK : ICON_BLANK,
+            onClick: function () {
+              setEffort(l);
+            },
+          };
+        }),
+      );
+      showContextMenu(r.right, r.top, items, { align: "left", trigger: row });
+    };
+    return row;
+  }
   /** "More models ›" — everything that isn't selected, in a panel to the side. */
   function moreRow() {
     var row = document.createElement("button");

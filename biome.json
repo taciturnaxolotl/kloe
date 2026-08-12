@@ -1,8 +1,18 @@
 {
-  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!data", "!vendor", "!**/*.min.js", "!kloe.schema.json"]
+    "includes": [
+      "**",
+      "!data",
+      "!vendor",
+      "!**/*.min.js",
+      "!kloe.schema.json"
+    ]
   },
   "formatter": {
     "enabled": true,
@@ -15,7 +25,10 @@
       "quoteStyle": "double",
       "semicolons": "always",
       "trailingCommas": "all"
-    }
+    },
+    "globals": [
+      "Bun"
+    ]
   },
   "linter": {
     "enabled": true,
@@ -37,7 +50,8 @@
         "noDescendingSpecificity": "off"
       },
       "correctness": {
-        "noInnerDeclarations": "off"
+        "noInnerDeclarations": "off",
+        "noUndeclaredVariables": "error"
       },
       "suspicious": {
         "noExplicitAny": "off",
@@ -49,6 +63,10 @@
   },
   "assist": {
     "enabled": true,
-    "actions": { "source": { "organizeImports": "on" } }
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
   }
 }
