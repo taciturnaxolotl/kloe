@@ -310,6 +310,21 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status);
 
+-- A deletion is a durable tombstone, not merely the absence of a row. An
+-- in-flight worker may still hold an actor after DELETE; the tombstone prevents
+-- that actor from recreating the conversation while it unwinds.
+CREATE TABLE IF NOT EXISTS deleted_conversations (
+  id TEXT PRIMARY KEY,
+  deleted_at INTEGER NOT NULL
+);
+
+-- Cancellation must cross the server/worker process boundary. One pending row
+-- cancels the current run, or the next one when it has not yet been claimed.
+CREATE TABLE IF NOT EXISTS cancel_requests (
+  conversation_id TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS model_settings (
   model_ref TEXT PRIMARY KEY,
   visible INTEGER NOT NULL DEFAULT 0,
@@ -509,6 +524,10 @@ export class Store {
   private findOrphanBlobsStmt: ReturnType<Database["prepare"]>;
   private deleteBlobStmt: ReturnType<Database["prepare"]>;
   private addBlobRefStmt: ReturnType<Database["prepare"]>;
+  private claimConversationOwnerStmt: ReturnType<Database["prepare"]>;
+  private isDeletedConversationStmt: ReturnType<Database["prepare"]>;
+  private requestCancelStmt: ReturnType<Database["prepare"]>;
+  private takeCancelStmt: ReturnType<Database["prepare"]>;
 
   constructor(databasePath: string = getConfig().server.dbPath) {
     // Ensure the parent directory exists so a fresh checkout (where `data/` is
@@ -582,7 +601,8 @@ export class Store {
     );
     this.upsertConversationStmt = this.db.prepare(
       `INSERT INTO conversations (id, created_at, last_seq) VALUES (?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET last_seq = excluded.last_seq`,
+       ON CONFLICT(id) DO UPDATE SET last_seq = conversations.last_seq + 1
+       RETURNING last_seq`,
     );
 
     this.enqueueStmt = this.db.prepare(
@@ -718,6 +738,21 @@ export class Store {
     this.addBlobRefStmt = this.db.prepare(
       `INSERT INTO blob_refs (sha256, conversation_id) VALUES (?, ?)
        ON CONFLICT(sha256, conversation_id) DO NOTHING`,
+    );
+    this.claimConversationOwnerStmt = this.db.prepare(
+      `INSERT INTO conversations (id, created_at, last_seq, owner_sub) VALUES (?, ?, 0, ?)
+       ON CONFLICT(id) DO UPDATE SET owner_sub = COALESCE(conversations.owner_sub, excluded.owner_sub)
+       RETURNING owner_sub`,
+    );
+    this.isDeletedConversationStmt = this.db.prepare(
+      "SELECT 1 FROM deleted_conversations WHERE id = ?",
+    );
+    this.requestCancelStmt = this.db.prepare(
+      `INSERT INTO cancel_requests (conversation_id, created_at) VALUES (?, ?)
+       ON CONFLICT(conversation_id) DO UPDATE SET created_at = excluded.created_at`,
+    );
+    this.takeCancelStmt = this.db.prepare(
+      "DELETE FROM cancel_requests WHERE conversation_id = ? RETURNING conversation_id",
     );
   }
 
@@ -1130,6 +1165,9 @@ export class Store {
       this.db.prepare("DELETE FROM events WHERE conversation_id = ?").run(id);
       this.db.prepare("DELETE FROM jobs WHERE conversation_id = ?").run(id);
       this.db.prepare("DELETE FROM conversations WHERE id = ?").run(id);
+      this.db
+        .prepare("INSERT OR IGNORE INTO deleted_conversations (id, deleted_at) VALUES (?, ?)")
+        .run(id, Date.now());
       // Of those candidates, the ones no conversation references anymore.
       const stillRef = this.db.prepare("SELECT 1 FROM blob_refs WHERE sha256 = ? LIMIT 1");
       return candidates.filter((sha) => stillRef.get(sha) == null);
@@ -1290,6 +1328,29 @@ export class Store {
     this.db
       .query("UPDATE conversations SET owner_sub = ? WHERE id = ? AND owner_sub IS NULL")
       .run(sub, id);
+  }
+
+  /** Atomically create or claim an unowned conversation for an authenticated user. */
+  claimConversationOwner(id: string, sub: string): boolean {
+    const row = this.claimConversationOwnerStmt.get(id, Date.now(), sub) as
+      | { owner_sub: string }
+      | null;
+    return row?.owner_sub === sub;
+  }
+
+  /** Whether this id was deleted and must never be revived by a stale actor. */
+  isConversationDeleted(id: string): boolean {
+    return this.isDeletedConversationStmt.get(id) != null;
+  }
+
+  /** Request cancellation durably so the process running the job can observe it. */
+  requestCancel(conversationId: string): void {
+    this.requestCancelStmt.run(conversationId, Date.now());
+  }
+
+  /** Consume one cancellation request. A pre-claim cancel therefore reaches the next run. */
+  takeCancelRequest(conversationId: string): boolean {
+    return this.takeCancelStmt.get(conversationId) != null;
   }
 
   /** The kloe user `sub` that owns a conversation, or undefined (auth-off / legacy). */
@@ -1473,9 +1534,20 @@ export class Store {
     this.addBlobRefStmt.run(sha256, conversationId);
   }
 
-  /** Atomic append + seq advance in one transaction. */
-  appendAndBump(conversationId: string, seq: number, eventName: string, data: unknown): void {
-    this.db.transaction(() => {
+  /**
+   * Atomic append + sequence allocation. The sequence is allocated in SQLite,
+   * not an actor-local counter, because the HTTP process may append a steer
+   * while a standalone worker is writing the assistant stream.
+   */
+  appendAndBump(conversationId: string, eventName: string, data: unknown): number {
+    return this.db.transaction(() => {
+      if (this.isConversationDeleted(conversationId)) {
+        throw new Error(`conversation "${conversationId}" was deleted`);
+      }
+      const row = this.upsertConversationStmt.get(conversationId, Date.now(), 1) as {
+        last_seq: number;
+      };
+      const seq = row.last_seq;
       const id = `${conversationId}:${seq}`;
       this.insertEventStmt.run(
         id,
@@ -1485,7 +1557,7 @@ export class Store {
         JSON.stringify(data),
         Date.now(),
       );
-      this.upsertConversationStmt.run(conversationId, Date.now(), seq);
+      return seq;
     })();
   }
 

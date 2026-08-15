@@ -13,6 +13,7 @@ import {
   Event,
   type EventData,
   type EventName,
+  type MessageEndData,
   makeId,
   type ReasoningDeltaData,
   type ReasoningSignatureData,
@@ -171,7 +172,7 @@ export type RunStep =
  * One single-writer conversation. Owns the durable event log (via Store), the
  * set of live SSE subscribers, the cancel flag, and the in-flight run.
  *
- * Every `persist*` helper assigns the next monotonic seq, writes the event
+ * Every `persist*` helper allocates a monotonic seq in SQLite, writes the event
  * durably (synchronous, before fan-out), then emits it to all subscribers.
  * Deltas are batched (BATCH_MAX_DELTAS per persist) with an in-memory tail;
  * the tail is flushed to durable storage on a full batch, keeping resume
@@ -186,23 +187,16 @@ export class ConversationActor {
   /** Aborts the in-flight provider stream; set only while a run is streaming. */
   private currentAbort: (() => void) | null = null;
   private currentRunId: string | null = null;
-  private seq = 0;
   lastActivity = Date.now();
 
   constructor(conversationId: string, store: Store) {
     this.conversationId = conversationId;
     this.store = store;
-    this.seq = this.store.lastSeq(conversationId);
-  }
-
-  private nextSeq(): number {
-    return ++this.seq;
   }
 
   private persist(eventName: EventName, data: EventData): WireEvent {
-    const seq = this.nextSeq();
+    const seq = this.store.appendAndBump(this.conversationId, eventName, data);
     const id = makeId(this.conversationId, seq);
-    this.store.appendAndBump(this.conversationId, seq, eventName, data);
     const e: WireEvent = { id, event: eventName, data };
     this.emit(e);
     this.lastActivity = Date.now();
@@ -288,6 +282,9 @@ export class ConversationActor {
    * leak into a later run.
    */
   requestCancel(runId?: string): void {
+    // This is deliberately durable as well as in-memory: the HTTP process may
+    // not be the process that owns the provider stream.
+    this.store.requestCancel(this.conversationId);
     if (runId !== undefined) {
       this.cancelRunId = runId;
     } else if (this.currentRunId !== null) {
@@ -300,6 +297,9 @@ export class ConversationActor {
     // model can sit mid-token for seconds). The loop's own isCancelled check
     // still covers the between-steps case.
     if (this.currentAbort && this.isCancelled()) this.currentAbort();
+    // A local in-flight run has already observed this request synchronously.
+    // Consume the durable copy so it cannot poison the following queued run.
+    if (this.currentRunId !== null) this.store.takeCancelRequest(this.conversationId);
   }
 
   isCancelled(): boolean {
@@ -340,11 +340,13 @@ export class ConversationActor {
     const callIds = new Set<string>();
     const resultIds = new Set<string>();
     const signedMsgs = new Set<string>();
+    const completedMsgs = new Set<string>();
     for (const e of this.store.replay(this.conversationId, 0)) {
       if (e.event === Event.ToolCall) callIds.add((e.data as ToolCallData).toolCallId);
       else if (e.event === Event.ToolResult) resultIds.add((e.data as ToolResultData).toolCallId);
       else if (e.event === Event.ReasoningSig)
         signedMsgs.add((e.data as ReasoningSignatureData).messageId);
+      else if (e.event === Event.MsgEnd) completedMsgs.add((e.data as MessageEndData).messageId);
     }
     const paired = new Set([...callIds].filter((id) => resultIds.has(id)));
 
@@ -424,13 +426,19 @@ export class ConversationActor {
         if (d.content.length > 0) userParts.push({ type: "text", text: d.content });
         for (const a of d.attachments ?? []) userParts.push(await this.renderAttachment(a, opts));
       } else if (e.event === Event.TextDelta) {
+        const d = e.data as TextDeltaData;
+        // A lease reclaim starts a fresh provider request. Deltas from an actor
+        // that died before message-end are therefore only a partial attempt,
+        // not prior assistant context to prepend to that retry.
+        if (!completedMsgs.has(d.messageId)) continue;
         flushUser();
         if (toolResults.length > 0) flushTools(); // text after a result: new step
-        asstText += (e.data as TextDeltaData).delta;
+        asstText += d.delta;
       } else if (e.event === Event.ReasoningDelta) {
+        const d = e.data as ReasoningDeltaData;
+        if (!completedMsgs.has(d.messageId)) continue;
         flushUser();
         if (toolResults.length > 0) flushTools(); // reasoning after a result: new step
-        const d = e.data as ReasoningDeltaData;
         // Accumulate only for turns that carry a signature — everything else is
         // dropped from history, so there's no need to build the string.
         if (signedMsgs.has(d.messageId)) asstReasoning += d.delta;
@@ -509,7 +517,6 @@ export class ConversationActor {
 
   /** Replay the durable log strictly after `afterSeq`, oldest first. */
   replay(afterSeq: number): WireEvent[] {
-    if (afterSeq >= this.seq) return [];
     return this.store.replay(this.conversationId, Math.max(0, afterSeq)).map((r) => ({
       id: makeId(this.conversationId, r.seq),
       event: r.event as EventName,
@@ -568,7 +575,8 @@ export class ConversationActor {
   ): Promise<void> {
     this.currentRunId = runId;
     // Honor a cancel that arrived before this run was claimed.
-    if (this.cancelNext) {
+    const durableCancel = this.store.takeCancelRequest(this.conversationId);
+    if (this.cancelNext || durableCancel) {
       this.cancelRunId = runId;
       this.cancelNext = false;
     }
@@ -590,11 +598,10 @@ export class ConversationActor {
     // long thinking stretch before the first answer token can't be reaped.
     const flush = (eventName: EventName, text: string): void => {
       if (text.length === 0) return;
-      const seq = this.nextSeq();
-      const id = makeId(this.conversationId, seq);
       const truncated = truncateUtf8(text);
       const data = { runId, threadId: this.conversationId, messageId, delta: truncated };
-      this.store.appendAndBump(this.conversationId, seq, eventName, data);
+      const seq = this.store.appendAndBump(this.conversationId, eventName, data);
+      const id = makeId(this.conversationId, seq);
       this.emit({ id, event: eventName, data });
       this.lastActivity = Date.now();
       onProgress?.(seq);
@@ -611,9 +618,23 @@ export class ConversationActor {
     };
 
     const tick = setInterval(() => {
+      if (this.store.isConversationDeleted(this.conversationId)) {
+        this.cancelRunId = runId;
+        abortController.abort();
+        return;
+      }
       flushReasoning();
       flushDelta();
     }, BATCH_FLUSH_MS);
+    // The HTTP server and the worker can be separate processes. Poll the
+    // durable request while a provider is quiet so a cancel reaches whichever
+    // process owns this run, not only the actor that received the HTTP call.
+    const cancelTick = setInterval(() => {
+      if (this.store.takeCancelRequest(this.conversationId)) {
+        this.cancelRunId = runId;
+        abortController.abort();
+      }
+    }, 250);
 
     let usage: TokenUsage | undefined;
     // Reasoning duration: wall-clock from the start of generation to the first
@@ -625,6 +646,11 @@ export class ConversationActor {
     let firstTextAt = 0;
     try {
       for await (const step of steps(abortController.signal)) {
+        if (this.store.isConversationDeleted(this.conversationId)) {
+          this.cancelRunId = runId;
+          abortController.abort();
+          break;
+        }
         if (this.isCancelled()) {
           abortController.abort();
           break;
@@ -698,7 +724,7 @@ export class ConversationActor {
     } catch (err) {
       // Aborting mid-token (via requestCancel) surfaces here as a rejection —
       // that's a clean stop, not an error. Anything else is a real failure.
-      if (!this.isCancelled()) {
+      if (!this.isCancelled() && !this.store.isConversationDeleted(this.conversationId)) {
         errored = true;
         // Also log server-side: the RunErr event reaches the client, but the
         // terminal is where you're watching, and a stack is more diagnostic.
@@ -711,9 +737,14 @@ export class ConversationActor {
       }
     } finally {
       clearInterval(tick);
+      clearInterval(cancelTick);
       this.currentAbort = null;
     }
 
+    if (this.store.isConversationDeleted(this.conversationId)) {
+      this.currentRunId = null;
+      return;
+    }
     flushReasoning();
     flushDelta();
     const finish = errored ? "error" : this.isCancelled() ? "aborted" : "stop";
@@ -786,6 +817,7 @@ export class ConversationActor {
     phase: string;
     data?: unknown;
   }): void {
+    if (this.store.isConversationDeleted(this.conversationId)) return;
     this.persist(Event.ToolProgress, { threadId: this.conversationId, ...p });
   }
 }

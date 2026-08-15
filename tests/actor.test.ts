@@ -38,6 +38,15 @@ test("event ids are monotonic across a conversation", async () => {
   }
 });
 
+test("separate actors allocate one shared sequence without collisions", () => {
+  const first = new ConversationActor("t-shared-seq", store);
+  const second = new ConversationActor("t-shared-seq", store);
+  first.appendUser("from server", "r1");
+  second.appendUser("from worker", "r2");
+
+  expect(store.replay("t-shared-seq", 0).map((e) => e.seq)).toEqual([1, 2]);
+});
+
 test("a usage step is stamped onto the message-end event", async () => {
   const a = new ConversationActor("t-usage", store);
   const events: WireEvent[] = [];
@@ -197,6 +206,78 @@ test("history drops an assistant turn that produced no text (stopped before firs
   });
   // Only the user turn survives — no empty assistant message.
   expect(await a.history()).toEqual([{ role: "user", content: "hi" }]);
+});
+
+test("history drops durable deltas from a run that crashed before message-end", async () => {
+  const conv = "t-history-crash";
+  const a = new ConversationActor(conv, store);
+  a.appendUser("retry this", "r1");
+  store.appendAndBump(conv, Event.RunStart, { threadId: conv, runId: "r1", messageId: "m1" });
+  store.appendAndBump(conv, Event.MsgStart, {
+    threadId: conv,
+    runId: "r1",
+    messageId: "m1",
+    type: "text",
+  });
+  store.appendAndBump(conv, Event.TextDelta, {
+    threadId: conv,
+    runId: "r1",
+    messageId: "m1",
+    delta: "partial answer",
+  });
+
+  expect(await a.history()).toEqual([{ role: "user", content: "retry this" }]);
+});
+
+test("a durable cancel reaches the process that claims the next run", async () => {
+  const conv = "t-durable-cancel";
+  const a = new ConversationActor(conv, store);
+  store.requestCancel(conv);
+  const events: WireEvent[] = [];
+  a.follow({ push: (e) => events.push(e), closed: false });
+
+  await a.runText("r1", "m1", async function* (_signal) {
+    yield { kind: "text", chunk: "never" };
+  });
+
+  expect(events.some((e) => e.event === Event.Cancelled)).toBe(true);
+  expect(events.some((e) => e.event === Event.TextDelta)).toBe(false);
+});
+
+test("a deleted conversation cannot be recreated by its stale actor", () => {
+  const conv = "t-deleted";
+  const a = new ConversationActor(conv, store);
+  a.appendUser("before delete", "r1");
+  store.deleteConversation(conv);
+
+  expect(() => a.appendUser("late write", "r2")).toThrow(`conversation "${conv}" was deleted`);
+  expect(store.replay(conv, 0)).toEqual([]);
+});
+
+test("deletion stops an in-flight actor without writing a terminal event", async () => {
+  const conv = "t-delete-running";
+  const a = new ConversationActor(conv, store);
+  a.appendUser("start", "r1");
+  let reached: () => void = () => {};
+  const started = new Promise<void>((resolve) => (reached = resolve));
+  const run = a.runText("r1", "m1", async function* (signal) {
+    yield { kind: "text", chunk: "partial" };
+    reached();
+    await new Promise<void>((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    });
+  });
+
+  await started;
+  store.deleteConversation(conv);
+  await run;
+  expect(store.replay(conv, 0)).toEqual([]);
+});
+
+test("only the first authenticated writer can claim a new conversation", () => {
+  expect(store.claimConversationOwner("t-owner-race", "alice")).toBe(true);
+  expect(store.claimConversationOwner("t-owner-race", "bob")).toBe(false);
+  expect(store.getConversationOwner("t-owner-race")).toBe("alice");
 });
 
 test("cancel mid-token aborts the stream at once and finishes aborted, not error", async () => {
