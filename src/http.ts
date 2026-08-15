@@ -4,7 +4,7 @@ import { ConversationActor, type Subscriber, type WireEvent } from "./actor";
 import { authEnabled, gateApi, getSession, sessionUser } from "./auth";
 import type { BlobStore } from "./blobs";
 import { ACTOR_IDLE_TTL_MS, SSE_RETRY_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
-import { Event, parseEventId } from "./events";
+import { Event, type EventData, type EventName, parseEventId } from "./events";
 import { getExecutor } from "./executor";
 import { getRegistry } from "./inference";
 import {
@@ -146,11 +146,13 @@ type StreamItem = WireEvent | typeof KEEPALIVE;
 class StreamSubscriber implements Subscriber {
   closed = false;
   readonly stream: ReadableStream<StreamItem>;
+  private lastSeq: number;
   private controller!: ReadableStreamDefaultController<StreamItem>;
   private readonly onClose: () => void;
 
-  constructor(onClose: () => void) {
+  constructor(afterSeq: number, onClose: () => void) {
     this.onClose = onClose;
+    this.lastSeq = afterSeq;
     this.stream = new ReadableStream<StreamItem>({
       start: (controller) => {
         this.controller = controller;
@@ -163,7 +165,19 @@ class StreamSubscriber implements Subscriber {
 
   push(e: WireEvent): void {
     if (this.closed) return;
+    try {
+      const seq = parseEventId(e.id).seq;
+      if (seq <= this.lastSeq) return;
+      this.lastSeq = seq;
+    } catch {
+      return;
+    }
     this.controller.enqueue(e);
+  }
+
+  /** Last event put on this stream, for cross-process log fan-out. */
+  get afterSeq(): number {
+    return this.lastSeq;
   }
 
   keepalive(): void {
@@ -295,8 +309,25 @@ function openStream(conversationId: string, req: Request, store: Store): Respons
   const after = afterSeqFor(req, conversationId);
 
   let unsub: () => void = () => {};
-  const sub = new StreamSubscriber(() => unsub());
+  let poll: ReturnType<typeof setInterval> | null = null;
+  const sub = new StreamSubscriber(after, () => {
+    unsub();
+    if (poll) clearInterval(poll);
+  });
   unsub = actor.subscribe(sub, after);
+
+  // A standalone worker persists through its own actor, so it cannot directly
+  // notify this server process's subscribers. The log is authoritative: poll
+  // only the cursor gap and let StreamSubscriber dedupe local actor fan-out.
+  poll = setInterval(() => {
+    for (const e of store.replay(conversationId, sub.afterSeq)) {
+      sub.push({
+        id: `${conversationId}:${e.seq}`,
+        event: e.event as EventName,
+        data: e.data as EventData,
+      });
+    }
+  }, 250);
 
   // NOTE: this stream is intentionally long-lived. It does not close when a run
   // ends; the next run's events arrive on the same connection. A dropped
@@ -315,6 +346,7 @@ function openStream(conversationId: string, req: Request, store: Store): Respons
   const keepAlive = setInterval(() => {
     if (sub.closed) {
       clearInterval(keepAlive);
+      if (poll) clearInterval(poll);
       return;
     }
     sub.keepalive();
@@ -361,6 +393,11 @@ function startRun(
   if (rejected) return rejected;
   const badBlob = requireKnownBlobs(data.attachments, store);
   if (badBlob) return badBlob;
+  // Claim a new conversation before appending its first event. This is the
+  // ownership boundary: two users racing a chosen id cannot both enqueue work.
+  if (owner && !store.claimConversationOwner(conversationId, owner)) {
+    return Response.json({ error: "not found" }, { status: 404 });
+  }
 
   const actor = getActor(conversationId, store);
   const runId = data.runId ?? randomUUID();
@@ -585,6 +622,8 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     if (!authEnabled()) return null;
     const sub = getSession(req, store)?.sub;
     if (!sub) return Response.json({ error: "unauthorized" }, { status: 401 });
+    if (store.isConversationDeleted(id))
+      return Response.json({ error: "not found" }, { status: 404 });
     const owner = store.getConversationOwner(id);
     if (owner === undefined) {
       store.setConversationOwner(id, sub);
@@ -925,6 +964,7 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       DELETE: async (req: Bun.BunRequest<"/api/conversations/:id">) => {
         const denied = guardConv(req, req.params.id);
         if (denied) return denied;
+        getActor(req.params.id, store).requestCancel();
         const orphaned = store.deleteConversation(req.params.id);
         actors.delete(req.params.id); // drop the in-memory actor so it can't resurrect the log
         getExecutor()?.disposeSession(req.params.id); // tear down this chat's persistent sandbox

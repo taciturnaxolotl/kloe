@@ -1332,9 +1332,9 @@ export class Store {
 
   /** Atomically create or claim an unowned conversation for an authenticated user. */
   claimConversationOwner(id: string, sub: string): boolean {
-    const row = this.claimConversationOwnerStmt.get(id, Date.now(), sub) as
-      | { owner_sub: string }
-      | null;
+    const row = this.claimConversationOwnerStmt.get(id, Date.now(), sub) as {
+      owner_sub: string;
+    } | null;
     return row?.owner_sub === sub;
   }
 
