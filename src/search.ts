@@ -26,6 +26,13 @@ export interface SearchResult {
 }
 
 export interface SearchProvider {
+  /**
+   * The backend honors query operators (`site:`, `A OR B`) rather than reading
+   * them as words. Absent means it doesn't, which is the safe default: a query
+   * the model wrote as a filter and the engine read as three literal words is
+   * a search for the wrong thing, returned with no sign anything went wrong.
+   */
+  readonly operators?: boolean;
   search(query: string): Promise<SearchResult[]>;
   /**
    * Several queries in one round trip, where the backend supports it.
@@ -43,8 +50,18 @@ interface CeramicOptions {
   fetchImpl?: typeof fetch;
 }
 
+/**
+ * Ceramic's own ceiling on results per request. It returns 10 unasked; the
+ * request has to carry `maxResults` to get more, which is why a higher
+ * `search.maxResults` used to change nothing here — we were slicing ten hits
+ * down, never asking for more than ten.
+ */
+const CERAMIC_MAX = 50;
+
 /** Ceramic (api.ceramic.ai) — POST /search with a bearer key; normalized here. */
 export class CeramicSearchProvider implements SearchProvider {
+  /** `site:` and `A OR B` are honored rather than read as words. */
+  readonly operators = true;
   private readonly apiKey?: string;
   private readonly endpoint: string;
   private readonly maxResults: number;
@@ -64,7 +81,7 @@ export class CeramicSearchProvider implements SearchProvider {
         "Content-Type": "application/json",
         ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
       },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query, maxResults: Math.min(this.maxResults, CERAMIC_MAX) }),
     });
     if (!res.ok) {
       // Ceramic returns RFC 7807 problem+json on errors — surface its `detail`
@@ -461,17 +478,27 @@ function ddgTarget(href: string): string | null {
  * thinner result list, not a failed search.
  */
 export class BlendSearchProvider implements SearchProvider {
+  readonly operators: boolean;
   private readonly providers: SearchProvider[];
   private readonly maxResults: number;
 
   constructor(providers: SearchProvider[], maxResults = 5) {
     this.providers = providers;
     this.maxResults = maxResults;
+    this.operators = providers.some((p) => p.operators);
   }
 
   async search(query: string): Promise<SearchResult[]> {
+    // An operator query goes only to the backends that honor it. To the others
+    // `site:docs.python.org asyncio` is four words, and the pages they return
+    // for it are off-target ones that fusion would rank beside the real hits —
+    // so offering the operator at all would cost more than it bought.
+    const honors = this.providers.filter((p) => p.operators);
+    // With no such backend the operator is just part of the query, as it was
+    // before: a diluted list beats an empty one.
+    const targets = hasOperator(query) && honors.length > 0 ? honors : this.providers;
     const lists = await Promise.all(
-      this.providers.map((p) =>
+      targets.map((p) =>
         p.search(query).catch((e: Error) => {
           console.warn("[search] backend failed:", e.message);
           return [] as SearchResult[];
@@ -480,6 +507,17 @@ export class BlendSearchProvider implements SearchProvider {
     );
     return blend(lists, this.maxResults);
   }
+}
+
+/**
+ * Does this query carry an operator, rather than merely mention one?
+ *
+ * Only the two forms a backend advertises: `site:` immediately followed by a
+ * domain, and `OR` as a standalone uppercase word. Lowercase `or` is prose and
+ * a bare `site:` with nothing after it is a typo, so neither counts.
+ */
+export function hasOperator(query: string): boolean {
+  return /(^|\s)site:\S/i.test(query) || /(^|\s)OR(\s|$)/.test(query);
 }
 
 /**

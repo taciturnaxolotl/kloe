@@ -322,7 +322,10 @@ function workerTools(
     web_search: tool({
       description:
         "Search the web. Returns title, URL and snippet for each hit. Use short, " +
-        "keyword-focused queries; search operators are unsupported.",
+        "keyword-focused queries; " +
+        (search.operators
+          ? "`site:example.com` and `A OR B` work, other operators do not."
+          : "search operators are unsupported."),
       inputSchema: jsonSchema<{ query: string }>({
         type: "object",
         properties: { query: { type: "string" } },

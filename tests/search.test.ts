@@ -47,6 +47,21 @@ test("CeramicSearchProvider normalizes results and sends the bearer key + query"
   expect(JSON.parse(seen!.init.body as string).query).toBe("rental laws");
 });
 
+test("maxResults is asked for, not just sliced off the default ten", async () => {
+  let body: Record<string, unknown> = {};
+  const fetchImpl = (async (_url: unknown, init: RequestInit) => {
+    body = JSON.parse(init.body as string);
+    return new Response(JSON.stringify({ result: { results: [] } }), { status: 200 });
+  }) as unknown as typeof fetch;
+
+  await new CeramicSearchProvider({ apiKey: "k", fetchImpl, maxResults: 15 }).search("q");
+  expect(body.maxResults).toBe(15);
+
+  // 50 is ceramic's ceiling; asking past it is an error, not a longer list.
+  await new CeramicSearchProvider({ apiKey: "k", fetchImpl, maxResults: 80 }).search("q");
+  expect(body.maxResults).toBe(50);
+});
+
 test("maxResults caps how many results come back", async () => {
   const fetchImpl = jsonFetch({
     result: {
@@ -363,6 +378,29 @@ test("one backend failing is a thinner list, not a failed search", async () => {
   const live = fixed([{ title: "Live", url: "https://live.test" }]);
   const out = await new BlendSearchProvider([dead, live], 5).search("q");
   expect(out.map((r) => r.title)).toEqual(["Live"]);
+});
+
+test("an operator query goes only to the backends that honor it", async () => {
+  const literal = fixed([{ title: "Word soup", url: "https://noise.test" }]);
+  const honors: SearchProvider = {
+    operators: true,
+    ...fixed([{ title: "Real", url: "https://hit.test" }]),
+  };
+  const b = new BlendSearchProvider([literal, honors], 5);
+
+  expect(b.operators).toBe(true);
+  expect((await b.search("site:hit.test asyncio")).map((r) => r.title)).toEqual(["Real"]);
+  expect((await b.search("a OR b")).map((r) => r.title)).toEqual(["Real"]);
+  // Prose that merely mentions one is an ordinary query: everyone gets it.
+  expect((await b.search("site or building")).map((r) => r.title)).toEqual(["Word soup", "Real"]);
+});
+
+test("with no operator-aware backend the operator is just part of the query", async () => {
+  const a = fixed([{ title: "A", url: "https://a.test" }]);
+  const b = new BlendSearchProvider([a], 5);
+  expect(b.operators).toBe(false);
+  // An empty list would be the alternative, and it would look like "no results".
+  expect((await b.search("site:a.test x")).map((r) => r.title)).toEqual(["A"]);
 });
 
 test("search falls back to DuckDuckGo when nothing is configured, and off when told", () => {
