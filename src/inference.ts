@@ -2,6 +2,7 @@ import { type JSONValue, type LanguageModel, type ModelMessage, stepCountIs, str
 import type { RunStep } from "./actor";
 import type { BlobStore } from "./blobs";
 import { type LoadCatalogOptions, loadCatalog } from "./catalog";
+import { credentialFor } from "./credentials";
 import type { TokenUsage } from "./events";
 import { contextToText, getContext, lardConnected, lardEnabled } from "./lard";
 import { buildSystemPrompt } from "./prompt";
@@ -308,11 +309,30 @@ export function modelSupportsImages(modelRef: string): boolean {
 }
 
 /** Resolves a model ref to a rate-limited LanguageModel. */
-export function resolveModel(modelRef: string): LanguageModel {
-  const model = getRegistry().resolveModel(modelRef);
+export function resolveModel(modelRef: string, apiKey?: string): LanguageModel {
+  const model = getRegistry().resolveModel(modelRef, apiKey);
   const providerName = modelRef.split("/")[0]!;
   const limiter = limiterFor(providerName);
   return limiter ? limiter.wrap(model) : model;
+}
+
+/**
+ * The same, for a named user: their own credential pays when they have one for
+ * the provider, and the deployment's key does when they don't.
+ *
+ * The rate limiter still wraps the result. Its job is to be kind to the
+ * endpoint, which does not care whose credits are being spent — and a per-user
+ * limiter would let ten connected users open ten times the concurrency against
+ * one provider.
+ */
+export async function resolveModelFor(
+  modelRef: string,
+  who: { store?: Store; sub?: string },
+): Promise<LanguageModel> {
+  if (!who.store || !who.sub || isEchoModel(modelRef)) return resolveModel(modelRef);
+  const providerName = modelRef.split("/")[0]!;
+  const key = await credentialFor(who.store, who.sub, providerName);
+  return resolveModel(modelRef, key);
 }
 
 /** Project-scoped context to fold into a run: the pinned lard project (whose
@@ -348,7 +368,12 @@ export interface RunOptions {
 }
 
 export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGenerator<RunStep> {
-  const model = resolveModel(opts.model);
+  // Whose credits this run spends: the conversation's owner, when they have
+  // connected something of their own. Resolved once, here, and reused for every
+  // model this run touches — the utility models included, since a research
+  // worker on the deployment's key would quietly undo the whole arrangement.
+  const who = { store: opts.store, sub: opts.owner };
+  const model = await resolveModelFor(opts.model, who);
   // Per-provider knobs from ops config: an output-token cap, and raw
   // provider-specific options (e.g. a reasoning/thinking toggle) sent under the
   // provider's key. Absent for echo/unknown providers.
@@ -373,9 +398,9 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
     blobs: opts.blobs,
     model, // deep_research runs its subagent on the same model as the run
     modelReadsImages,
-    visionModel: visionRef ? resolveModel(visionRef) : undefined,
-    researchLead: leadRef ? resolveModel(leadRef) : undefined,
-    researchWorker: workerRef ? resolveModel(workerRef) : undefined,
+    visionModel: visionRef ? await resolveModelFor(visionRef, who) : undefined,
+    researchLead: leadRef ? await resolveModelFor(leadRef, who) : undefined,
+    researchWorker: workerRef ? await resolveModelFor(workerRef, who) : undefined,
     onProgress: opts.onProgress,
   });
   const hasTools = Object.keys(tools).length > 0;

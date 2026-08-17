@@ -13,7 +13,6 @@
 import * as smd from "streaming-markdown";
 import { showContextMenu } from "../ctxmenu.js";
 import {
-  BRAIN_ICON,
   FOLDER_ICON,
   GRIP_ICON as GRIP,
   HASH_ICON,
@@ -39,6 +38,7 @@ var TEMPLATE =
   '<button class="settab active" type="button" data-tab="models" role="tab">Models</button>' +
   '<button class="settab" type="button" data-tab="research" role="tab">Research</button>' +
   '<button class="settab" type="button" data-tab="memory" role="tab" hidden>Memory</button>' +
+  '<button class="settab" type="button" data-tab="accounts" role="tab" hidden>Accounts</button>' +
   "</div>" +
   '<section class="settabpanel" data-panel="models">' +
   '<p class="lede">Turn models on to add them to the chat picker, drag the enabled ones to set their order (⌘-click to move several at once), and give them display names.</p>' +
@@ -48,8 +48,12 @@ var TEMPLATE =
   '<p class="lede">Deep research runs two jobs. The <strong>lead</strong> plans the angles, reads each round of notes to decide what to chase next, and writes the report. The <strong>workers</strong> search and read pages — far more tokens, on a much narrower job. Running a strong lead over cheaper workers is usually better than running one model for both.</p>' +
   '<div class="rolepick" id="rolepick">Loading…</div>' +
   "</section>" +
+  '<section class="settabpanel" data-panel="accounts" hidden>' +
+  '<p class="lede">Connect your own provider account and your chats spend your credits instead of this instance\u2019s. A connected account decides what it can run, so its models appear in the picker alongside the shared ones.</p>' +
+  '<div id="accountList">Loading\u2026</div>' +
+  "</section>" +
   '<section class="settabpanel" data-panel="memory" hidden>' +
-  '<div id="lardStatus" class="lardconn"></div>' +
+  '<div id="lardStatus" class="connrow"></div>' +
   '<div id="lardInspector" class="lardinspect" hidden>' +
   '<aside class="lardbrowser">' +
   '<input id="lardSearch" class="lardsearch" type="search" placeholder="Search subjects" autocomplete="off">' +
@@ -594,21 +598,210 @@ export function mount(root, _params, ctx) {
       });
   }
 
+  // ---- provider accounts (BYOK + device-flow OAuth) ----
+  // One row per connectable provider: connected ones offer a disconnect,
+  // the rest offer whichever routes in they have (a device flow, a key, or both).
+  var devicePoll = null;
+
+  function stopPolling() {
+    if (devicePoll) {
+      clearTimeout(devicePoll);
+      devicePoll = null;
+    }
+  }
+
+  function accountRow(p, conn) {
+    var row = document.createElement("div");
+    row.className = "connrow" + (conn ? " on" : "");
+
+    var dot = document.createElement("span");
+    dot.className = "conndot";
+    row.appendChild(dot);
+
+    var text = document.createElement("div");
+    text.className = "conntext";
+    var title = document.createElement("div");
+    title.className = "conntitle";
+    title.textContent = p.id;
+    var sub = document.createElement("div");
+    sub.className = "connsub";
+    if (conn) {
+      sub.textContent =
+        conn.kind === "oauth"
+          ? "Connected" + (conn.label ? " \u00b7 " + conn.label : "") + " \u00b7 your credits"
+          : "Your key " + (conn.label || "") + " \u00b7 your credits";
+    } else {
+      sub.textContent = "Using this instance\u2019s key.";
+    }
+    text.appendChild(title);
+    text.appendChild(sub);
+    row.appendChild(text);
+
+    if (conn) {
+      var off = document.createElement("button");
+      off.type = "button";
+      off.className = "btn";
+      off.textContent = "Disconnect";
+      off.onclick = async function () {
+        off.disabled = true;
+        await fetch("/api/credentials/" + encodeURIComponent(p.id), { method: "DELETE" }).catch(
+          function () {},
+        );
+        loadAccounts();
+      };
+      row.appendChild(off);
+      return row;
+    }
+
+    if (p.oauth) {
+      var connect = document.createElement("button");
+      connect.type = "button";
+      connect.className = "btn primary";
+      connect.textContent = "Connect";
+      connect.onclick = function () {
+        startDevice(p.id, row);
+      };
+      row.appendChild(connect);
+    }
+    if (p.byok) {
+      var key = document.createElement("input");
+      key.type = "password";
+      key.className = "connkey";
+      key.placeholder = "Paste an API key";
+      key.autocomplete = "off";
+      key.addEventListener("change", async function () {
+        var value = key.value.trim();
+        if (!value) return;
+        key.disabled = true;
+        var res = await fetch("/api/credentials", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ providerId: p.id, apiKey: value }),
+        }).catch(function () {
+          return { ok: false };
+        });
+        key.value = "";
+        key.disabled = false;
+        if (res.ok) loadAccounts();
+      });
+      row.appendChild(key);
+    }
+    return row;
+  }
+
+  /**
+   * The device flow, from the user's side: show the code, open the page they
+   * type it into, and poll until hyper says they finished. Polling stops when
+   * the code expires or the view goes away — a forgotten timer here would keep
+   * hitting the provider from a page nobody is looking at.
+   */
+  async function startDevice(providerId, row) {
+    stopPolling();
+    var panel = document.createElement("div");
+    panel.className = "conndevice";
+    panel.textContent = "Requesting a code\u2026";
+    row.appendChild(panel);
+
+    var start;
+    try {
+      start = await (
+        await fetch("/api/credentials/" + encodeURIComponent(providerId) + "/device", {
+          method: "POST",
+        })
+      ).json();
+      if (start.error) throw new Error(start.error);
+    } catch (e) {
+      panel.textContent = "Could not start: " + e.message;
+      return;
+    }
+
+    panel.innerHTML = "";
+    var code = document.createElement("div");
+    code.className = "conncode";
+    code.textContent = start.userCode;
+    var hint = document.createElement("div");
+    hint.className = "connhint";
+    hint.textContent = "Enter this code to approve, then come back \u2014 this page is waiting.";
+    var open = document.createElement("a");
+    open.className = "btn primary";
+    open.target = "_blank";
+    open.rel = "noopener";
+    open.href = start.verificationUrl;
+    open.textContent = "Open approval page";
+    panel.appendChild(code);
+    panel.appendChild(hint);
+    panel.appendChild(open);
+
+    var url =
+      "/api/credentials/" +
+      encodeURIComponent(providerId) +
+      "/device/" +
+      encodeURIComponent(start.deviceCode);
+    var tick = async function () {
+      if (Date.now() > start.expiresAt) {
+        hint.textContent = "That code expired. Try again.";
+        return;
+      }
+      var j = {};
+      try {
+        j = await (await fetch(url)).json();
+      } catch (_) {}
+      if (j.status === "connected") {
+        stopPolling();
+        loadAccounts();
+        return;
+      }
+      if (j.status === "denied") {
+        hint.textContent = "Approval was denied.";
+        return;
+      }
+      if (j.status === "expired") {
+        hint.textContent = "That code expired. Try again.";
+        return;
+      }
+      devicePoll = setTimeout(tick, 2000);
+    };
+    devicePoll = setTimeout(tick, 2000);
+  }
+
+  async function loadAccounts() {
+    var tabBtn = root.querySelector('.settab[data-tab="accounts"]');
+    var list = byId("accountList");
+    var data = { providers: [], connections: [] };
+    try {
+      data = await (await fetch("/api/credentials")).json();
+    } catch (_) {}
+    var offered = data.providers || [];
+    if (tabBtn) tabBtn.hidden = offered.length === 0;
+    if (offered.length === 0) {
+      if (currentTab() === "accounts") selectTab("models");
+      return;
+    }
+    var byProvider = {};
+    (data.connections || []).forEach(function (c) {
+      byProvider[c.providerId] = c;
+    });
+    list.innerHTML = "";
+    offered.forEach(function (p) {
+      list.appendChild(accountRow(p, byProvider[p.id]));
+    });
+  }
+
   // ---- lard (memory) ----
   function renderLard(el, connected) {
+    el.className = "connrow" + (connected ? " on" : "");
     el.innerHTML = "";
-    var ic = document.createElement("div");
-    ic.className = "lardconn-icon " + (connected ? "on" : "off");
-    ic.innerHTML = BRAIN_ICON;
+    var dot = document.createElement("span");
+    dot.className = "conndot";
     var text = document.createElement("div");
-    text.className = "lardconn-text";
+    text.className = "conntext";
     var title = document.createElement("div");
-    title.className = "lardconn-title";
-    title.textContent = connected ? "Memory connected" : "Memory not connected";
+    title.className = "conntitle";
+    title.textContent = "Memory";
     var sub = document.createElement("div");
-    sub.className = "lardconn-sub";
+    sub.className = "connsub";
     sub.textContent = connected
-      ? "Your chats can read and record durable context in lard."
+      ? "Connected \u00b7 your chats can read and record durable context in lard."
       : "Connect lard so chats can read and update your durable context.";
     text.appendChild(title);
     text.appendChild(sub);
@@ -619,7 +812,7 @@ export function mount(root, _params, ctx) {
       btn.textContent = "Disconnect";
       btn.onclick = async function () {
         btn.disabled = true;
-        btn.textContent = "Disconnecting…";
+        btn.textContent = "Disconnecting\u2026";
         await fetch("/api/lard", { method: "DELETE" }).catch(function () {});
         byId("lardInspector").hidden = true;
         renderLard(el, false);
@@ -628,7 +821,7 @@ export function mount(root, _params, ctx) {
       btn.href = "/lard/connect";
       btn.textContent = "Connect";
     }
-    el.appendChild(ic);
+    el.appendChild(dot);
     el.appendChild(text);
     el.appendChild(btn);
   }
@@ -919,7 +1112,9 @@ export function mount(root, _params, ctx) {
   // ---- boot the view (auth + sidebar are already up in the shell) ----
   setupTabs();
   if (location.hash === "#memory") selectTab("memory");
+  if (location.hash === "#accounts") selectTab("accounts");
   loadLard();
+  loadAccounts();
   // Models and preferences together: a role picker lists enabled models, so
   // rendering it needs both and rendering it twice would flicker.
   Promise.all([
@@ -946,6 +1141,9 @@ export function mount(root, _params, ctx) {
 
   return {
     destroy: function () {
+      // A device poll outlives the view otherwise, hitting the provider from a
+      // page nobody is looking at.
+      stopPolling();
       document.removeEventListener("mousedown", onDocMousedown);
       document.removeEventListener("dragover", onDocDragover);
       document.removeEventListener("drop", onDocDrop);

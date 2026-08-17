@@ -76,6 +76,16 @@ export type ProjectAssignBody = v.InferOutput<typeof ProjectAssignBody>;
  * PATCH /api/models — partial curation update. `displayName: null` clears the
  * override; omitted fields keep their stored value (merge happens in the handler).
  */
+/**
+ * POST /api/credentials — a user hands kloe their own key for a provider, so
+ * their runs spend their own credits rather than the deployment's.
+ */
+export const CredentialBody = v.object({
+  providerId: v.pipe(v.string(), v.minLength(1)),
+  apiKey: v.pipe(v.string(), v.minLength(8), v.maxLength(500)),
+});
+export type CredentialBody = v.InferOutput<typeof CredentialBody>;
+
 export const ModelPatchBody = v.object({
   ref: v.pipe(v.string(), v.minLength(1)),
   visible: v.optional(v.boolean()),

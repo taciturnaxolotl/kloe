@@ -477,7 +477,41 @@ CREATE TABLE IF NOT EXISTS lard_tokens (
   expires_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );
+
+-- A credential a USER gave us for an inference provider, so their runs spend
+-- their own credits: either a pasted API key (kind 'key') or an OAuth grant
+-- (kind 'oauth'). secret and refresh_token are ciphertext (secrets.ts) --
+-- this table ends up in a backup, the encryption key does not.
+--
+-- refresh_lease is how two processes avoid both refreshing at once. Hyper
+-- rotates the refresh token on every exchange and revokes the old one, so a
+-- lost race does not mean a wasted request, it means the user is disconnected.
+CREATE TABLE IF NOT EXISTS user_credentials (
+  sub           TEXT NOT NULL,
+  provider_id   TEXT NOT NULL,
+  kind          TEXT NOT NULL,
+  secret        TEXT NOT NULL,
+  refresh_token TEXT,
+  expires_at    INTEGER,
+  label         TEXT,
+  refresh_lease INTEGER NOT NULL DEFAULT 0,
+  updated_at    INTEGER NOT NULL,
+  PRIMARY KEY (sub, provider_id)
+);
 `;
+
+/** The stored row, ciphertext and all. Decrypted into a UserCredential by credentials.ts. */
+export interface CredentialRow {
+  sub: string;
+  provider_id: string;
+  kind: string;
+  secret: string;
+  refresh_token: string | null;
+  expires_at: number | null;
+  label: string | null;
+  refresh_lease: number;
+  updated_at: number;
+}
 
 /** Cached profile fields for a signed-in user (from the OAuth token response). */
 export interface SessionProfile {
@@ -493,6 +527,25 @@ export interface LardToken {
   refreshToken?: string;
   expiresAt: number;
 }
+/**
+ * A user's own credential for one provider. `secret` is their API key (kind
+ * "key") or their current access token (kind "oauth"); both arrive here already
+ * decrypted, since every caller wants the plaintext and the encryption is the
+ * store's business.
+ */
+export interface UserCredential {
+  sub: string;
+  providerId: string;
+  kind: "key" | "oauth";
+  secret: string;
+  refreshToken?: string;
+  /** Epoch ms; undefined for a key, which does not expire on its own. */
+  expiresAt?: number;
+  /** Something to recognize it by in the UI — a hyper team name, say. */
+  label?: string;
+  updatedAt: number;
+}
+
 /** A live auth session: the cookie id, the user's stable subject, and profile. */
 export interface Session {
   id: string;
@@ -1345,6 +1398,76 @@ export class Store {
 
   deleteLardToken(sub: string): void {
     this.db.query("DELETE FROM lard_tokens WHERE sub = ?").run(sub);
+  }
+
+  // ---- user credentials ---------------------------------------------------
+  // Ciphertext in and out is handled by credentials.ts; this layer only moves
+  // rows, so a caller that forgets to encrypt is a compile error there rather
+  // than a plaintext key here.
+
+  getCredentialRow(sub: string, providerId: string): CredentialRow | undefined {
+    return (
+      (this.db
+        .query(
+          `SELECT sub, provider_id, kind, secret, refresh_token, expires_at, label, refresh_lease, updated_at
+           FROM user_credentials WHERE sub = ? AND provider_id = ?`,
+        )
+        .get(sub, providerId) as CredentialRow | null) ?? undefined
+    );
+  }
+
+  listCredentialRows(sub: string): CredentialRow[] {
+    return this.db
+      .query(
+        `SELECT sub, provider_id, kind, secret, refresh_token, expires_at, label, refresh_lease, updated_at
+         FROM user_credentials WHERE sub = ? ORDER BY provider_id`,
+      )
+      .all(sub) as CredentialRow[];
+  }
+
+  setCredentialRow(row: Omit<CredentialRow, "refresh_lease" | "updated_at">): void {
+    this.db
+      .query(
+        `INSERT INTO user_credentials
+           (sub, provider_id, kind, secret, refresh_token, expires_at, label, refresh_lease, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+         ON CONFLICT(sub, provider_id) DO UPDATE SET
+           kind=excluded.kind, secret=excluded.secret, refresh_token=excluded.refresh_token,
+           expires_at=excluded.expires_at, label=excluded.label,
+           refresh_lease=0, updated_at=excluded.updated_at`,
+      )
+      .run(
+        row.sub,
+        row.provider_id,
+        row.kind,
+        row.secret,
+        row.refresh_token,
+        row.expires_at,
+        row.label,
+        Date.now(),
+      );
+  }
+
+  deleteCredential(sub: string, providerId: string): void {
+    this.db
+      .query("DELETE FROM user_credentials WHERE sub = ? AND provider_id = ?")
+      .run(sub, providerId);
+  }
+
+  /**
+   * Take the right to refresh this credential until `until`, if nobody else
+   * holds it. Returns false when someone else is mid-exchange — the caller
+   * waits for their result rather than racing them into a revoked token.
+   */
+  claimRefresh(sub: string, providerId: string, now: number, until: number): boolean {
+    return (
+      this.db
+        .query(
+          `UPDATE user_credentials SET refresh_lease = ?
+           WHERE sub = ? AND provider_id = ? AND refresh_lease < ?`,
+        )
+        .run(until, sub, providerId, now).changes > 0
+    );
   }
 
   // ---- conversation ownership --------------------------------------------

@@ -264,7 +264,7 @@ export class ProviderRegistry {
    * required (no bare/default form): a ref must name both a provider and a
    * model, both must be enabled/known, or this throws.
    */
-  resolveModel(modelRef: string): LanguageModel {
+  resolveModel(modelRef: string, apiKeyOverride?: string): LanguageModel {
     if (isEchoModel(modelRef)) {
       return createEchoModel();
     }
@@ -289,7 +289,7 @@ export class ProviderRegistry {
       throw new Error(`unknown model "${modelId}" for provider "${providerId}"`);
     }
 
-    return this.factoryFor(providerId, config)(modelId);
+    return this.factoryFor(providerId, config, apiKeyOverride)(modelId);
   }
 
   /**
@@ -298,15 +298,21 @@ export class ProviderRegistry {
    * resolved key or endpoint changed (e.g. a rotated secret), so a long-running
    * process doesn't keep serving a stale key.
    */
-  private factoryFor(providerId: string, config: ProviderConfig): ModelFactory {
+  private factoryFor(
+    providerId: string,
+    config: ProviderConfig,
+    apiKeyOverride?: string,
+  ): ModelFactory {
     const catProvider = this.catalog.getProvider(providerId);
     const inline = this.inline.get(providerId);
     // Keyless is allowed when NO key is declared: it resolves to undefined and
     // the adapter omits the credential (local endpoints). But a key that WAS
     // declared yet resolves empty is a misconfig (env var forgotten), not a
     // keyless provider — flag it rather than silently sending no credential.
-    const apiKey = resolveRef(config.apiKey);
-    if (config.apiKey !== undefined && !apiKey) {
+    // A user's own credential replaces the deployment's key for this call and
+    // nothing else: same endpoint, same adapter, same limiter, different payer.
+    const apiKey = apiKeyOverride ?? resolveRef(config.apiKey);
+    if (!apiKeyOverride && config.apiKey !== undefined && !apiKey) {
       throw new Error(
         `provider "${providerId}" declares an API key that resolved empty (config: ${config.apiKey}); set its env var, or remove apiKey for a keyless provider`,
       );
@@ -315,12 +321,17 @@ export class ProviderRegistry {
     // so it always wins here via config.apiEndpoint.
     const baseURL = resolveRef(config.apiEndpoint) ?? resolveRef(catProvider?.apiEndpoint);
 
+    const type = catProvider?.type ?? inline?.type ?? "openai-compat";
+    // A user's own credential builds a throwaway adapter rather than a cache
+    // entry. Keeping one per credential would hold a closure for every user and
+    // every hourly token rotation, to save an object construction — and the
+    // entry most likely to be reused is the one most likely to be stale.
+    if (apiKeyOverride) return buildFactory(providerId, type, apiKey, baseURL);
+
     const cached = this.factories.get(providerId);
     if (cached && cached.apiKey === apiKey && cached.baseURL === baseURL) {
       return cached.factory;
     }
-
-    const type = catProvider?.type ?? inline?.type ?? "openai-compat";
     const factory = buildFactory(providerId, type, apiKey, baseURL);
     this.factories.set(providerId, { apiKey, baseURL, factory });
     return factory;

@@ -3481,50 +3481,88 @@ body.lb-open {
 } /* a display rule otherwise beats [hidden] */
 
 /* Connection card: an icon medallion, a two-line status, and the action. */
-.lardconn {
+/* A connection: one line saying what it is, one saying where it stands, and the
+   button that changes it. The state lives in the words and in a 6px dot, not in
+   a tinted icon tile — an icon that repeats the heading is furniture. Shares the
+   shape of .modelrow so settings reads as one page. */
+.connrow {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 16px;
+  gap: 12px;
+  padding: 13px 14px;
   border: 1px solid var(--rule);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: var(--bg-raise);
 }
-.lardconn-icon {
+.connrow + .connrow {
+  margin-top: 8px;
+}
+.conndot {
   flex: none;
-  width: 42px;
-  height: 42px;
-  border-radius: var(--radius-md);
-  display: grid;
-  place-items: center;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-faint);
 }
-.lardconn-icon svg {
-  width: 22px;
-  height: 22px;
+.connrow.on .conndot {
+  background: var(--accent);
 }
-.lardconn-icon.on {
-  background: color-mix(in srgb, var(--accent) 15%, var(--bg-raise));
-  color: var(--accent);
-}
-.lardconn-icon.off {
-  background: var(--bg-sunk);
-  color: var(--ink-faint);
-}
-.lardconn-text {
+.conntext {
   flex: 1;
   min-width: 0;
 }
-.lardconn-title {
+.conntitle {
   font-size: 14.5px;
   font-weight: 600;
 }
-.lardconn-sub {
+.connsub {
   font-size: 12.5px;
   color: var(--ink-muted);
   margin-top: 2px;
 }
-.lardconn .btn {
+.connrow .btn,
+.connrow .connkey {
   flex: none;
+}
+.connkey {
+  width: 200px;
+  padding: 6px 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunk);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+.connkey:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* The device code, while a user is approving it elsewhere. The code itself is
+   the point: big, monospace, and selectable, because it gets read off a screen
+   and typed into another one. */
+.conndevice {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule);
+}
+.conncode {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 20px;
+  letter-spacing: 0.14em;
+  user-select: all;
+}
+.connhint {
+  flex: 1;
+  min-width: 160px;
+  font-size: 12.5px;
+  color: var(--ink-muted);
 }
 
 /* Inspector: a subject browser rail + a viewer/editor. */

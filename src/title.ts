@@ -1,5 +1,5 @@
 import { type JSONValue, streamText } from "ai";
-import { getRegistry, resolveModel, resolveSmallModel } from "./inference";
+import { getRegistry, resolveModelFor, resolveSmallModel } from "./inference";
 import type { Store } from "./store";
 
 // Model selection moved to inference.ts, where the registry lives; re-exported
@@ -45,6 +45,8 @@ export async function generateTitle(
   store: Store,
   conversationId: string,
   modelRef: string,
+  /** Whose credential pays for it — the conversation's owner. */
+  sub?: string,
 ): Promise<string | null> {
   const seed = store.titleSeed(conversationId);
   if (!seed) return null;
@@ -59,7 +61,7 @@ export async function generateTitle(
     // endpoint that implements only the streaming half) has no `doGenerate` and
     // threw on every title. Everything that serves chat can stream.
     const result = streamText({
-      model: resolveModel(modelRef),
+      model: await resolveModelFor(modelRef, { store, sub }),
       system: SYSTEM,
       prompt: seed,
       maxOutputTokens: MAX_OUTPUT_TOKENS,

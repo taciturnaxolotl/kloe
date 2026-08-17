@@ -198,7 +198,12 @@ export class JobDriver {
       if (this.store.hasCustomTitle(id)) return; // already titled or user-renamed
       const modelRef = resolveSmallModel(this.store);
       if (!modelRef) return;
-      const title = await generateTitle(this.store, id, modelRef);
+      const title = await generateTitle(
+        this.store,
+        id,
+        modelRef,
+        this.store.getConversationOwner(id) ?? undefined,
+      );
       if (title && this.store.setTitleIfEmpty(id, title)) actor.titled(title);
     } catch (e) {
       console.warn("[title]", (e as Error).message);

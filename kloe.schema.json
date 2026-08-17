@@ -416,6 +416,13 @@
           },
           "default": []
         },
+        "owners": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
         "sessionTtlDays": {
           "type": "integer",
           "minimum": 1,
@@ -438,9 +445,23 @@
         "clientId": "",
         "clientSecret": "",
         "allowedSubs": [],
+        "owners": [],
         "sessionTtlDays": 30,
         "appName": "kloe",
         "logoUri": ""
+      }
+    },
+    "security": {
+      "type": "object",
+      "properties": {
+        "credentialKey": {
+          "type": "string",
+          "default": ""
+        }
+      },
+      "required": [],
+      "default": {
+        "credentialKey": ""
       }
     },
     "lard": {
@@ -549,6 +570,28 @@
         "properties": {
           "id": {
             "type": "string"
+          },
+          "oauth": {
+            "type": "object",
+            "properties": {
+              "flow": {
+                "enum": [
+                  "hyper-device"
+                ],
+                "type": "string"
+              },
+              "baseUrl": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "flow",
+              "baseUrl"
+            ]
+          },
+          "byok": {
+            "type": "boolean",
+            "default": true
           },
           "apiKey": {
             "type": "string"

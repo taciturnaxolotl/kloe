@@ -12,8 +12,18 @@ import {
 } from "./auth";
 import type { BlobStore } from "./blobs";
 import { ACTOR_IDLE_TTL_MS, SSE_RETRY_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
+import {
+  byokAllowed,
+  connectableProviders,
+  disconnect,
+  listConnections,
+  oauthFlow,
+  saveApiKey,
+  saveOAuthGrant,
+} from "./credentials";
 import { Event, type EventData, type EventName, parseEventId } from "./events";
 import { getExecutor } from "./executor";
+import { exchangeToken, pollDeviceAuth, startDeviceAuth } from "./hyperauth";
 import { getRegistry } from "./inference";
 import {
   getContext,
@@ -28,6 +38,7 @@ import {
   memoryWrite,
 } from "./lard";
 import {
+  CredentialBody,
   ModelPatchBody,
   PrefsPatchBody,
   ProjectAssignBody,
@@ -41,6 +52,7 @@ import {
 import { getConfig } from "./settings";
 import { sseBlock } from "./sse";
 import type { Store } from "./store";
+import { describeRef, forgetUserModels, userModelRefs } from "./usermodels";
 import { withBody } from "./validate";
 
 /**
@@ -273,10 +285,20 @@ function requireKnownModel(ref: string): Response | null {
  * this is the boundary, and it has to sit on every path that names a model,
  * because a run costs someone real credits.
  */
-function requireUsableModel(ref: string, store: Store, role: Role): Response | null {
+function requireUsableModel(
+  ref: string,
+  store: Store,
+  role: Role,
+  sub: string | undefined,
+): Response | null {
+  if (role === "owner") return requireKnownModel(ref);
+  // Paying for it is permission enough. A guest who connected their own account
+  // is spending their own credits, and that account decides what it will run —
+  // so the ref need not be one the deployment knows, and the provider's own
+  // error is the right answer for one it doesn't.
+  if (sub && store.getCredentialRow(sub, ref.split("/")[0] ?? "")) return null;
   const unknown = requireKnownModel(ref);
   if (unknown) return unknown;
-  if (role === "owner") return null;
   const s = store.getModelSetting(ref);
   if (s?.visible && s.guestVisible) return null;
   return Response.json({ error: `model "${ref}" is not available to you` }, { status: 403 });
@@ -312,6 +334,19 @@ function adminModels(store: Store) {
  * The curated subset shown in the chat picker: opt-in (visible only), with
  * displayName applied and ordered by sortOrder then name.
  */
+async function chatModelsFor(store: Store, role: Role, sub: string | undefined) {
+  const curated = chatModels(store, role);
+  const mine = await userModelRefs(store, sub);
+  if (mine.length === 0) return curated;
+  const seen = new Set(curated.map((m) => m.ref));
+  // `yours` is what the UI needs to say who pays; a model that is both curated
+  // and reachable on the user's own account stays in its curated position.
+  const extra = mine
+    .filter((ref) => !seen.has(ref))
+    .map((ref) => ({ ...describeRef(ref), sortOrder: Number.MAX_SAFE_INTEGER, yours: true }));
+  return [...curated, ...extra.sort((a, b) => a.name.localeCompare(b.name))];
+}
+
 function chatModels(store: Store, role: Role) {
   const settings = new Map(store.listModelSettings().map((s) => [s.ref, s]));
   return getRegistry()
@@ -421,7 +456,7 @@ function startRun(
   role: Role,
   owner?: string,
 ): Response {
-  const rejected = requireUsableModel(data.model, store, role);
+  const rejected = requireUsableModel(data.model, store, role, owner);
   if (rejected) return rejected;
   const badBlob = requireKnownBlobs(data.attachments, store);
   if (badBlob) return badBlob;
@@ -462,8 +497,14 @@ function startRun(
  * the current run finishes, the drive loop promotes the WHOLE pending queue
  * and runs it as a single batched generation.
  */
-function startSteer(conversationId: string, data: SteerBody, store: Store, role: Role): Response {
-  const rejected = requireUsableModel(data.model, store, role);
+function startSteer(
+  conversationId: string,
+  data: SteerBody,
+  store: Store,
+  role: Role,
+  sub: string | undefined,
+): Response {
+  const rejected = requireUsableModel(data.model, store, role, sub);
   if (rejected) return rejected;
   const badBlob = requireKnownBlobs(data.attachments, store);
   if (badBlob) return badBlob;
@@ -901,6 +942,91 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     },
 
     // Settings/admin view: every available model + its curation state.
+
+    /**
+     * A user's own provider credentials: what they've connected, a key they
+     * paste, and the two halves of hyper's device flow.
+     *
+     * Everything here is scoped to the caller's own sub — there is no path
+     * that reads or writes somebody else's credential, which is why none of
+     * these take a user parameter.
+     */
+    "/api/credentials": {
+      GET: (req: Bun.BunRequest<"/api/credentials">) => {
+        const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
+        return Response.json({
+          providers: connectableProviders(),
+          connections: listConnections(store, sub),
+        });
+      },
+      POST: withBody(CredentialBody, (data, req: Bun.BunRequest<"/api/credentials">) => {
+        const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
+        if (!byokAllowed(data.providerId)) {
+          return Response.json(
+            { error: `provider "${data.providerId}" does not take a user key here` },
+            { status: 422 },
+          );
+        }
+        saveApiKey(store, sub, data.providerId, data.apiKey);
+        forgetUserModels(sub, data.providerId);
+        return Response.json({ connections: listConnections(store, sub) });
+      }),
+    },
+
+    "/api/credentials/:providerId": {
+      DELETE: (req: Bun.BunRequest<"/api/credentials/:providerId">) => {
+        const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
+        disconnect(store, sub, req.params.providerId);
+        forgetUserModels(sub, req.params.providerId);
+        return Response.json({ connections: listConnections(store, sub) });
+      },
+    },
+
+    // Start a device authorization: returns the code the user types and where
+    // to type it. The device_code comes back to the client because only the
+    // browser knows when the user has finished approving.
+    "/api/credentials/:providerId/device": {
+      POST: async (req: Bun.BunRequest<"/api/credentials/:providerId/device">) => {
+        const flow = oauthFlow(req.params.providerId);
+        if (!flow) {
+          return Response.json({ error: "no device flow for this provider" }, { status: 422 });
+        }
+        try {
+          const start = await startDeviceAuth(flow.baseUrl, "kloe");
+          return Response.json(start);
+        } catch (e) {
+          return Response.json({ error: (e as Error).message }, { status: 502 });
+        }
+      },
+    },
+
+    // Poll it. On approval the grant is exchanged immediately: the refresh
+    // token hyper hands over is one-time and short-lived, so it becomes a
+    // stored pair here rather than travelling any further.
+    "/api/credentials/:providerId/device/:deviceCode": {
+      GET: async (req: Bun.BunRequest<"/api/credentials/:providerId/device/:deviceCode">) => {
+        const providerId = req.params.providerId;
+        const flow = oauthFlow(providerId);
+        if (!flow) {
+          return Response.json({ error: "no device flow for this provider" }, { status: 422 });
+        }
+        const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
+        try {
+          const poll = await pollDeviceAuth(flow.baseUrl, req.params.deviceCode);
+          if (poll.status !== "granted") return Response.json({ status: poll.status });
+          const pair = await exchangeToken(flow.baseUrl, poll.grant.refreshToken);
+          saveOAuthGrant(store, sub, providerId, pair, poll.grant.teamName);
+          forgetUserModels(sub, providerId);
+          return Response.json({
+            status: "connected",
+            connections: listConnections(store, sub),
+          });
+        } catch (e) {
+          return Response.json({ error: (e as Error).message }, { status: 502 });
+        }
+      },
+    },
+
     // Curation is the instance's shape, so it is the owner's to see and change.
     "/api/models": {
       GET: (req: Bun.BunRequest<"/api/models">) =>
@@ -914,8 +1040,10 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
 
     // Chat view: the curated, opt-in subset, ordered for the picker.
     "/api/models/chat": {
-      GET: (req: Bun.BunRequest<"/api/models/chat">) =>
-        Response.json({ models: chatModels(store, requestRole(req, store)) }),
+      GET: async (req: Bun.BunRequest<"/api/models/chat">) =>
+        Response.json({
+          models: await chatModelsFor(store, requestRole(req, store), getSession(req, store)?.sub),
+        }),
     },
 
     "/api/conversations/:id/stream": {
@@ -949,7 +1077,13 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       POST: withBody(SteerBody, (data, req: Bun.BunRequest<"/api/conversations/:id/steer">) => {
         const denied = guardConv(req, req.params.id);
         if (denied) return denied;
-        const res = startSteer(req.params.id, data, store, requestRole(req, store));
+        const res = startSteer(
+          req.params.id,
+          data,
+          store,
+          requestRole(req, store),
+          getSession(req, store)?.sub,
+        );
         kick();
         return res;
       }),

@@ -34,12 +34,26 @@ const ProviderModelSchema = v.object({
 });
 
 /**
+ * An OAuth flow a USER can run against this provider, to spend their own
+ * credits instead of the deployment's key. Only hyper's device grant so far;
+ * `baseUrl` is the app origin (the device endpoints live at the root, not under
+ * the /v1 inference path).
+ */
+const ProviderOAuthSchema = v.object({
+  flow: v.picklist(["hyper-device"]),
+  baseUrl: v.string(),
+});
+
+/**
  * One enabled provider (the ops layer). Shape matches what ProviderRegistry
  * consumes; `maxConcurrency`/`minIntervalMs` are left undefined here so the
  * registry applies its own DEFAULTS (no double-defaulting).
  */
 const ProviderSchema = v.object({
   id: v.string(),
+  oauth: v.optional(ProviderOAuthSchema),
+  /** Let users paste their own API key for this provider. */
+  byok: v.optional(v.boolean(), true),
   // Optional: keyless providers (local endpoints) need no credential. Providers
   // that do need one fail at request time via the upstream's own auth error.
   apiKey: v.optional(v.string()),
@@ -331,6 +345,16 @@ const LardSchema = v.object({
   timeoutMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 15_000),
 });
 
+/**
+ * Secrets kloe holds on a user's behalf (see secrets.ts). Only `credentialKey`
+ * for now: without it the deployment simply cannot store a user credential, and
+ * says so rather than writing one in the clear.
+ */
+const SecuritySchema = v.object({
+  /** Any passphrase; hashed to an AES-256 key. `openssl rand -hex 32` is a fine one. */
+  credentialKey: v.optional(v.string(), ""),
+});
+
 const ServerSchema = v.object({
   port: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(65535)), 3000),
   dbPath: v.optional(v.string(), "data/kloe.db"),
@@ -408,6 +432,7 @@ export const ConfigSchema = v.object({
   fetch: section(FetchSchema),
   sandbox: section(SandboxSchema),
   auth: section(AuthSchema),
+  security: section(SecuritySchema),
   lard: section(LardSchema),
   prompt: section(PromptSchema),
   providers: v.optional(v.array(ProviderSchema), []),
