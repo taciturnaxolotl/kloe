@@ -1,5 +1,6 @@
 import { type JSONValue, type LanguageModel, type ModelMessage, stepCountIs, streamText } from "ai";
 import type { RunStep } from "./actor";
+import type { Role } from "./auth";
 import type { BlobStore } from "./blobs";
 import { type LoadCatalogOptions, loadCatalog } from "./catalog";
 import { credentialFor } from "./credentials";
@@ -345,6 +346,8 @@ export interface RunProject {
 export interface RunOptions {
   model: string;
   runId: string;
+  /** The role of the conversation's owner; decides sandbox access. */
+  role?: Role;
   /** Reasoning level for this run, from the levels the model declares. */
   effort?: string;
   abortSignal?: AbortSignal;
@@ -394,6 +397,7 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
   const tools = toolSet({
     store: opts.store,
     owner: opts.owner,
+    role: opts.role,
     conversationId: opts.conversationId,
     blobs: opts.blobs,
     model, // deep_research runs its subagent on the same model as the run

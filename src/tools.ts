@@ -1,4 +1,5 @@
 import { generateText, jsonSchema, type LanguageModel, type Tool, type ToolSet, tool } from "ai";
+import { OWNER, type Role, roleCan } from "./auth";
 import type { BlobStore } from "./blobs";
 import { replaceOnce, viewSlice } from "./edits";
 import type { ArtifactRef } from "./events";
@@ -957,6 +958,12 @@ function lardTools(store: Store, sub: string): ToolSet {
 export interface ToolContext {
   store?: Store;
   owner?: string;
+  /**
+   * The role of whoever owns this run. Absent means nobody asked — a script, a
+   * test, an instance with auth off — which resolves to the owner's own
+   * powers, matching what those callers had before roles existed.
+   */
+  role?: Role;
   conversationId?: string;
   /**
    * The run's own model, already resolved. `deep_research` runs its subagent on
@@ -1022,7 +1029,13 @@ export function harden(tools: ToolSet): ToolSet {
 /** The tools available to a run; empty → no tools passed to the provider. */
 export function toolSet(ctx: ToolContext = {}): ToolSet {
   const tools: ToolSet = {};
+  // The sandbox is the operator's own compute on a machine they pay for, and
+  // it is the one capability nobody can bring for themselves — a user with
+  // their own API key still runs commands on somebody else's box. So it is
+  // gated by role, where a model or a search is gated by whose key pays.
+  const mayShell = roleCan(ctx.role ?? OWNER, "sandbox");
   for (const entry of REGISTRY) {
+    if (entry.executor === "sandbox" && !mayShell) continue;
     const t = entry.create(ctx);
     if (t) tools[entry.name] = t;
   }

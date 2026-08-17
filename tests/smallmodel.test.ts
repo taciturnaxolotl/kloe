@@ -75,7 +75,7 @@ function storeWith(...visible: string[]): Store {
     store.setModelSetting({
       ref,
       visible: true,
-      guestVisible: false,
+      allowedRoles: [],
       sortOrder: 0,
       displayName: null,
     });

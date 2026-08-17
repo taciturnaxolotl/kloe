@@ -373,6 +373,26 @@ const ServerSchema = v.object({
  * `redirectUri` is always /auth/callback (derived from `baseUrl`). `allowedSubs`
  * empty → any authenticated user; otherwise only those subject URLs may sign in.
  */
+/**
+ * What a role may do, beyond chatting.
+ *
+ * Deliberately short. The dividing line is who pays: anything a person can
+ * bring their own key for (a model, a search engine) is governed by whether
+ * they brought one, not by a permission — so there is no per-tool switch and no
+ * per-role research budget here. What needs a permission is what only the
+ * deployment can provide and nobody can bring themselves: the sandbox, which is
+ * the operator's own compute, and publishing, which is the operator's domain.
+ */
+const RolePolicySchema = v.object({
+  /** Curation, prefs, the admin views — running the instance. */
+  admin: v.optional(v.boolean(), false),
+  /** May reach the shell sandbox: real compute on a machine you pay for. */
+  sandbox: v.optional(v.boolean(), false),
+  /** May mint public share links on this instance's domain. */
+  publish: v.optional(v.boolean(), false),
+});
+export type RolePolicy = v.InferOutput<typeof RolePolicySchema>;
+
 const AuthSchema = v.object({
   enabled: v.optional(v.boolean(), false),
   /** The OIDC issuer origin, e.g. https://indiko.dunkirk.sh */
@@ -405,6 +425,13 @@ const AuthSchema = v.object({
    * what tells kloe this deployment has guests at all.
    */
   ownerRole: v.optional(v.string(), ""),
+  /**
+   * What each role may do, keyed by the provider's role string. A role the
+   * provider sends that isn't named here falls to `guest`, and a deployment
+   * that names none gets the built-in pair: an all-powerful `owner` and a
+   * `guest` who may chat and nothing else.
+   */
+  roles: v.optional(v.record(v.string(), RolePolicySchema), {}),
   sessionTtlDays: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 30),
   appName: v.optional(v.string(), "kloe"),
   logoUri: v.optional(v.string(), ""),

@@ -81,14 +81,14 @@ test("PATCH /api/models makes a model visible and renames it; chat reflects it",
     await patchModels(base, {
       ref: "acme/acme-1",
       visible: true,
-      guestVisible: false,
+      allowedRoles: [],
       displayName: "Acme (fast)",
     }),
   );
   expect(patched).toMatchObject({
     ref: "acme/acme-1",
     visible: true,
-    guestVisible: false,
+    allowedRoles: [],
     displayName: "Acme (fast)",
   });
 
@@ -106,7 +106,7 @@ test("PATCH is partial: a second patch keeps prior fields", async () => {
   await patchModels(base, {
     ref: "acme/acme-1",
     visible: true,
-    guestVisible: false,
+    allowedRoles: [],
     displayName: "Kept",
   });
   const result = await json(await patchModels(base, { ref: "acme/acme-1", sortOrder: 5 }));
@@ -118,7 +118,7 @@ test("PATCH displayName:null clears the override", async () => {
   await patchModels(base, {
     ref: "acme/acme-1",
     visible: true,
-    guestVisible: false,
+    allowedRoles: [],
     displayName: "Temp",
   });
   const cleared = await json(await patchModels(base, { ref: "acme/acme-1", displayName: null }));
@@ -133,10 +133,10 @@ test("chat models are ordered by sortOrder then name", async () => {
   await patchModels(base, {
     ref: "acme/acme-1",
     visible: true,
-    guestVisible: false,
+    allowedRoles: [],
     sortOrder: 10,
   });
-  await patchModels(base, { ref: "acme/acme-2", visible: true, guestVisible: false, sortOrder: 1 });
+  await patchModels(base, { ref: "acme/acme-2", visible: true, allowedRoles: [], sortOrder: 1 });
   const chat = await json(await fetch(`${base}/api/models/chat`));
   expect(chat.models.map((m: any) => m.ref)).toEqual(["acme/acme-2", "acme/acme-1"]);
 });
@@ -155,7 +155,7 @@ test("curation persists across Store re-open", async () => {
   store1.setModelSetting({
     ref: "acme/acme-1",
     visible: true,
-    guestVisible: false,
+    allowedRoles: [],
     displayName: "Persisted",
     sortOrder: 3,
   });
@@ -166,7 +166,7 @@ test("curation persists across Store re-open", async () => {
   expect(got).toEqual({
     ref: "acme/acme-1",
     visible: true,
-    guestVisible: false,
+    allowedRoles: [],
     displayName: "Persisted",
     sortOrder: 3,
   });

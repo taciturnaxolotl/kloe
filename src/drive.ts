@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ModelMessage } from "ai";
 import type { ConversationActor, RunStep } from "./actor";
+import { roleFor } from "./auth";
 import type { BlobStore } from "./blobs";
 import { HEARTBEAT_INTERVAL_MS, LEASE_GRACE_MS } from "./config";
 import { modelSupportsImages, type RunProject, run } from "./inference";
@@ -169,11 +170,14 @@ export class JobDriver {
     // Resolve who owns this conversation so the run's tools + memory bind to
     // that user's lard token (local user when unstamped / auth off).
     const owner = this.store.getConversationOwner(actor.conversationId) ?? LOCAL_SUB;
+    // The owner's role travels with the run: a job outlives the request that
+    // enqueued it, so this is the only place left that knows who is asking.
+    const role = roleFor(owner, this.store.getUserRole(owner));
     const project = this.projectContext(actor.conversationId);
     await actor.runText(
       spec.runId,
       spec.messageId,
-      (signal) => this.streamTimed(messages, spec, signal, owner, actor, project, timing),
+      (signal) => this.streamTimed(messages, spec, signal, owner, role, actor, project, timing),
       (seq) => {
         // Advance the job's durable checkpoint + lease on each flush so a
         // crash mid-run is re-claimed from the last flushed seq.
@@ -245,12 +249,14 @@ export class JobDriver {
     spec: RunSpec,
     signal: AbortSignal,
     owner: string,
+    role: string,
     actor: ConversationActor,
     project: RunProject | undefined,
     timing?: RunTiming,
   ): AsyncGenerator<RunStep> {
     for await (const step of run(messages, {
       runId: spec.runId,
+      role,
       model: spec.model,
       effort: spec.effort,
       abortSignal: signal,

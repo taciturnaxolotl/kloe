@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resetAuthCache, roleFor } from "../src/auth";
+import { resetAuthCache, roleCan, roleFor } from "../src/auth";
 import { FsBlobStore } from "../src/blobs";
 import { Catalog } from "../src/catalog";
 import { apiRoutes } from "../src/http";
@@ -10,6 +10,7 @@ import { setRegistry } from "../src/inference";
 import { ProviderRegistry } from "../src/providers";
 import { loadConfig, setConfig } from "../src/settings";
 import { Store } from "../src/store";
+import { toolSet } from "../src/tools";
 
 /**
  * Roles: an owner runs the instance, a guest gets a chat. The tests that matter
@@ -65,7 +66,8 @@ afterAll(() => {
 let sid = 0;
 function as(store: Store, sub: string, providerRole?: string): { cookie: string } {
   const id = `sid-${sub}-${sid++}`;
-  store.createSession(id, sub, {}, Date.now() + 600_000, providerRole);
+  store.createSession(id, sub, {}, Date.now() + 600_000);
+  if (providerRole !== undefined) store.setUserRole(sub, providerRole);
   return { cookie: `kloe_session=${encodeURIComponent(id)}` };
 }
 
@@ -105,14 +107,14 @@ test("the chat picker shows a guest only the models marked for guests", async ()
   store.setModelSetting({
     ref: "acme/cheap",
     visible: true,
-    guestVisible: true,
+    allowedRoles: ["*"],
     displayName: null,
     sortOrder: 0,
   });
   store.setModelSetting({
     ref: "acme/spendy",
     visible: true,
-    guestVisible: false,
+    allowedRoles: [],
     displayName: null,
     sortOrder: 1,
   });
@@ -133,7 +135,7 @@ test("a guest naming a model the picker never offered is refused", async () => {
   store.setModelSetting({
     ref: "acme/spendy",
     visible: true,
-    guestVisible: false,
+    allowedRoles: [],
     displayName: null,
     sortOrder: 0,
   });
@@ -160,13 +162,13 @@ test("a guest cannot read or change curation", async () => {
     fetch(`${base}/api/models`, {
       method: "PATCH",
       headers: { "content-type": "application/json", ...as(store, sub) },
-      body: JSON.stringify({ ref: "acme/cheap", visible: true, guestVisible: true }),
+      body: JSON.stringify({ ref: "acme/cheap", visible: true, allowedRoles: ["*"] }),
     });
   expect((await patch(GUEST)).status).toBe(403);
   expect(store.getModelSetting("acme/cheap")).toBeUndefined();
 
   expect((await patch(OWNER)).status).toBe(200);
-  expect(store.getModelSetting("acme/cheap")?.guestVisible).toBe(true);
+  expect(store.getModelSetting("acme/cheap")?.allowedRoles).toEqual(["*"]);
 });
 
 test("guest visibility survives a round trip through the patch endpoint", async () => {
@@ -175,7 +177,7 @@ test("guest visibility survives a round trip through the patch endpoint", async 
   await fetch(`${base}/api/models`, {
     method: "PATCH",
     headers: { "content-type": "application/json", ...as(store, OWNER) },
-    body: JSON.stringify({ ref: "acme/cheap", visible: true, guestVisible: true }),
+    body: JSON.stringify({ ref: "acme/cheap", visible: true, allowedRoles: ["*"] }),
   });
   // A later patch that says nothing about guests leaves them alone.
   await fetch(`${base}/api/models`, {
@@ -186,7 +188,7 @@ test("guest visibility survives a round trip through the patch endpoint", async 
   expect(store.getModelSetting("acme/cheap")).toEqual({
     ref: "acme/cheap",
     visible: true,
-    guestVisible: true,
+    allowedRoles: ["*"],
     displayName: "Cheap One",
     sortOrder: 0,
   });
@@ -227,7 +229,7 @@ test("a session carries the role it was signed in with", async () => {
   store.setModelSetting({
     ref: "acme/spendy",
     visible: true,
-    guestVisible: false,
+    allowedRoles: [],
     displayName: null,
     sortOrder: 0,
   });
@@ -242,4 +244,72 @@ test("a session carries the role it was signed in with", async () => {
     headers: as(store, GUEST, "viewer"),
   });
   expect(((await forGuest.json()) as any).models).toEqual([]);
+});
+
+// ---- capabilities ----------------------------------------------------------
+// The dividing line is who pays. A model or a search is governed by whose key
+// covers it; the sandbox is the operator's own compute on a machine they pay
+// for, and nobody can bring that for themselves.
+
+test("a role without the sandbox capability is offered no shell tools", () => {
+  configure([OWNER]);
+  const store = new Store(":memory:");
+  const forOwner = Object.keys(toolSet({ store, owner: OWNER, role: "owner" }));
+  const forGuest = Object.keys(toolSet({ store, owner: GUEST, role: "guest" }));
+
+  // Whatever the deployment configured, the guest's set never grows a tool that
+  // executes somewhere. (With no executor configured neither has them, which is
+  // why this compares the two rather than asserting a fixed list.)
+  for (const shellTool of ["run_shell", "view_file", "write_file", "edit_file"]) {
+    expect(forGuest).not.toContain(shellTool);
+  }
+  expect(forOwner.length).toBeGreaterThanOrEqual(forGuest.length);
+});
+
+test("a caller with no role at all keeps the powers it had before roles existed", () => {
+  configure([]);
+  const store = new Store(":memory:");
+  // Scripts, tests and auth-off instances pass no role; they must not be
+  // silently demoted into guests.
+  expect(roleCan(roleFor(undefined), "sandbox")).toBe(true);
+  expect(Object.keys(toolSet({ store }))).toEqual(Object.keys(toolSet({ store, role: "owner" })));
+});
+
+test("a guest may not mint a public link", async () => {
+  configure([OWNER]);
+  const { base, store } = freshApp();
+  const publish = (sub: string) =>
+    fetch(`${base}/api/conversations/pub1/publications`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...as(store, sub) },
+      body: JSON.stringify({ name: "doc.md", version: 1 }),
+    });
+  expect((await publish(GUEST)).status).toBe(403);
+  // The owner gets past the gate (404 here only because the document is fictional).
+  expect((await publish(OWNER)).status).not.toBe(403);
+});
+
+test("roles declared in config carry their own policy", () => {
+  const base = loadConfig({ path: "does-not-exist.json", env: {} });
+  setConfig({
+    ...base,
+    auth: {
+      ...base.auth,
+      enabled: true,
+      owners: [],
+      ownerRole: "",
+      roles: {
+        staff: { admin: false, sandbox: true, publish: true },
+        visitor: { admin: false, sandbox: false, publish: false },
+      },
+    },
+  });
+  resetAuthCache();
+
+  expect(roleFor("https://a/", "staff")).toBe("staff");
+  expect(roleCan("staff", "sandbox")).toBe(true);
+  expect(roleCan("staff", "admin")).toBe(false);
+  expect(roleCan("visitor", "sandbox")).toBe(false);
+  // A role the provider sends that this deployment never declared is a guest.
+  expect(roleFor("https://a/", "somethingelse")).toBe("guest");
 });

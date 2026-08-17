@@ -427,6 +427,31 @@
           "type": "string",
           "default": ""
         },
+        "roles": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "admin": {
+                "type": "boolean",
+                "default": false
+              },
+              "sandbox": {
+                "type": "boolean",
+                "default": false
+              },
+              "publish": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": []
+          },
+          "default": {}
+        },
         "sessionTtlDays": {
           "type": "integer",
           "minimum": 1,
@@ -451,6 +476,7 @@
         "allowedSubs": [],
         "owners": [],
         "ownerRole": "",
+        "roles": {},
         "sessionTtlDays": 30,
         "appName": "kloe",
         "logoUri": ""

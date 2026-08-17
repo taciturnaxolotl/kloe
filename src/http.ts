@@ -3,10 +3,15 @@ import { brotliCompressSync, gzipSync, constants as zlibConstants } from "node:z
 import { ConversationActor, type Subscriber, type WireEvent } from "./actor";
 import {
   authEnabled,
+  type Capability,
+  can,
+  declaredRoles,
   gateApi,
   getSession,
+  policyFor,
   type Role,
   requestRole,
+  roleCan,
   roleFor,
   sessionUser,
 } from "./auth";
@@ -291,7 +296,7 @@ function requireUsableModel(
   role: Role,
   sub: string | undefined,
 ): Response | null {
-  if (role === "owner") return requireKnownModel(ref);
+  if (roleCan(role, "admin")) return requireKnownModel(ref);
   // Paying for it is permission enough. A guest who connected their own account
   // is spending their own credits, and that account decides what it will run —
   // so the ref need not be one the deployment knows, and the provider's own
@@ -300,15 +305,21 @@ function requireUsableModel(
   const unknown = requireKnownModel(ref);
   if (unknown) return unknown;
   const s = store.getModelSetting(ref);
-  if (s?.visible && s.guestVisible) return null;
+  if (s?.visible && offeredTo(s.allowedRoles, role)) return null;
   return Response.json({ error: `model "${ref}" is not available to you` }, { status: 403 });
 }
 
-/** 403 unless the caller runs this instance. */
-function requireOwner(req: Request, store: Store): Response | null {
-  if (requestRole(req, store) === "owner") return null;
-  return Response.json({ error: "owners only" }, { status: 403 });
+/** Is this model offered to this role? `["*"]` means every role. */
+function offeredTo(allowedRoles: string[], role: Role): boolean {
+  return allowedRoles.includes("*") || allowedRoles.includes(role);
 }
+
+/** 403 unless the caller may do `capability`. */
+function require(req: Request, store: Store, capability: Capability): Response | null {
+  if (can(req, store, capability)) return null;
+  return Response.json({ error: `not permitted: ${capability}` }, { status: 403 });
+}
+const requireOwner = (req: Request, store: Store): Response | null => require(req, store, "admin");
 
 /**
  * Every available model joined to its curation state, for the settings UI.
@@ -323,7 +334,7 @@ function adminModels(store: Store) {
       return {
         ...m,
         visible: s?.visible ?? false,
-        guestVisible: s?.guestVisible ?? false,
+        allowedRoles: s?.allowedRoles ?? [],
         displayName: s?.displayName ?? null,
         sortOrder: s?.sortOrder ?? 0,
       };
@@ -354,7 +365,7 @@ function chatModels(store: Store, role: Role) {
     .flatMap((m) => {
       const s = settings.get(m.ref);
       if (!s?.visible) return [];
-      if (role === "guest" && !s.guestVisible) return [];
+      if (!roleCan(role, "admin") && !offeredTo(s.allowedRoles, role)) return [];
       return [
         {
           ref: m.ref,
@@ -665,7 +676,7 @@ function patchModel(data: ModelPatchBody, store: Store): Response {
   const merged = {
     ref: data.ref,
     visible: data.visible ?? prev?.visible ?? false,
-    guestVisible: data.guestVisible ?? prev?.guestVisible ?? false,
+    allowedRoles: data.allowedRoles ?? prev?.allowedRoles ?? [],
     displayName: data.displayName !== undefined ? data.displayName : (prev?.displayName ?? null),
     sortOrder: data.sortOrder ?? prev?.sortOrder ?? 0,
   };
@@ -729,7 +740,7 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         // The role rides along so the UI can hide what it may not touch; the
         // API gates on its own reading of the session either way.
         return s
-          ? Response.json(sessionUser(s))
+          ? Response.json(sessionUser(s, store.getUserRole(s.sub)))
           : Response.json({ authenticated: false, role: roleFor(undefined) });
       },
     },
@@ -865,7 +876,9 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     // src/share.ts, outside the auth gate — nothing here serves a reader.
     "/api/conversations/:id/publications": {
       POST: (req: Bun.BunRequest<"/api/conversations/:id/publications">) => {
-        const denied = guardConv(req, req.params.id);
+        // A public link is minted on this instance's domain, so it is the
+        // operator's to give away rather than any signed-in user's to take.
+        const denied = guardConv(req, req.params.id) ?? require(req, store, "publish");
         if (denied) return Promise.resolve(denied);
         return withBody(PublishBody, (data) => {
           const pub = store.publish(req.params.id, data.name, data.version, data.mode);
@@ -1025,6 +1038,17 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
           return Response.json({ error: (e as Error).message }, { status: 502 });
         }
       },
+    },
+
+    // The roles this deployment declares and what each may do. The settings UI
+    // reads it to know which boxes to draw; there is nothing secret in it.
+    "/api/roles": {
+      GET: (req: Bun.BunRequest<"/api/roles">) =>
+        requireOwner(req, store) ??
+        Response.json({
+          roles: declaredRoles().map((name) => ({ name, ...policyFor(name) })),
+          users: store.listUserRoles(),
+        }),
     },
 
     // Curation is the instance's shape, so it is the owner's to see and change.

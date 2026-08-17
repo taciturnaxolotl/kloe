@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { getConfig } from "./settings";
+import { getConfig, type RolePolicy } from "./settings";
 import type { Session, SessionProfile, Store } from "./store";
 
 /**
@@ -275,7 +275,10 @@ export async function handleCallback(req: Request, store: Store): Promise<Respon
   };
   const sid = token(32);
   const ttlSec = cfg.sessionTtlDays * 86400;
-  store.createSession(sid, sub, profile, Date.now() + ttlSec * 1000, tok.role);
+  store.createSession(sid, sub, profile, Date.now() + ttlSec * 1000);
+  // Durable, not session-scoped: a job queued now may run after this session is
+  // gone, and it still has to know what this person may reach.
+  store.setUserRole(sub, tok.role);
 
   const headers = new Headers({ Location: safeReturn(saved.returnTo) });
   headers.append("Set-Cookie", serializeCookie(OAUTH_COOKIE, "", 0)); // clear the transient cookie
@@ -324,46 +327,92 @@ export function clientMetadata(): Response {
  * this way before roles existed, and an upgrade must not silently demote its
  * only user).
  */
-export type Role = "owner" | "guest";
+/**
+ * A role is whatever string the identity provider assigned for this app; kloe
+ * gives meaning to it through `auth.roles`. Two names are built in so a
+ * deployment that configures nothing still works: `owner` runs the place and
+ * `guest` may chat.
+ */
+export type Role = string;
+
+export const OWNER: Role = "owner";
+export const GUEST: Role = "guest";
+
+/** What a role may do beyond chatting. Unknown roles get the guest's answer. */
+export type Capability = "admin" | "sandbox" | "publish";
+
+const BUILT_IN: Record<string, RolePolicy> = {
+  owner: { admin: true, sandbox: true, publish: true },
+  guest: { admin: false, sandbox: false, publish: false },
+};
 
 /**
- * Whether this deployment has said who its owners are — by naming subjects, or
- * by naming the provider role that means owner. Until it says one or the other
- * there are no guests to be, and everyone who can sign in is an owner: that is
- * what a single-user instance is, and what every instance was before roles.
+ * Whether this deployment has said who its owners are — by naming subjects, by
+ * naming the provider role that means owner, or by declaring roles at all.
+ * Until it says one of those there are no guests to be, and everyone who can
+ * sign in is an owner: that is what a single-user instance is, and what every
+ * instance was before roles.
  */
 function rolesInPlay(cfg: ReturnType<typeof getConfig>["auth"]): boolean {
-  return cfg.owners.length > 0 || cfg.ownerRole !== "";
+  return cfg.owners.length > 0 || cfg.ownerRole !== "" || Object.keys(cfg.roles).length > 0;
 }
 
 /**
- * Owner or guest, from two sources that answer in this order:
+ * The role this person holds, from three sources answering in order:
  *
- *   1. `auth.owners` — subjects named in the deployment's own config. This is
- *      the break-glass: it holds when the provider is misconfigured, when a
- *      role was never assigned, and when you are the person fixing it.
- *   2. `auth.ownerRole` — the provider's role for this app, recorded on the
- *      session at sign-in. indiko assigns these per app, so kloe asks for
- *      nothing beyond what an admin already clicked there.
+ *   1. `auth.owners` — subjects named in the deployment's own config. The
+ *      break-glass: it holds when the provider is misconfigured, when a role
+ *      was never assigned, and when you are the person fixing it.
+ *   2. `auth.ownerRole` — the one provider role that means owner, for a
+ *      deployment that wants nothing more elaborate than that.
+ *   3. the provider's role itself, when `auth.roles` declares it.
  *
- * Anyone else who gets through `allowedSubs` is a guest.
+ * Anything else is a guest.
  */
 export function roleFor(sub: string | undefined, providerRole?: string): Role {
   const cfg = getConfig().auth;
-  if (!cfg.enabled || !rolesInPlay(cfg)) return "owner";
-  if (sub && cfg.owners.includes(sub)) return "owner";
-  if (cfg.ownerRole && providerRole === cfg.ownerRole) return "owner";
-  return "guest";
+  if (!cfg.enabled || !rolesInPlay(cfg)) return OWNER;
+  if (sub && cfg.owners.includes(sub)) return OWNER;
+  if (cfg.ownerRole && providerRole === cfg.ownerRole) return OWNER;
+  if (providerRole && cfg.roles[providerRole]) return providerRole;
+  return GUEST;
+}
+
+/** The policy for a role: what the config says, else the built-in of that name. */
+export function policyFor(role: Role): RolePolicy {
+  const cfg = getConfig().auth;
+  if (!cfg.enabled || !rolesInPlay(cfg)) return BUILT_IN.owner!;
+  return cfg.roles[role] ?? BUILT_IN[role] ?? BUILT_IN.guest!;
+}
+
+export function roleCan(role: Role, capability: Capability): boolean {
+  return policyFor(role)[capability] === true;
+}
+
+/** Roles this deployment knows about, for the UI that hands things out. */
+export function declaredRoles(): Role[] {
+  const cfg = getConfig().auth;
+  const names = new Set<string>([OWNER, GUEST, ...Object.keys(cfg.roles)]);
+  if (cfg.ownerRole) names.add(cfg.ownerRole);
+  return [...names];
 }
 
 /** The role of whoever made this request. */
 export function requestRole(req: Request, store: Store): Role {
-  const s = getSession(req, store);
-  return roleFor(s?.sub, s?.role);
+  const sub = getSession(req, store)?.sub;
+  return roleFor(sub, sub ? store.getUserRole(sub) : undefined);
+}
+
+/** Whether this request may do `capability`. */
+export function can(req: Request, store: Store, capability: Capability): boolean {
+  return roleCan(requestRole(req, store), capability);
 }
 
 /** The public shape of the signed-in user, for `/api/me`. */
-export function sessionUser(session: Session): {
+export function sessionUser(
+  session: Session,
+  providerRole?: string,
+): {
   sub: string;
   role: Role;
   name?: string;
@@ -373,5 +422,5 @@ export function sessionUser(session: Session): {
 } {
   // `role` here is kloe's own answer (owner | guest), not the provider's raw
   // string — the profile spread comes first so it can never shadow it.
-  return { ...session.profile, sub: session.sub, role: roleFor(session.sub, session.role) };
+  return { ...session.profile, sub: session.sub, role: roleFor(session.sub, providerRole) };
 }

@@ -4215,7 +4215,17 @@ body.lb-open {
 .modelrow.off {
   opacity: 0.5;
 }
-/* Guest access sits with the row it belongs to, quiet until you look for it. */
+/* Role grants sit with the row they belong to, quiet until you look for them. */
+.modelrow .rolegrants {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+.modelrow .rolegrants[hidden] {
+  display: none;
+}
+
 .modelrow .guesttoggle {
   display: inline-flex;
   align-items: center;

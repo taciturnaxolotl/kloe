@@ -110,6 +110,8 @@ export function mount(root, _params, ctx) {
     return (m && (m.name || m.ref)) || ref;
   }
   var dragActive = false;
+  /** Non-admin roles this deployment declares; the model rows hand access to these. */
+  var guestRoles = [];
   var lardSubjects = []; // full listing, for search filtering
   var activeSubjectPath = null;
 
@@ -200,45 +202,45 @@ export function mount(root, _params, ctx) {
     saved.className = "saved";
     saved.textContent = "saved";
 
-    // Guest access, only where it can mean anything: a model nobody can see is
-    // not a model guests can be given.
-    var guest = document.createElement("label");
-    guest.className = "guesttoggle";
-    guest.title = "Also offer this model to guests";
-    var guestBox = document.createElement("input");
-    guestBox.type = "checkbox";
-    guestBox.checked = !!m.guestVisible;
-    guestBox.setAttribute("aria-label", "Offer to guests");
-    guest.appendChild(guestBox);
-    guest.appendChild(document.createTextNode("guests"));
-    if (!m.visible) guest.hidden = true;
-    guestBox.addEventListener("change", async function () {
-      var v = guestBox.checked;
-      if (await patchRaw(m.ref, "guestVisible", v)) {
-        m.guestVisible = v;
-        flash(saved, true);
-      } else {
-        guestBox.checked = !v;
-        flash(saved, false);
-      }
+    // Who else is offered this model. One checkbox per non-admin role the
+    // deployment declares, shown only where it can mean anything: a model
+    // nobody can see is not a model anyone can be given.
+    var guest = document.createElement("div");
+    guest.className = "rolegrants";
+    guestRoles.forEach(function (roleName) {
+      var label = document.createElement("label");
+      label.className = "guesttoggle";
+      label.title = "Also offer this model to " + roleName;
+      var box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked =
+        (m.allowedRoles || []).indexOf(roleName) >= 0 || (m.allowedRoles || []).indexOf("*") >= 0;
+      box.setAttribute("aria-label", "Offer to " + roleName);
+      box.addEventListener("change", async function () {
+        var next = (m.allowedRoles || []).filter(function (r) {
+          return r !== roleName && r !== "*";
+        });
+        // A wildcard is expanded on the way out, so unticking one role leaves
+        // the others exactly as they were.
+        if ((m.allowedRoles || []).indexOf("*") >= 0) {
+          guestRoles.forEach(function (r) {
+            if (r !== roleName && next.indexOf(r) < 0) next.push(r);
+          });
+        }
+        if (box.checked) next.push(roleName);
+        if (await patchRaw(m.ref, "allowedRoles", next)) {
+          m.allowedRoles = next;
+          flash(saved, true);
+        } else {
+          box.checked = !box.checked;
+          flash(saved, false);
+        }
+      });
+      label.appendChild(box);
+      label.appendChild(document.createTextNode(roleName));
+      guest.appendChild(label);
     });
-
-    // Enabling/disabling moves the model between sections, so re-render on success.
-    toggle.addEventListener("change", async function () {
-      var v = toggle.checked;
-      if (await patchRaw(m.ref, "visible", v)) {
-        m.visible = v;
-        render();
-      } else {
-        toggle.checked = !v;
-        flash(saved, false);
-      }
-    });
-    rename.addEventListener("change", function () {
-      var v = rename.value.trim();
-      nm.textContent = v || m.name;
-      patch(m.ref, "displayName", v === "" ? null : v, saved);
-    });
+    if (!m.visible || guestRoles.length === 0) guest.hidden = true;
 
     row.appendChild(toggle);
     row.appendChild(main);
@@ -764,6 +766,19 @@ export function mount(root, _params, ctx) {
     devicePoll = setTimeout(tick, 2000);
   }
 
+  async function loadRoles() {
+    try {
+      var j = await (await fetch("/api/roles")).json();
+      guestRoles = (j.roles || [])
+        .filter(function (r) {
+          return !r.admin;
+        })
+        .map(function (r) {
+          return r.name;
+        });
+    } catch (_) {}
+  }
+
   async function loadAccounts() {
     var tabBtn = root.querySelector('.settab[data-tab="accounts"]');
     var list = byId("accountList");
@@ -1111,6 +1126,9 @@ export function mount(root, _params, ctx) {
 
   // ---- boot the view (auth + sidebar are already up in the shell) ----
   setupTabs();
+  // Roles first: the model rows draw a checkbox per role, so they need the list
+  // before they render.
+  loadRoles();
   if (location.hash === "#memory") selectTab("memory");
   if (location.hash === "#accounts") selectTab("accounts");
   loadLard();

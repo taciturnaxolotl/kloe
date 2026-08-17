@@ -89,7 +89,8 @@ export type CredentialBody = v.InferOutput<typeof CredentialBody>;
 export const ModelPatchBody = v.object({
   ref: v.pipe(v.string(), v.minLength(1)),
   visible: v.optional(v.boolean()),
-  guestVisible: v.optional(v.boolean()),
+  /** Roles offered this model; `["*"]` is every role. Admins are never filtered. */
+  allowedRoles: v.optional(v.array(v.string())),
   displayName: v.optional(v.nullable(v.string())),
   sortOrder: v.optional(v.number()),
 });

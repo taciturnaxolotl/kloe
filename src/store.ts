@@ -261,11 +261,12 @@ export interface ModelSetting {
   ref: string;
   visible: boolean;
   /**
-   * Also offered to guests. Narrows `visible` rather than standing beside it:
-   * a model guests may use is necessarily one the instance offers, so this is
-   * only consulted for models that are already visible.
+   * Which roles are offered this model, narrowing `visible` rather than
+   * standing beside it: a model a role may use is necessarily one the instance
+   * offers. `["*"]` means every role. Empty means admins only, who are never
+   * filtered by this list.
    */
-  guestVisible: boolean;
+  allowedRoles: string[];
   displayName: string | null;
   sortOrder: number;
 }
@@ -273,16 +274,27 @@ export interface ModelSetting {
 interface ModelSettingRow {
   model_ref: string;
   visible: number;
-  guest_visible: number;
+  allowed_roles: string | null;
   display_name: string | null;
   sort_order: number;
+}
+
+/** Tolerant of anything that isn't the array we wrote: a bad row hides a model rather than exposing it. */
+function parseRoles(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((r): r is string => typeof r === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 function rowToSetting(r: ModelSettingRow): ModelSetting {
   return {
     ref: r.model_ref,
     visible: r.visible === 1,
-    guestVisible: r.guest_visible === 1,
+    allowedRoles: parseRoles(r.allowed_roles),
     displayName: r.display_name,
     sortOrder: r.sort_order,
   };
@@ -336,7 +348,7 @@ CREATE TABLE IF NOT EXISTS cancel_requests (
 CREATE TABLE IF NOT EXISTS model_settings (
   model_ref TEXT PRIMARY KEY,
   visible INTEGER NOT NULL DEFAULT 0,
-  guest_visible INTEGER NOT NULL DEFAULT 0,
+  allowed_roles TEXT,
   display_name TEXT,
   sort_order INTEGER NOT NULL DEFAULT 0
 );
@@ -439,10 +451,19 @@ CREATE TABLE IF NOT EXISTS sessions (
   sub TEXT NOT NULL,
   data TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL,
-  role TEXT
+  expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions (expires_at);
+
+-- The role the identity provider last reported for a user, recorded at every
+-- sign-in. Durable rather than session-scoped because a queued job outlives the
+-- request that enqueued it — and often the session too — and the run still has
+-- to know whether that person may reach the sandbox.
+CREATE TABLE IF NOT EXISTS user_roles (
+  sub        TEXT PRIMARY KEY,
+  role       TEXT,
+  updated_at INTEGER NOT NULL
+);
 
 -- Projects group conversations and carry shared context. A project is owned by
 -- one kloe user, optionally pins a lard memory project, and its conversations
@@ -553,15 +574,6 @@ export interface Session {
   sub: string;
   expiresAt: number;
   profile: SessionProfile;
-  /**
-   * The role the identity provider reported for this app at sign-in, verbatim
-   * (indiko's per-app RBAC). Undefined when the provider sent none.
-   *
-   * Captured once, at login, like every other claim in the session — so a role
-   * changed upstream takes effect the next time that person signs in, not
-   * mid-session. Revoking someone promptly means deleting their sessions.
-   */
-  role?: string;
 }
 
 /**
@@ -632,21 +644,22 @@ export class Store {
     } catch {
       // column already exists
     }
-    // Migration: the provider's role for this app, recorded at sign-in.
+    // Migration: curation gained a role dimension. It began as a single
+    // guest_visible flag, which is a column per role and does not survive a
+    // third one; the flag's meaning carries over as the wildcard.
     try {
-      this.db.exec("ALTER TABLE sessions ADD COLUMN role TEXT");
+      this.db.exec("ALTER TABLE model_settings ADD COLUMN allowed_roles TEXT");
     } catch {
       // column already exists
     }
-    // Migration: curation gained a guest dimension. Existing rows default to
-    // 0 — a deployment that adds guests decides what they may reach, rather
-    // than inheriting the owner's whole list the moment roles arrive.
     try {
       this.db.exec(
-        "ALTER TABLE model_settings ADD COLUMN guest_visible INTEGER NOT NULL DEFAULT 0",
+        `UPDATE model_settings SET allowed_roles = '["*"]'
+         WHERE allowed_roles IS NULL AND guest_visible = 1`,
       );
+      this.db.exec("ALTER TABLE model_settings DROP COLUMN guest_visible");
     } catch {
-      // column already exists
+      // already migrated (the column is gone)
     }
     // Migration: which project a conversation belongs to (NULL = unfiled).
     try {
@@ -765,18 +778,18 @@ export class Store {
     );
 
     this.listSettingsStmt = this.db.prepare(
-      `SELECT model_ref, visible, guest_visible, display_name, sort_order FROM model_settings`,
+      `SELECT model_ref, visible, allowed_roles, display_name, sort_order FROM model_settings`,
     );
     this.getSettingStmt = this.db.prepare(
-      `SELECT model_ref, visible, guest_visible, display_name, sort_order
+      `SELECT model_ref, visible, allowed_roles, display_name, sort_order
        FROM model_settings WHERE model_ref = ?`,
     );
     this.upsertSettingStmt = this.db.prepare(
-      `INSERT INTO model_settings (model_ref, visible, guest_visible, display_name, sort_order)
+      `INSERT INTO model_settings (model_ref, visible, allowed_roles, display_name, sort_order)
        VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(model_ref) DO UPDATE SET
          visible = excluded.visible,
-         guest_visible = excluded.guest_visible,
+         allowed_roles = excluded.allowed_roles,
          display_name = excluded.display_name,
          sort_order = excluded.sort_order`,
     );
@@ -1309,7 +1322,7 @@ export class Store {
     this.upsertSettingStmt.run(
       s.ref,
       s.visible ? 1 : 0,
-      s.guestVisible ? 1 : 0,
+      JSON.stringify(s.allowedRoles),
       s.displayName,
       s.sortOrder,
     );
@@ -1351,25 +1364,50 @@ export class Store {
   // ---- auth sessions -----------------------------------------------------
 
   /** Creates a session; `id` is the opaque high-entropy cookie value. */
-  createSession(
-    id: string,
-    sub: string,
-    profile: SessionProfile,
-    expiresAt: number,
-    role?: string,
-  ): void {
+  createSession(id: string, sub: string, profile: SessionProfile, expiresAt: number): void {
+    this.db
+      .query("INSERT INTO sessions (id, sub, data, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
+      .run(id, sub, JSON.stringify(profile), Date.now(), expiresAt);
+  }
+
+  /** Record what the provider said this user's role is, at sign-in. */
+  setUserRole(sub: string, role: string | undefined): void {
     this.db
       .query(
-        "INSERT INTO sessions (id, sub, data, created_at, expires_at, role) VALUES (?, ?, ?, ?, ?, ?)",
+        `INSERT INTO user_roles (sub, role, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(sub) DO UPDATE SET role = excluded.role, updated_at = excluded.updated_at`,
       )
-      .run(id, sub, JSON.stringify(profile), Date.now(), expiresAt, role ?? null);
+      .run(sub, role ?? null, Date.now());
+  }
+
+  /** The provider role last recorded for a user, or undefined if never seen. */
+  getUserRole(sub: string): string | undefined {
+    const row = this.db.query("SELECT role FROM user_roles WHERE sub = ?").get(sub) as {
+      role: string | null;
+    } | null;
+    return row?.role ?? undefined;
+  }
+
+  /** Everyone kloe has seen sign in, for the admin view that hands roles out. */
+  listUserRoles(): Array<{ sub: string; role?: string; updatedAt: number }> {
+    return (
+      this.db.query("SELECT sub, role, updated_at FROM user_roles ORDER BY sub").all() as Array<{
+        sub: string;
+        role: string | null;
+        updated_at: number;
+      }>
+    ).map((r) => ({ sub: r.sub, role: r.role ?? undefined, updatedAt: r.updated_at }));
   }
 
   /** The session for a cookie id, or undefined if missing/expired (expired rows are dropped). */
   getSession(id: string): Session | undefined {
     const row = this.db
-      .query("SELECT sub, data, expires_at, role FROM sessions WHERE id = ?")
-      .get(id) as { sub: string; data: string; expires_at: number; role: string | null } | null;
+      .query("SELECT sub, data, expires_at FROM sessions WHERE id = ?")
+      .get(id) as {
+      sub: string;
+      data: string;
+      expires_at: number;
+    } | null;
     if (!row) return undefined;
     if (row.expires_at <= Date.now()) {
       this.deleteSession(id);
@@ -1380,7 +1418,6 @@ export class Store {
       sub: row.sub,
       expiresAt: row.expires_at,
       profile: JSON.parse(row.data) as SessionProfile,
-      role: row.role ?? undefined,
     };
   }
 
