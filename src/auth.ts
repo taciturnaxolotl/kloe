@@ -221,6 +221,8 @@ interface TokenResponse {
   me?: string;
   sub?: string;
   iss?: string;
+  /** indiko's per-app RBAC: an arbitrary string an admin assigned for THIS app. */
+  role?: string;
   profile?: { name?: string; email?: string; photo?: string; picture?: string; url?: string };
 }
 
@@ -273,7 +275,7 @@ export async function handleCallback(req: Request, store: Store): Promise<Respon
   };
   const sid = token(32);
   const ttlSec = cfg.sessionTtlDays * 86400;
-  store.createSession(sid, sub, profile, Date.now() + ttlSec * 1000);
+  store.createSession(sid, sub, profile, Date.now() + ttlSec * 1000, tok.role);
 
   const headers = new Headers({ Location: safeReturn(saved.returnTo) });
   headers.append("Set-Cookie", serializeCookie(OAUTH_COOKIE, "", 0)); // clear the transient cookie
@@ -324,15 +326,40 @@ export function clientMetadata(): Response {
  */
 export type Role = "owner" | "guest";
 
-export function roleFor(sub: string | undefined): Role {
+/**
+ * Whether this deployment has said who its owners are — by naming subjects, or
+ * by naming the provider role that means owner. Until it says one or the other
+ * there are no guests to be, and everyone who can sign in is an owner: that is
+ * what a single-user instance is, and what every instance was before roles.
+ */
+function rolesInPlay(cfg: ReturnType<typeof getConfig>["auth"]): boolean {
+  return cfg.owners.length > 0 || cfg.ownerRole !== "";
+}
+
+/**
+ * Owner or guest, from two sources that answer in this order:
+ *
+ *   1. `auth.owners` — subjects named in the deployment's own config. This is
+ *      the break-glass: it holds when the provider is misconfigured, when a
+ *      role was never assigned, and when you are the person fixing it.
+ *   2. `auth.ownerRole` — the provider's role for this app, recorded on the
+ *      session at sign-in. indiko assigns these per app, so kloe asks for
+ *      nothing beyond what an admin already clicked there.
+ *
+ * Anyone else who gets through `allowedSubs` is a guest.
+ */
+export function roleFor(sub: string | undefined, providerRole?: string): Role {
   const cfg = getConfig().auth;
-  if (!cfg.enabled || cfg.owners.length === 0) return "owner";
-  return sub && cfg.owners.includes(sub) ? "owner" : "guest";
+  if (!cfg.enabled || !rolesInPlay(cfg)) return "owner";
+  if (sub && cfg.owners.includes(sub)) return "owner";
+  if (cfg.ownerRole && providerRole === cfg.ownerRole) return "owner";
+  return "guest";
 }
 
 /** The role of whoever made this request. */
 export function requestRole(req: Request, store: Store): Role {
-  return roleFor(getSession(req, store)?.sub);
+  const s = getSession(req, store);
+  return roleFor(s?.sub, s?.role);
 }
 
 /** The public shape of the signed-in user, for `/api/me`. */
@@ -344,5 +371,7 @@ export function sessionUser(session: Session): {
   url?: string;
   email?: string;
 } {
-  return { sub: session.sub, role: roleFor(session.sub), ...session.profile };
+  // `role` here is kloe's own answer (owner | guest), not the provider's raw
+  // string — the profile spread comes first so it can never shadow it.
+  return { ...session.profile, sub: session.sub, role: roleFor(session.sub, session.role) };
 }

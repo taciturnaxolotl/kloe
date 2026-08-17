@@ -39,9 +39,9 @@ function fixtureRegistry(): ProviderRegistry {
   });
 }
 
-function configure(owners: string[]): void {
+function configure(owners: string[], ownerRole = ""): void {
   const base = loadConfig({ path: "does-not-exist.json", env: {} });
-  setConfig({ ...base, auth: { ...base.auth, enabled: true, owners } });
+  setConfig({ ...base, auth: { ...base.auth, enabled: true, owners, ownerRole } });
   resetAuthCache();
 }
 
@@ -63,9 +63,9 @@ afterAll(() => {
 
 /** A session cookie for `sub`, so a request arrives as that person. */
 let sid = 0;
-function as(store: Store, sub: string): { cookie: string } {
+function as(store: Store, sub: string, providerRole?: string): { cookie: string } {
   const id = `sid-${sub}-${sid++}`;
-  store.createSession(id, sub, {}, Date.now() + 600_000);
+  store.createSession(id, sub, {}, Date.now() + 600_000, providerRole);
   return { cookie: `kloe_session=${encodeURIComponent(id)}` };
 }
 
@@ -190,4 +190,56 @@ test("guest visibility survives a round trip through the patch endpoint", async 
     displayName: "Cheap One",
     sortOrder: 0,
   });
+});
+
+// ---- roles from the identity provider --------------------------------------
+// indiko assigns a role per app and returns it in the token response, so the
+// list of who runs this instance can live where the accounts already do.
+
+test("the provider's role decides, when the deployment says which role means owner", () => {
+  configure([], "operator");
+  expect(roleFor("https://anyone/", "operator")).toBe("owner");
+  expect(roleFor("https://anyone/", "viewer")).toBe("guest");
+  // No role assigned upstream is a guest, not an error.
+  expect(roleFor("https://anyone/", undefined)).toBe("guest");
+});
+
+test("naming the role is enough to bring roles into play", () => {
+  // Without `owners`, an earlier version treated everyone as an owner; a
+  // deployment that has said which role means owner has plainly opted in.
+  configure([], "operator");
+  expect(roleFor("https://anyone/", undefined)).toBe("guest");
+});
+
+test("the configured owner list outranks whatever the provider says", () => {
+  configure([OWNER], "operator");
+  // The break-glass: it holds when the role was never assigned, which is the
+  // state every pre-registered app starts in.
+  expect(roleFor(OWNER, undefined)).toBe("owner");
+  expect(roleFor(OWNER, "viewer")).toBe("owner");
+  expect(roleFor(GUEST, "operator")).toBe("owner");
+  expect(roleFor(GUEST, undefined)).toBe("guest");
+});
+
+test("a session carries the role it was signed in with", async () => {
+  configure([], "operator");
+  const { base, store } = freshApp();
+  store.setModelSetting({
+    ref: "acme/spendy",
+    visible: true,
+    guestVisible: false,
+    displayName: null,
+    sortOrder: 0,
+  });
+
+  const me = await (
+    await fetch(`${base}/api/me`, { headers: as(store, GUEST, "operator") })
+  ).json();
+  expect((me as any).role).toBe("owner");
+
+  // …and the same person without the role is held to the guest set.
+  const forGuest = await fetch(`${base}/api/models/chat`, {
+    headers: as(store, GUEST, "viewer"),
+  });
+  expect(((await forGuest.json()) as any).models).toEqual([]);
 });

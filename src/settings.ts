@@ -395,6 +395,16 @@ const AuthSchema = v.object({
    * and what every instance was before roles existed.
    */
   owners: v.optional(v.array(v.string()), []),
+  /**
+   * The provider's role string that means "owner" — indiko assigns roles per
+   * app (an admin picks them on the pre-registered client), and hands the
+   * user's role back in the token response, so this is the mechanism that
+   * scales past editing config for every person.
+   *
+   * Empty (the default) means only `owners` decides. Setting either one is
+   * what tells kloe this deployment has guests at all.
+   */
+  ownerRole: v.optional(v.string(), ""),
   sessionTtlDays: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 30),
   appName: v.optional(v.string(), "kloe"),
   logoUri: v.optional(v.string(), ""),

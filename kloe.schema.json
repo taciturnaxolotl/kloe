@@ -423,6 +423,10 @@
           },
           "default": []
         },
+        "ownerRole": {
+          "type": "string",
+          "default": ""
+        },
         "sessionTtlDays": {
           "type": "integer",
           "minimum": 1,
@@ -446,6 +450,7 @@
         "clientSecret": "",
         "allowedSubs": [],
         "owners": [],
+        "ownerRole": "",
         "sessionTtlDays": 30,
         "appName": "kloe",
         "logoUri": ""

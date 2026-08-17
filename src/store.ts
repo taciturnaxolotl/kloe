@@ -439,7 +439,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   sub TEXT NOT NULL,
   data TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL
+  expires_at INTEGER NOT NULL,
+  role TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions (expires_at);
 
@@ -552,6 +553,15 @@ export interface Session {
   sub: string;
   expiresAt: number;
   profile: SessionProfile;
+  /**
+   * The role the identity provider reported for this app at sign-in, verbatim
+   * (indiko's per-app RBAC). Undefined when the provider sent none.
+   *
+   * Captured once, at login, like every other claim in the session — so a role
+   * changed upstream takes effect the next time that person signs in, not
+   * mid-session. Revoking someone promptly means deleting their sessions.
+   */
+  role?: string;
 }
 
 /**
@@ -619,6 +629,12 @@ export class Store {
     // per-user lard identity). NULL for pre-existing rows / auth-off (→ local).
     try {
       this.db.exec("ALTER TABLE conversations ADD COLUMN owner_sub TEXT");
+    } catch {
+      // column already exists
+    }
+    // Migration: the provider's role for this app, recorded at sign-in.
+    try {
+      this.db.exec("ALTER TABLE sessions ADD COLUMN role TEXT");
     } catch {
       // column already exists
     }
@@ -1335,17 +1351,25 @@ export class Store {
   // ---- auth sessions -----------------------------------------------------
 
   /** Creates a session; `id` is the opaque high-entropy cookie value. */
-  createSession(id: string, sub: string, profile: SessionProfile, expiresAt: number): void {
+  createSession(
+    id: string,
+    sub: string,
+    profile: SessionProfile,
+    expiresAt: number,
+    role?: string,
+  ): void {
     this.db
-      .query("INSERT INTO sessions (id, sub, data, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
-      .run(id, sub, JSON.stringify(profile), Date.now(), expiresAt);
+      .query(
+        "INSERT INTO sessions (id, sub, data, created_at, expires_at, role) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(id, sub, JSON.stringify(profile), Date.now(), expiresAt, role ?? null);
   }
 
   /** The session for a cookie id, or undefined if missing/expired (expired rows are dropped). */
   getSession(id: string): Session | undefined {
     const row = this.db
-      .query("SELECT sub, data, expires_at FROM sessions WHERE id = ?")
-      .get(id) as { sub: string; data: string; expires_at: number } | null;
+      .query("SELECT sub, data, expires_at, role FROM sessions WHERE id = ?")
+      .get(id) as { sub: string; data: string; expires_at: number; role: string | null } | null;
     if (!row) return undefined;
     if (row.expires_at <= Date.now()) {
       this.deleteSession(id);
@@ -1356,6 +1380,7 @@ export class Store {
       sub: row.sub,
       expiresAt: row.expires_at,
       profile: JSON.parse(row.data) as SessionProfile,
+      role: row.role ?? undefined,
     };
   }
 
