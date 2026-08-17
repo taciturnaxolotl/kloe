@@ -40,7 +40,13 @@ const ProviderModelSchema = v.object({
  * the /v1 inference path).
  */
 const ProviderOAuthSchema = v.object({
-  flow: v.picklist(["hyper-device"]),
+  /**
+   * A flow name from src/oauthflows.ts. A plain string rather than a closed
+   * list: the registry is the authority on what kloe implements, and a config
+   * naming one it doesn't simply offers no Connect button — better than a
+   * schema error at boot over a provider nobody uses.
+   */
+  flow: v.string(),
   baseUrl: v.string(),
 });
 

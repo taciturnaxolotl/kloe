@@ -17,6 +17,7 @@ import {
 } from "./auth";
 import type { BlobStore } from "./blobs";
 import { ACTOR_IDLE_TTL_MS, SSE_RETRY_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
+import { isService } from "./connectors";
 import {
   byokAllowed,
   connectableProviders,
@@ -28,7 +29,6 @@ import {
 } from "./credentials";
 import { Event, type EventData, type EventName, parseEventId } from "./events";
 import { getExecutor } from "./executor";
-import { exchangeToken, pollDeviceAuth, startDeviceAuth } from "./hyperauth";
 import { getRegistry } from "./inference";
 import {
   getContext,
@@ -42,6 +42,7 @@ import {
   memoryRead,
   memoryWrite,
 } from "./lard";
+import { flowFor } from "./oauthflows";
 import {
   CredentialBody,
   ModelPatchBody,
@@ -301,7 +302,7 @@ function requireUsableModel(
   // is spending their own credits, and that account decides what it will run —
   // so the ref need not be one the deployment knows, and the provider's own
   // error is the right answer for one it doesn't.
-  if (sub && store.getCredentialRow(sub, ref.split("/")[0] ?? "")) return null;
+  if (sub && store.getCredentialRow(sub, "inference", ref.split("/")[0] ?? "")) return null;
   const unknown = requireKnownModel(ref);
   if (unknown) return unknown;
   const s = store.getModelSetting(ref);
@@ -957,12 +958,13 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     // Settings/admin view: every available model + its curation state.
 
     /**
-     * A user's own provider credentials: what they've connected, a key they
-     * paste, and the two halves of hyper's device flow.
+     * A user's own accounts: what they've connected, a key they paste, and the
+     * two halves of a device flow.
      *
-     * Everything here is scoped to the caller's own sub — there is no path
-     * that reads or writes somebody else's credential, which is why none of
-     * these take a user parameter.
+     * Everything here is scoped to the caller's own sub — there is no path that
+     * reads or writes somebody else's credential, which is why none of these
+     * take a user parameter. The service is in the path because "exa" the
+     * search engine and "exa" the inference endpoint are not the same account.
      */
     "/api/credentials": {
       GET: (req: Bun.BunRequest<"/api/credentials">) => {
@@ -974,22 +976,25 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       },
       POST: withBody(CredentialBody, (data, req: Bun.BunRequest<"/api/credentials">) => {
         const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
-        if (!byokAllowed(data.providerId)) {
+        if (!isService(data.service) || !byokAllowed(data.service, data.providerId)) {
           return Response.json(
-            { error: `provider "${data.providerId}" does not take a user key here` },
+            { error: `"${data.providerId}" does not take a user key here` },
             { status: 422 },
           );
         }
-        saveApiKey(store, sub, data.providerId, data.apiKey);
+        saveApiKey(store, sub, data.service, data.providerId, data.apiKey);
         forgetUserModels(sub, data.providerId);
         return Response.json({ connections: listConnections(store, sub) });
       }),
     },
 
-    "/api/credentials/:providerId": {
-      DELETE: (req: Bun.BunRequest<"/api/credentials/:providerId">) => {
+    "/api/credentials/:service/:providerId": {
+      DELETE: (req: Bun.BunRequest<"/api/credentials/:service/:providerId">) => {
         const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
-        disconnect(store, sub, req.params.providerId);
+        if (!isService(req.params.service)) {
+          return Response.json({ error: "unknown service" }, { status: 422 });
+        }
+        disconnect(store, sub, req.params.service, req.params.providerId);
         forgetUserModels(sub, req.params.providerId);
         return Response.json({ connections: listConnections(store, sub) });
       },
@@ -998,15 +1003,16 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     // Start a device authorization: returns the code the user types and where
     // to type it. The device_code comes back to the client because only the
     // browser knows when the user has finished approving.
-    "/api/credentials/:providerId/device": {
-      POST: async (req: Bun.BunRequest<"/api/credentials/:providerId/device">) => {
-        const flow = oauthFlow(req.params.providerId);
-        if (!flow) {
+    "/api/credentials/:service/:providerId/device": {
+      POST: async (req: Bun.BunRequest<"/api/credentials/:service/:providerId/device">) => {
+        const service = req.params.service;
+        const ref = isService(service) ? oauthFlow(service, req.params.providerId) : undefined;
+        const flow = ref && flowFor(ref.flow);
+        if (!ref || !flow) {
           return Response.json({ error: "no device flow for this provider" }, { status: 422 });
         }
         try {
-          const start = await startDeviceAuth(flow.baseUrl, "kloe");
-          return Response.json(start);
+          return Response.json(await flow.start(ref.baseUrl, "kloe"));
         } catch (e) {
           return Response.json({ error: (e as Error).message }, { status: 502 });
         }
@@ -1014,21 +1020,25 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     },
 
     // Poll it. On approval the grant is exchanged immediately: the refresh
-    // token hyper hands over is one-time and short-lived, so it becomes a
+    // token a provider hands over is one-time and short-lived, so it becomes a
     // stored pair here rather than travelling any further.
-    "/api/credentials/:providerId/device/:deviceCode": {
-      GET: async (req: Bun.BunRequest<"/api/credentials/:providerId/device/:deviceCode">) => {
+    "/api/credentials/:service/:providerId/device/:deviceCode": {
+      GET: async (
+        req: Bun.BunRequest<"/api/credentials/:service/:providerId/device/:deviceCode">,
+      ) => {
+        const service = req.params.service;
         const providerId = req.params.providerId;
-        const flow = oauthFlow(providerId);
-        if (!flow) {
+        const ref = isService(service) ? oauthFlow(service, providerId) : undefined;
+        const flow = ref && flowFor(ref.flow);
+        if (!ref || !flow || !isService(service)) {
           return Response.json({ error: "no device flow for this provider" }, { status: 422 });
         }
         const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
         try {
-          const poll = await pollDeviceAuth(flow.baseUrl, req.params.deviceCode);
+          const poll = await flow.poll(ref.baseUrl, req.params.deviceCode);
           if (poll.status !== "granted") return Response.json({ status: poll.status });
-          const pair = await exchangeToken(flow.baseUrl, poll.grant.refreshToken);
-          saveOAuthGrant(store, sub, providerId, pair, poll.grant.teamName);
+          const pair = await flow.exchange(ref.baseUrl, poll.grant.refreshToken);
+          saveOAuthGrant(store, sub, service, providerId, pair, poll.grant.teamName);
           forgetUserModels(sub, providerId);
           return Response.json({
             status: "connected",

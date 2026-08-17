@@ -2,13 +2,14 @@ import { type JSONValue, type LanguageModel, type ModelMessage, stepCountIs, str
 import type { RunStep } from "./actor";
 import type { Role } from "./auth";
 import type { BlobStore } from "./blobs";
-import { type LoadCatalogOptions, loadCatalog } from "./catalog";
+import { type Catalog, type LoadCatalogOptions, loadCatalog } from "./catalog";
 import { credentialFor } from "./credentials";
 import type { TokenUsage } from "./events";
 import { contextToText, getContext, lardConnected, lardEnabled } from "./lard";
 import { buildSystemPrompt } from "./prompt";
 import { isEchoModel, ProviderRegistry } from "./providers";
 import { RateLimiter } from "./ratelimit";
+import { searchProviderFor } from "./search";
 import { getConfig } from "./settings";
 import type { Store } from "./store";
 import { type ToolContext, toolSet } from "./tools";
@@ -158,6 +159,11 @@ export function setRegistry(r: ProviderRegistry): void {
   registry = r;
   initPromise = Promise.resolve(r);
   limiters.clear();
+}
+
+/** The model catalog, or null before the registry is built (tests, early boot). */
+export function getCatalog(): Catalog | null {
+  return registry?.catalog ?? null;
 }
 
 export function getRegistry(): ProviderRegistry {
@@ -332,7 +338,7 @@ export async function resolveModelFor(
 ): Promise<LanguageModel> {
   if (!who.store || !who.sub || isEchoModel(modelRef)) return resolveModel(modelRef);
   const providerName = modelRef.split("/")[0]!;
-  const key = await credentialFor(who.store, who.sub, providerName);
+  const key = await credentialFor(who.store, who.sub, "inference", providerName);
   return resolveModel(modelRef, key);
 }
 
@@ -394,10 +400,14 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
   // are the conversation's own model.
   const leadRef = opts.store ? resolveRoleModel(opts.store, "lead") : null;
   const workerRef = opts.store ? resolveRoleModel(opts.store, "worker") : null;
+  // Whose search this run spends, on the same rule as the model: their own
+  // engines when they connected any.
+  const search = opts.store ? await searchProviderFor(opts.store, opts.owner) : null;
   const tools = toolSet({
     store: opts.store,
     owner: opts.owner,
     role: opts.role,
+    search: search ?? undefined,
     conversationId: opts.conversationId,
     blobs: opts.blobs,
     model, // deep_research runs its subagent on the same model as the run

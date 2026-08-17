@@ -3539,6 +3539,19 @@ body.lb-open {
   border-color: var(--accent);
 }
 
+/* A provider this instance has no key for: available, but only to whoever
+   brings an account. */
+.conntag {
+  margin-left: 7px;
+  padding: 1px 6px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--ink-muted);
+  vertical-align: middle;
+}
+
 /* The device code, while a user is approving it elsewhere. The code itself is
    the point: big, monospace, and selectable, because it gets read off a screen
    and typed into another one. */

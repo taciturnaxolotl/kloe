@@ -81,6 +81,8 @@ export type ProjectAssignBody = v.InferOutput<typeof ProjectAssignBody>;
  * their runs spend their own credits rather than the deployment's.
  */
 export const CredentialBody = v.object({
+  /** "inference" | "search" — validated against the connector registry. */
+  service: v.pipe(v.string(), v.minLength(1)),
   providerId: v.pipe(v.string(), v.minLength(1)),
   apiKey: v.pipe(v.string(), v.minLength(8), v.maxLength(500)),
 });

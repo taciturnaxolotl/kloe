@@ -777,8 +777,10 @@ const REGISTRY: Array<{
   {
     name: "web_search",
     executor: "in-proc",
-    create: () => {
-      const p = createSearchProvider();
+    create: (ctx) => {
+      // Resolved by the caller when a user pays for their own engines; falling
+      // back here keeps every non-run caller (tests, scripts) working.
+      const p = ctx.search ?? createSearchProvider();
       return p ? webSearch(p) : null;
     },
   },
@@ -790,7 +792,9 @@ const REGISTRY: Array<{
       // without extraction reads nothing, extraction without discovery finds
       // nothing. Missing any of the three and the tool is simply not offered.
       if (!ctx.model || !getConfig().research.enabled) return null;
-      const search = createSearchProvider();
+      // A research run is the heaviest search consumer there is, so it spends
+      // the same engines the plain tool does — a user's own when they have any.
+      const search = ctx.search ?? createSearchProvider();
       const fetcher = createFetchProvider();
       return search && fetcher ? deepResearch(ctx.model, search, fetcher, ctx) : null;
     },
@@ -965,6 +969,12 @@ export interface ToolContext {
    */
   role?: Role;
   conversationId?: string;
+  /**
+   * The search provider this run should use, already resolved — a user's own
+   * engines when they connected any. Resolving needs a credential lookup, which
+   * is async, and building a tool set is not.
+   */
+  search?: SearchProvider;
   /**
    * The run's own model, already resolved. `deep_research` runs its subagent on
    * it, so the research reasons as well as the conversation does.

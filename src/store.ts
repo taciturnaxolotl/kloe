@@ -510,6 +510,7 @@ CREATE TABLE IF NOT EXISTS lard_tokens (
 -- lost race does not mean a wasted request, it means the user is disconnected.
 CREATE TABLE IF NOT EXISTS user_credentials (
   sub           TEXT NOT NULL,
+  service       TEXT NOT NULL DEFAULT 'inference',
   provider_id   TEXT NOT NULL,
   kind          TEXT NOT NULL,
   secret        TEXT NOT NULL,
@@ -518,13 +519,14 @@ CREATE TABLE IF NOT EXISTS user_credentials (
   label         TEXT,
   refresh_lease INTEGER NOT NULL DEFAULT 0,
   updated_at    INTEGER NOT NULL,
-  PRIMARY KEY (sub, provider_id)
+  PRIMARY KEY (sub, service, provider_id)
 );
 `;
 
 /** The stored row, ciphertext and all. Decrypted into a UserCredential by credentials.ts. */
 export interface CredentialRow {
   sub: string;
+  service: string;
   provider_id: string;
   kind: string;
   secret: string;
@@ -557,6 +559,7 @@ export interface LardToken {
  */
 export interface UserCredential {
   sub: string;
+  service: "inference" | "search";
   providerId: string;
   kind: "key" | "oauth";
   secret: string;
@@ -643,6 +646,27 @@ export class Store {
       this.db.exec("ALTER TABLE conversations ADD COLUMN owner_sub TEXT");
     } catch {
       // column already exists
+    }
+    // Migration: a credential's identity gained the service it belongs to. The
+    // primary key changes, which SQLite only does by rebuilding — cheap here,
+    // and every existing row is an inference credential by construction.
+    try {
+      const cols = this.db.query("PRAGMA table_info(user_credentials)").all() as Array<{
+        name: string;
+      }>;
+      if (cols.length > 0 && !cols.some((c) => c.name === "service")) {
+        this.db.exec("ALTER TABLE user_credentials RENAME TO user_credentials_old");
+        this.db.exec(SCHEMA);
+        this.db.exec(
+          `INSERT INTO user_credentials
+             (sub, service, provider_id, kind, secret, refresh_token, expires_at, label, refresh_lease, updated_at)
+           SELECT sub, 'inference', provider_id, kind, secret, refresh_token, expires_at, label, refresh_lease, updated_at
+           FROM user_credentials_old`,
+        );
+        this.db.exec("DROP TABLE user_credentials_old");
+      }
+    } catch {
+      // already migrated
     }
     // Migration: curation gained a role dimension. It began as a single
     // guest_visible flag, which is a column per role and does not survive a
@@ -1467,39 +1491,44 @@ export class Store {
   // rows, so a caller that forgets to encrypt is a compile error there rather
   // than a plaintext key here.
 
-  getCredentialRow(sub: string, providerId: string): CredentialRow | undefined {
+  getCredentialRow(sub: string, service: string, providerId: string): CredentialRow | undefined {
     return (
       (this.db
         .query(
-          `SELECT sub, provider_id, kind, secret, refresh_token, expires_at, label, refresh_lease, updated_at
-           FROM user_credentials WHERE sub = ? AND provider_id = ?`,
+          `SELECT sub, service, provider_id, kind, secret, refresh_token, expires_at, label, refresh_lease, updated_at
+           FROM user_credentials WHERE sub = ? AND service = ? AND provider_id = ?`,
         )
-        .get(sub, providerId) as CredentialRow | null) ?? undefined
+        .get(sub, service, providerId) as CredentialRow | null) ?? undefined
     );
   }
 
-  listCredentialRows(sub: string): CredentialRow[] {
-    return this.db
-      .query(
-        `SELECT sub, provider_id, kind, secret, refresh_token, expires_at, label, refresh_lease, updated_at
-         FROM user_credentials WHERE sub = ? ORDER BY provider_id`,
-      )
-      .all(sub) as CredentialRow[];
+  listCredentialRows(sub: string, service?: string): CredentialRow[] {
+    const cols = `sub, service, provider_id, kind, secret, refresh_token, expires_at, label, refresh_lease, updated_at`;
+    return service
+      ? (this.db
+          .query(
+            `SELECT ${cols} FROM user_credentials WHERE sub = ? AND service = ? ORDER BY provider_id`,
+          )
+          .all(sub, service) as CredentialRow[])
+      : (this.db
+          .query(`SELECT ${cols} FROM user_credentials WHERE sub = ? ORDER BY service, provider_id`)
+          .all(sub) as CredentialRow[]);
   }
 
   setCredentialRow(row: Omit<CredentialRow, "refresh_lease" | "updated_at">): void {
     this.db
       .query(
         `INSERT INTO user_credentials
-           (sub, provider_id, kind, secret, refresh_token, expires_at, label, refresh_lease, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
-         ON CONFLICT(sub, provider_id) DO UPDATE SET
+           (sub, service, provider_id, kind, secret, refresh_token, expires_at, label, refresh_lease, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+         ON CONFLICT(sub, service, provider_id) DO UPDATE SET
            kind=excluded.kind, secret=excluded.secret, refresh_token=excluded.refresh_token,
            expires_at=excluded.expires_at, label=excluded.label,
            refresh_lease=0, updated_at=excluded.updated_at`,
       )
       .run(
         row.sub,
+        row.service,
         row.provider_id,
         row.kind,
         row.secret,
@@ -1510,10 +1539,10 @@ export class Store {
       );
   }
 
-  deleteCredential(sub: string, providerId: string): void {
+  deleteCredential(sub: string, service: string, providerId: string): void {
     this.db
-      .query("DELETE FROM user_credentials WHERE sub = ? AND provider_id = ?")
-      .run(sub, providerId);
+      .query("DELETE FROM user_credentials WHERE sub = ? AND service = ? AND provider_id = ?")
+      .run(sub, service, providerId);
   }
 
   /**
@@ -1521,14 +1550,20 @@ export class Store {
    * holds it. Returns false when someone else is mid-exchange — the caller
    * waits for their result rather than racing them into a revoked token.
    */
-  claimRefresh(sub: string, providerId: string, now: number, until: number): boolean {
+  claimRefresh(
+    sub: string,
+    service: string,
+    providerId: string,
+    now: number,
+    until: number,
+  ): boolean {
     return (
       this.db
         .query(
           `UPDATE user_credentials SET refresh_lease = ?
-           WHERE sub = ? AND provider_id = ? AND refresh_lease < ?`,
+           WHERE sub = ? AND service = ? AND provider_id = ? AND refresh_lease < ?`,
         )
-        .run(until, sub, providerId, now).changes > 0
+        .run(until, sub, service, providerId, now).changes > 0
     );
   }
 

@@ -1,13 +1,22 @@
 import { afterEach, expect, test } from "bun:test";
 import {
   byokAllowed,
+  connectableProviders,
   credentialFor,
   disconnect,
   listConnections,
+  oauthFlow,
   saveApiKey,
   saveOAuthGrant,
 } from "../src/credentials";
 import { exchangeToken, pollDeviceAuth, startDeviceAuth } from "../src/hyperauth";
+import { flowNames } from "../src/oauthflows";
+import {
+  BlendSearchProvider,
+  DuckDuckGoSearchProvider,
+  ExaSearchProvider,
+  searchProviderFor,
+} from "../src/search";
 import { decryptSecret, encryptSecret, hint } from "../src/secrets";
 import { loadConfig, setConfig } from "../src/settings";
 import { Store } from "../src/store";
@@ -61,7 +70,7 @@ test("without a configured key, nothing is stored in the clear", () => {
   const base = loadConfig({ path: "does-not-exist.json", env: {} });
   setConfig({ ...base, security: { credentialKey: "" } } as never);
   expect(() => encryptSecret("sk-x")).toThrow(/credentialKey/);
-  expect(byokAllowed("hyper")).toBe(false);
+  expect(byokAllowed("inference", "hyper")).toBe(false);
 });
 
 test("the hint identifies a key without handing it back", () => {
@@ -73,27 +82,35 @@ test("the hint identifies a key without handing it back", () => {
 
 test("a user with nothing of their own falls back to the deployment key", async () => {
   configure();
-  expect(await credentialFor(memStore(), SUB, "hyper")).toBeUndefined();
-  expect(await credentialFor(memStore(), undefined, "hyper")).toBeUndefined();
+  expect(await credentialFor(memStore(), SUB, "inference", "hyper")).toBeUndefined();
+  expect(await credentialFor(memStore(), undefined, "inference", "hyper")).toBeUndefined();
 });
 
 test("a pasted key is what gets sent", async () => {
   configure();
   const store = memStore();
-  saveApiKey(store, SUB, "hyper", "sk-mine-9999");
-  expect(await credentialFor(store, SUB, "hyper")).toBe("sk-mine-9999");
+  saveApiKey(store, SUB, "inference", "hyper", "sk-mine-9999");
+  expect(await credentialFor(store, SUB, "inference", "hyper")).toBe("sk-mine-9999");
   expect(listConnections(store, SUB)).toEqual([
-    { providerId: "hyper", kind: "key", label: "••••9999", expiresAt: undefined },
+    {
+      service: "inference",
+      providerId: "hyper",
+      kind: "key",
+      label: "••••9999",
+      expiresAt: undefined,
+    },
   ]);
 
-  disconnect(store, SUB, "hyper");
-  expect(await credentialFor(store, SUB, "hyper")).toBeUndefined();
+  disconnect(store, SUB, "inference", "hyper");
+  expect(await credentialFor(store, SUB, "inference", "hyper")).toBeUndefined();
 });
 
 test("a provider that doesn't take user keys says so", () => {
   configure();
-  expect(byokAllowed("closed")).toBe(false);
-  expect(() => saveApiKey(memStore(), SUB, "closed", "sk-x")).toThrow(/does not accept/);
+  expect(byokAllowed("inference", "closed")).toBe(false);
+  expect(() => saveApiKey(memStore(), SUB, "inference", "closed", "sk-x")).toThrow(
+    /does not accept/,
+  );
 });
 
 test("a live access token is used as-is, without an exchange", async () => {
@@ -102,6 +119,7 @@ test("a live access token is used as-is, without an exchange", async () => {
   saveOAuthGrant(
     store,
     SUB,
+    "inference",
     "hyper",
     { accessToken: "at-live", refreshToken: "rt-1", expiresAt: Date.now() + 3_600_000 },
     "Team Kieran",
@@ -109,13 +127,13 @@ test("a live access token is used as-is, without an exchange", async () => {
   const never = (async () => {
     throw new Error("should not have exchanged");
   }) as unknown as typeof fetch;
-  expect(await credentialFor(store, SUB, "hyper", never)).toBe("at-live");
+  expect(await credentialFor(store, SUB, "inference", "hyper", never)).toBe("at-live");
 });
 
 test("an expired token is exchanged, and the rotated pair is what gets stored", async () => {
   configure();
   const store = memStore();
-  saveOAuthGrant(store, SUB, "hyper", {
+  saveOAuthGrant(store, SUB, "inference", "hyper", {
     accessToken: "at-old",
     refreshToken: "rt-old",
     expiresAt: Date.now() - 1000,
@@ -130,12 +148,12 @@ test("an expired token is exchanged, and the rotated pair is what gets stored", 
     );
   }) as unknown as typeof fetch;
 
-  expect(await credentialFor(store, SUB, "hyper", fetchImpl)).toBe("at-new");
+  expect(await credentialFor(store, SUB, "inference", "hyper", fetchImpl)).toBe("at-new");
   expect(sentRefresh).toBe("rt-old");
 
   // The old refresh token is revoked upstream, so the new one MUST be what we
   // hold — this is the assertion that stands between a user and a dead link.
-  const row = store.getCredentialRow(SUB, "hyper")!;
+  const row = store.getCredentialRow(SUB, "inference", "hyper")!;
   expect(decryptSecret(row.refresh_token!)).toBe("rt-new");
   expect(decryptSecret(row.secret)).toBe("at-new");
   expect(row.expires_at).toBeGreaterThan(Date.now());
@@ -144,7 +162,7 @@ test("an expired token is exchanged, and the rotated pair is what gets stored", 
 test("a refused refresh disconnects rather than failing every later run", async () => {
   configure();
   const store = memStore();
-  saveOAuthGrant(store, SUB, "hyper", {
+  saveOAuthGrant(store, SUB, "inference", "hyper", {
     accessToken: "at-old",
     refreshToken: "rt-revoked",
     expiresAt: Date.now() - 1000,
@@ -152,16 +170,16 @@ test("a refused refresh disconnects rather than failing every later run", async 
   const fetchImpl = (async () =>
     new Response("refresh token revoked", { status: 401 })) as unknown as typeof fetch;
 
-  expect(await credentialFor(store, SUB, "hyper", fetchImpl)).toBeUndefined();
+  expect(await credentialFor(store, SUB, "inference", "hyper", fetchImpl)).toBeUndefined();
   // Gone, so the next run quietly uses the deployment's key and settings shows
   // the connection as absent.
-  expect(store.getCredentialRow(SUB, "hyper")).toBeUndefined();
+  expect(store.getCredentialRow(SUB, "inference", "hyper")).toBeUndefined();
 });
 
 test("two runs refreshing at once exchange the token exactly once", async () => {
   configure();
   const store = memStore();
-  saveOAuthGrant(store, SUB, "hyper", {
+  saveOAuthGrant(store, SUB, "inference", "hyper", {
     accessToken: "at-old",
     refreshToken: "rt-old",
     expiresAt: Date.now() - 1000,
@@ -178,8 +196,8 @@ test("two runs refreshing at once exchange the token exactly once", async () => 
   }) as unknown as typeof fetch;
 
   const [a, b] = await Promise.all([
-    credentialFor(store, SUB, "hyper", fetchImpl),
-    credentialFor(store, SUB, "hyper", fetchImpl),
+    credentialFor(store, SUB, "inference", "hyper", fetchImpl),
+    credentialFor(store, SUB, "inference", "hyper", fetchImpl),
   ]);
 
   // A second exchange would have revoked the token the first one just stored,
@@ -192,8 +210,8 @@ test("two runs refreshing at once exchange the token exactly once", async () => 
 test("one user's credential is invisible to another", async () => {
   configure();
   const store = memStore();
-  saveApiKey(store, SUB, "hyper", "sk-theirs-1111");
-  expect(await credentialFor(store, "https://someone.new/", "hyper")).toBeUndefined();
+  saveApiKey(store, SUB, "inference", "hyper", "sk-theirs-1111");
+  expect(await credentialFor(store, "https://someone.new/", "inference", "hyper")).toBeUndefined();
 });
 
 // ---- the device flow ------------------------------------------------------
@@ -246,4 +264,68 @@ test("an incomplete exchange is an error, not a half-stored connection", async (
       status: 200,
     })) as unknown as typeof fetch;
   await expect(exchangeToken("https://hyper.test", "rt-1", half)).rejects.toThrow(/incomplete/);
+});
+
+// ---- connectors ------------------------------------------------------------
+// The service is part of a credential's identity, not a suffix on its name.
+
+test("the same provider name under two services is two accounts", async () => {
+  configure();
+  const store = memStore();
+  saveApiKey(store, SUB, "inference", "hyper", "sk-inference-1111");
+  saveApiKey(store, SUB, "search", "exa", "sk-search-2222");
+
+  expect(await credentialFor(store, SUB, "inference", "hyper")).toBe("sk-inference-1111");
+  expect(await credentialFor(store, SUB, "search", "exa")).toBe("sk-search-2222");
+  // Neither leaks into the other's service.
+  expect(await credentialFor(store, SUB, "search", "hyper")).toBeUndefined();
+  expect(await credentialFor(store, SUB, "inference", "exa")).toBeUndefined();
+
+  // …and disconnecting one leaves the other alone.
+  disconnect(store, SUB, "search", "exa");
+  expect(await credentialFor(store, SUB, "inference", "hyper")).toBe("sk-inference-1111");
+});
+
+test("a search engine this deployment never configured is still connectable", () => {
+  configure();
+  const offered = connectableProviders();
+  const exa = offered.find((c) => c.service === "search" && c.id === "exa");
+  expect(exa?.byok).toBe(true);
+  // Marked so the UI can say the instance has no key of its own for it.
+  expect(exa?.userOnly).toBe(true);
+});
+
+test("a user's own engines replace the deployment's rather than blending with them", async () => {
+  configure();
+  const store = memStore();
+  // Nothing connected: whatever the deployment offers, which with no key
+  // configured is the keyless fallback.
+  expect(await searchProviderFor(store, SUB)).toBeInstanceOf(DuckDuckGoSearchProvider);
+
+  saveApiKey(store, SUB, "search", "exa", "sk-exa-user");
+  const mine = await searchProviderFor(store, SUB);
+  expect(mine).toBeInstanceOf(ExaSearchProvider);
+
+  // Two of their own blend with each other.
+  saveApiKey(store, SUB, "search", "ceramic", "sk-ceramic-user");
+  expect(await searchProviderFor(store, SUB)).toBeInstanceOf(BlendSearchProvider);
+});
+
+test("an unimplemented oauth flow is not offered, however the config names it", () => {
+  const base = loadConfig({ path: "does-not-exist.json", env: {} });
+  setConfig({
+    ...base,
+    security: { credentialKey: "k" },
+    providers: [
+      {
+        id: "whatever",
+        apiEndpoint: "https://x.test/v1",
+        oauth: { flow: "not-a-real-flow", baseUrl: "https://x.test" },
+      },
+    ],
+  } as never);
+  // The connector drops it rather than offering a Connect button that can only
+  // fail once someone presses it.
+  expect(oauthFlow("inference", "whatever")).toBeUndefined();
+  expect(flowNames()).toContain("hyper-device");
 });

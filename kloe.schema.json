@@ -606,9 +606,6 @@
             "type": "object",
             "properties": {
               "flow": {
-                "enum": [
-                  "hyper-device"
-                ],
                 "type": "string"
               },
               "baseUrl": {

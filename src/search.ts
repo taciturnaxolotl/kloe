@@ -1,5 +1,7 @@
 import { parseHTML } from "linkedom";
+import { connectedProviders, credentialFor } from "./credentials";
 import { type Config, getConfig } from "./settings";
+import type { Store } from "./store";
 
 /**
  * Web search, behind a swappable provider interface so the `web_search` tool
@@ -609,6 +611,33 @@ export function dedupeKey(raw: string): string {
  * single place a search backend is selected — everything else takes a
  * `SearchProvider`.
  */
+/**
+ * The search a particular user gets: their own engines when they have
+ * connected any, the deployment's otherwise.
+ *
+ * A user who brought one key gets that engine alone rather than a blend with
+ * the deployment's — blending would spend the operator's Exa credits on a
+ * request the user is paying for, which is the arrangement they opted out of.
+ * Several of their own keys blend with each other, as a deployment's would.
+ */
+export async function searchProviderFor(
+  store: Store,
+  sub: string | undefined,
+): Promise<SearchProvider | null> {
+  const mine = connectedProviders(store, sub, "search");
+  if (mine.length === 0) return createSearchProvider();
+
+  const cfg = getConfig().search;
+  const built: SearchProvider[] = [];
+  for (const id of mine) {
+    const key = await credentialFor(store, sub, "search", id);
+    const p = key ? backend(id, key, undefined, cfg.maxResults) : null;
+    if (p) built.push(p);
+  }
+  if (built.length === 0) return createSearchProvider(); // every one of theirs failed to resolve
+  return built.length === 1 ? built[0]! : new BlendSearchProvider(built, cfg.maxResults);
+}
+
 export function createSearchProvider(
   cfg: Config["search"] = getConfig().search,
 ): SearchProvider | null {

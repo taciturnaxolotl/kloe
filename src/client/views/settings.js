@@ -615,6 +615,7 @@ export function mount(root, _params, ctx) {
   function accountRow(p, conn) {
     var row = document.createElement("div");
     row.className = "connrow" + (conn ? " on" : "");
+    var path = "/api/credentials/" + encodeURIComponent(p.service) + "/" + encodeURIComponent(p.id);
 
     var dot = document.createElement("span");
     dot.className = "conndot";
@@ -625,6 +626,13 @@ export function mount(root, _params, ctx) {
     var title = document.createElement("div");
     title.className = "conntitle";
     title.textContent = p.id;
+    if (p.userOnly) {
+      var tag = document.createElement("span");
+      tag.className = "conntag";
+      tag.textContent = "yours only";
+      tag.title = "This instance has no key for it; connect one and it is yours to use.";
+      title.appendChild(tag);
+    }
     var sub = document.createElement("div");
     sub.className = "connsub";
     if (conn) {
@@ -633,7 +641,9 @@ export function mount(root, _params, ctx) {
           ? "Connected" + (conn.label ? " \u00b7 " + conn.label : "") + " \u00b7 your credits"
           : "Your key " + (conn.label || "") + " \u00b7 your credits";
     } else {
-      sub.textContent = "Using this instance\u2019s key.";
+      sub.textContent = p.userOnly
+        ? "Not configured here \u2014 connect an account to use it."
+        : "Using this instance\u2019s key.";
     }
     text.appendChild(title);
     text.appendChild(sub);
@@ -646,9 +656,7 @@ export function mount(root, _params, ctx) {
       off.textContent = "Disconnect";
       off.onclick = async function () {
         off.disabled = true;
-        await fetch("/api/credentials/" + encodeURIComponent(p.id), { method: "DELETE" }).catch(
-          function () {},
-        );
+        await fetch(path, { method: "DELETE" }).catch(function () {});
         loadAccounts();
       };
       row.appendChild(off);
@@ -661,7 +669,7 @@ export function mount(root, _params, ctx) {
       connect.className = "btn primary";
       connect.textContent = "Connect";
       connect.onclick = function () {
-        startDevice(p.id, row);
+        startDevice(p, row);
       };
       row.appendChild(connect);
     }
@@ -678,7 +686,7 @@ export function mount(root, _params, ctx) {
         var res = await fetch("/api/credentials", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ providerId: p.id, apiKey: value }),
+          body: JSON.stringify({ service: p.service, providerId: p.id, apiKey: value }),
         }).catch(function () {
           return { ok: false };
         });
@@ -697,7 +705,8 @@ export function mount(root, _params, ctx) {
    * the code expires or the view goes away — a forgotten timer here would keep
    * hitting the provider from a page nobody is looking at.
    */
-  async function startDevice(providerId, row) {
+  async function startDevice(p, row) {
+    var base = "/api/credentials/" + encodeURIComponent(p.service) + "/" + encodeURIComponent(p.id);
     stopPolling();
     var panel = document.createElement("div");
     panel.className = "conndevice";
@@ -706,11 +715,7 @@ export function mount(root, _params, ctx) {
 
     var start;
     try {
-      start = await (
-        await fetch("/api/credentials/" + encodeURIComponent(providerId) + "/device", {
-          method: "POST",
-        })
-      ).json();
+      start = await (await fetch(base + "/device", { method: "POST" })).json();
       if (start.error) throw new Error(start.error);
     } catch (e) {
       panel.textContent = "Could not start: " + e.message;
@@ -734,11 +739,7 @@ export function mount(root, _params, ctx) {
     panel.appendChild(hint);
     panel.appendChild(open);
 
-    var url =
-      "/api/credentials/" +
-      encodeURIComponent(providerId) +
-      "/device/" +
-      encodeURIComponent(start.deviceCode);
+    var url = base + "/device/" + encodeURIComponent(start.deviceCode);
     var tick = async function () {
       if (Date.now() > start.expiresAt) {
         hint.textContent = "That code expired. Try again.";
@@ -792,13 +793,31 @@ export function mount(root, _params, ctx) {
       if (currentTab() === "accounts") selectTab("models");
       return;
     }
-    var byProvider = {};
+    var byKey = {};
     (data.connections || []).forEach(function (c) {
-      byProvider[c.providerId] = c;
+      byKey[c.service + "/" + c.providerId] = c;
     });
     list.innerHTML = "";
-    offered.forEach(function (p) {
-      list.appendChild(accountRow(p, byProvider[p.id]));
+    // Grouped by what the account is FOR: an inference endpoint and a search
+    // engine can share a name, and reading them in one flat list invites the
+    // reader to think they are the same account.
+    ["inference", "search"].forEach(function (service) {
+      var mine = offered.filter(function (p) {
+        return p.service === service;
+      });
+      if (!mine.length) return;
+      list.appendChild(seclabel(service === "inference" ? "Models" : "Search"));
+      // Connected first, then what this instance already pays for, then the
+      // long tail nobody has touched.
+      mine
+        .sort(function (a, b) {
+          var ca = byKey[a.service + "/" + a.id] ? 0 : a.userOnly ? 2 : 1;
+          var cb = byKey[b.service + "/" + b.id] ? 0 : b.userOnly ? 2 : 1;
+          return ca - cb || a.id.localeCompare(b.id);
+        })
+        .forEach(function (p) {
+          list.appendChild(accountRow(p, byKey[p.service + "/" + p.id]));
+        });
     });
   }
 

@@ -1,23 +1,28 @@
-import { exchangeToken } from "./hyperauth";
+import { type Connector, findConnector, listConnectors, type Service } from "./connectors";
+import { flowFor } from "./oauthflows";
 import { decryptSecret, encryptionConfigured, encryptSecret, hint } from "./secrets";
-import { getConfig } from "./settings";
 import type { CredentialRow, Store, UserCredential } from "./store";
 
 /**
  * Credentials that belong to a user rather than to the deployment.
  *
- * Two ways in — a pasted API key, or an OAuth grant the user ran (hyper's
- * device flow) — and one way out: `credentialFor(store, sub, providerId)`
- * returns the bearer string to send, or undefined to mean "this user has
- * nothing of their own, use the deployment's key". Everything above this module
- * only sees that one answer, which is what keeps the run path from growing a
- * second notion of who is paying.
+ * Two ways in — a pasted API key, or an OAuth grant the user ran — and one way
+ * out: `credentialFor(store, sub, service, providerId)` returns the bearer
+ * string to send, or undefined to mean "this user has nothing of their own, use
+ * the deployment's". Everything above this module only sees that one answer,
+ * which is what keeps the run path from growing a second notion of who is
+ * paying.
  *
- * The refresh is the interesting part. Hyper's access tokens last an hour and
- * every exchange rotates the refresh token, revoking the old one, so two
- * processes refreshing at once would leave one of them holding a dead token and
- * the user disconnected. A lease in the row makes exactly one of them do the
- * work; the other waits briefly and re-reads what it wrote.
+ * Nothing here knows what a provider IS. It asks the connector registry where
+ * one lives and which flow it speaks, so adding a service (search, after
+ * inference) or a provider (anything catwalk lists) touches neither this file
+ * nor the run path.
+ *
+ * The refresh is the interesting part. Access tokens are short-lived and hyper
+ * rotates the refresh token on every exchange, revoking the old one, so two
+ * processes refreshing at once would leave one holding a dead token and the
+ * user disconnected. A lease in the row makes exactly one of them do the work;
+ * the other waits briefly and reads what it wrote.
  */
 
 /** Refresh this far ahead of expiry, so a token can't die mid-request. */
@@ -33,6 +38,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 function decode(row: CredentialRow): UserCredential {
   return {
     sub: row.sub,
+    service: row.service as Service,
     providerId: row.provider_id,
     kind: row.kind === "oauth" ? "oauth" : "key",
     secret: decryptSecret(row.secret),
@@ -43,41 +49,35 @@ function decode(row: CredentialRow): UserCredential {
   };
 }
 
-/** The provider entry from ops config, or undefined if it isn't enabled here. */
-function providerConfig(providerId: string) {
-  return getConfig().providers.find((p) => p.id === providerId);
+/** Whether a user may paste their own key here. */
+export function byokAllowed(service: Service, providerId: string): boolean {
+  return findConnector(service, providerId)?.byok === true;
 }
 
-/** Whether a user may paste their own key for this provider. */
-export function byokAllowed(providerId: string): boolean {
-  const p = providerConfig(providerId);
-  return !!p && p.byok !== false && encryptionConfigured();
+/** The OAuth flow a user can run for this provider, if it offers one kloe speaks. */
+export function oauthFlow(service: Service, providerId: string): Connector["oauth"] {
+  const oauth = findConnector(service, providerId)?.oauth;
+  return oauth && flowFor(oauth.flow) ? oauth : undefined;
 }
 
-/** The OAuth flow a user can run for this provider, if it offers one. */
-export function oauthFlow(providerId: string) {
-  const p = providerConfig(providerId);
-  return p?.oauth && encryptionConfigured() ? p.oauth : undefined;
+/** Everything a user could connect an account to, for the settings page. */
+export function connectableProviders(): Connector[] {
+  return listConnectors().filter((c) => c.byok || c.oauth);
 }
 
-/** Providers a user could connect something to, for the settings page. */
-export function connectableProviders(): Array<{
-  id: string;
-  byok: boolean;
-  oauth: boolean;
-}> {
-  if (!encryptionConfigured()) return [];
-  return getConfig()
-    .providers.map((p) => ({ id: p.id, byok: p.byok !== false, oauth: !!p.oauth }))
-    .filter((p) => p.byok || p.oauth);
-}
-
-export function saveApiKey(store: Store, sub: string, providerId: string, apiKey: string): void {
-  if (!byokAllowed(providerId)) {
-    throw new Error(`provider "${providerId}" does not accept a user-supplied key here`);
+export function saveApiKey(
+  store: Store,
+  sub: string,
+  service: Service,
+  providerId: string,
+  apiKey: string,
+): void {
+  if (!byokAllowed(service, providerId)) {
+    throw new Error(`${service} provider "${providerId}" does not accept a user-supplied key here`);
   }
   store.setCredentialRow({
     sub,
+    service,
     provider_id: providerId,
     kind: "key",
     secret: encryptSecret(apiKey),
@@ -91,12 +91,14 @@ export function saveApiKey(store: Store, sub: string, providerId: string, apiKey
 export function saveOAuthGrant(
   store: Store,
   sub: string,
+  service: Service,
   providerId: string,
   pair: { accessToken: string; refreshToken: string; expiresAt: number },
   label?: string,
 ): void {
   store.setCredentialRow({
     sub,
+    service,
     provider_id: providerId,
     kind: "oauth",
     secret: encryptSecret(pair.accessToken),
@@ -106,16 +108,22 @@ export function saveOAuthGrant(
   });
 }
 
-export function disconnect(store: Store, sub: string, providerId: string): void {
-  store.deleteCredential(sub, providerId);
+export function disconnect(store: Store, sub: string, service: Service, providerId: string): void {
+  store.deleteCredential(sub, service, providerId);
 }
 
-/** What the settings page shows: which providers this user has connected, and how. */
-export function listConnections(
-  store: Store,
-  sub: string,
-): Array<{ providerId: string; kind: "key" | "oauth"; label?: string; expiresAt?: number }> {
+export interface Connection {
+  service: Service;
+  providerId: string;
+  kind: "key" | "oauth";
+  label?: string;
+  expiresAt?: number;
+}
+
+/** What the settings page shows: which accounts this user has connected, and how. */
+export function listConnections(store: Store, sub: string): Connection[] {
   return store.listCredentialRows(sub).map((r) => ({
+    service: r.service as Service,
     providerId: r.provider_id,
     kind: r.kind === "oauth" ? "oauth" : "key",
     label: r.label ?? undefined,
@@ -123,23 +131,33 @@ export function listConnections(
   }));
 }
 
+/** Which providers of a service this user pays for themselves. */
+export function connectedProviders(
+  store: Store,
+  sub: string | undefined,
+  service: Service,
+): string[] {
+  if (!sub) return [];
+  return store.listCredentialRows(sub, service).map((r) => r.provider_id);
+}
+
 /**
  * The bearer string to use for this user and provider, or undefined when they
- * have none and the deployment's own key should be used.
+ * have none and the deployment's own credential should be used.
  *
  * Never throws on a broken connection: a revoked or unrefreshable credential
- * resolves to undefined, so the run falls back to the shared key rather than
- * failing outright. The user sees "disconnected" in settings, not an error in
- * the middle of a sentence.
+ * resolves to undefined, so the run falls back rather than failing outright.
+ * The user sees "disconnected" in settings, not an error mid-sentence.
  */
 export async function credentialFor(
   store: Store,
   sub: string | undefined,
+  service: Service,
   providerId: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<string | undefined> {
   if (!sub || !encryptionConfigured()) return undefined;
-  const row = store.getCredentialRow(sub, providerId);
+  const row = store.getCredentialRow(sub, service, providerId);
   if (!row) return undefined;
 
   let cred: UserCredential;
@@ -148,7 +166,7 @@ export async function credentialFor(
   } catch {
     // Ciphertext we can't read (the key changed, or the row is corrupt). Falling
     // back is right: the alternative is every run for this user failing.
-    console.warn(`[credentials] unreadable credential for ${providerId}; ignoring`);
+    console.warn(`[credentials] unreadable ${service} credential for ${providerId}; ignoring`);
     return undefined;
   }
 
@@ -169,25 +187,27 @@ async function refresh(
   cred: UserCredential,
   fetchImpl: typeof fetch,
 ): Promise<string | undefined> {
-  const flow = oauthFlow(cred.providerId);
-  if (!flow || !cred.refreshToken) return undefined;
+  const ref = oauthFlow(cred.service, cred.providerId);
+  const flow = ref && flowFor(ref.flow);
+  if (!ref || !flow || !cred.refreshToken) return undefined;
 
   const now = Date.now();
-  if (!store.claimRefresh(cred.sub, cred.providerId, now, now + REFRESH_LEASE_MS)) {
+  if (!store.claimRefresh(cred.sub, cred.service, cred.providerId, now, now + REFRESH_LEASE_MS)) {
     return waitForRefresh(store, cred);
   }
 
   try {
-    const pair = await exchangeToken(flow.baseUrl, cred.refreshToken, fetchImpl);
+    const pair = await flow.exchange(ref.baseUrl, cred.refreshToken, fetchImpl);
     // Persist BEFORE returning: the token we just spent is already revoked, so
     // an unsaved result is a connection thrown away.
-    saveOAuthGrant(store, cred.sub, cred.providerId, pair, cred.label);
+    saveOAuthGrant(store, cred.sub, cred.service, cred.providerId, pair, cred.label);
     return pair.accessToken;
   } catch (e) {
-    // The grant is gone (revoked, expired, or hyper said no). Drop the row so
-    // the user is told to reconnect instead of every run retrying a dead token.
+    // The grant is gone (revoked, expired, or the provider said no). Drop the
+    // row so the user is told to reconnect instead of every run retrying a dead
+    // token.
     console.warn(`[credentials] ${cred.providerId} refresh failed:`, (e as Error).message);
-    store.deleteCredential(cred.sub, cred.providerId);
+    store.deleteCredential(cred.sub, cred.service, cred.providerId);
     return undefined;
   }
 }
@@ -195,7 +215,7 @@ async function refresh(
 async function waitForRefresh(store: Store, cred: UserCredential): Promise<string | undefined> {
   for (let waited = 0; waited < WAIT_MAX_MS; waited += WAIT_STEP_MS) {
     await sleep(WAIT_STEP_MS);
-    const row = store.getCredentialRow(cred.sub, cred.providerId);
+    const row = store.getCredentialRow(cred.sub, cred.service, cred.providerId);
     if (!row) return undefined; // the winner found the grant dead and dropped it
     if (row.updated_at > cred.updatedAt) {
       try {

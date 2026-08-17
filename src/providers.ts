@@ -138,7 +138,7 @@ interface InlineProvider {
 export class ProviderRegistry {
   private readonly configs = new Map<string, ProviderConfig>();
   private readonly factories = new Map<string, CachedFactory>();
-  private readonly catalog: Catalog;
+  readonly catalog: Catalog;
   private readonly inline = new Map<string, InlineProvider>();
   private readonly fetchImpl?: typeof fetch;
 
@@ -276,7 +276,11 @@ export class ProviderRegistry {
     const providerId = modelRef.slice(0, slash);
     const modelId = modelRef.slice(slash + 1);
 
-    const config = this.configs.get(providerId);
+    // A provider this deployment enables has ops config. One it doesn't can
+    // still be reached by a user who brought their own key: the catalog carries
+    // the endpoint and the adapter type, so the only missing piece was the
+    // credential, and that is exactly what the caller is holding.
+    const config = this.configs.get(providerId) ?? this.borrowedConfig(providerId, apiKeyOverride);
     if (!config) {
       throw new Error(
         `provider "${providerId}" is not enabled (enabled: ${this.listProviders().join(", ")})`,
@@ -285,11 +289,31 @@ export class ProviderRegistry {
     const known =
       this.catalog.getModel(providerId, modelId) ??
       this.inline.get(providerId)?.models.find((m) => m.id === modelId);
-    if (!known) {
+    // A user's own credential is also its own authority on what that account
+    // can run, so an unknown model id is the provider's to reject, not ours.
+    if (!known && !apiKeyOverride) {
       throw new Error(`unknown model "${modelId}" for provider "${providerId}"`);
     }
 
     return this.factoryFor(providerId, config, apiKeyOverride)(modelId);
+  }
+
+  /**
+   * Ops config for a provider the deployment doesn't enable, synthesized from
+   * the catalog, for a caller carrying a user's credential. Undefined when
+   * there is no credential (nobody to pay) or no catalog entry (nowhere to send
+   * it), which is what makes this borrowing rather than a back door.
+   */
+  private borrowedConfig(providerId: string, apiKeyOverride?: string): ProviderConfig | undefined {
+    if (!apiKeyOverride) return undefined;
+    const p = this.catalog.getProvider(providerId);
+    if (!p?.apiEndpoint) return undefined;
+    return {
+      id: providerId,
+      apiEndpoint: p.apiEndpoint,
+      maxConcurrency: DEFAULTS.maxConcurrency,
+      minIntervalMs: DEFAULTS.minIntervalMs,
+    };
   }
 
   /**
