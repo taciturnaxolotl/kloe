@@ -55,7 +55,14 @@ import {
   RenameBody,
   SteerBody,
 } from "./schemas";
-import { getConfig } from "./settings";
+import {
+  getConfig,
+  overlayFile,
+  overlayPaths,
+  readOverlay,
+  setConfig,
+  writeOverlay,
+} from "./settings";
 import { sseBlock } from "./sse";
 import type { Store } from "./store";
 import { describeRef, forgetUserModels, userModelRefs } from "./usermodels";
@@ -1046,6 +1053,43 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
           });
         } catch (e) {
           return Response.json({ error: (e as Error).message }, { status: 502 });
+        }
+      },
+    },
+
+    /**
+     * The settings an owner may change without a deploy — role policy, the
+     * assistant's persona, research budgets. Writes land in an overlay file
+     * beside the database (kloe.json is generated into the nix store and cannot
+     * be written), so what an owner clicked is one small JSON file they can
+     * read, commit, or delete to go back to what nix declares.
+     */
+    "/api/config": {
+      GET: (req: Bun.BunRequest<"/api/config">) =>
+        requireOwner(req, store) ??
+        Response.json({
+          paths: overlayPaths(),
+          overlay: readOverlay(overlayFile()),
+          file: overlayFile(),
+        }),
+      PATCH: async (req: Bun.BunRequest<"/api/config">) => {
+        const denied = requireOwner(req, store);
+        if (denied) return denied;
+        let patch: Record<string, unknown>;
+        try {
+          patch = (await req.json()) as Record<string, unknown>;
+        } catch {
+          return Response.json({ error: "invalid JSON" }, { status: 400 });
+        }
+        try {
+          const overlay = writeOverlay(patch);
+          // Re-read so the next request sees it, and so an overlay that no
+          // longer validates is rejected here rather than at the next boot.
+          setConfig(null);
+          getConfig();
+          return Response.json({ overlay });
+        } catch (e) {
+          return Response.json({ error: (e as Error).message }, { status: 422 });
         }
       },
     },
