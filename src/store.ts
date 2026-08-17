@@ -260,6 +260,12 @@ function snippetAround(text: string, query: string): string {
 export interface ModelSetting {
   ref: string;
   visible: boolean;
+  /**
+   * Also offered to guests. Narrows `visible` rather than standing beside it:
+   * a model guests may use is necessarily one the instance offers, so this is
+   * only consulted for models that are already visible.
+   */
+  guestVisible: boolean;
   displayName: string | null;
   sortOrder: number;
 }
@@ -267,6 +273,7 @@ export interface ModelSetting {
 interface ModelSettingRow {
   model_ref: string;
   visible: number;
+  guest_visible: number;
   display_name: string | null;
   sort_order: number;
 }
@@ -275,6 +282,7 @@ function rowToSetting(r: ModelSettingRow): ModelSetting {
   return {
     ref: r.model_ref,
     visible: r.visible === 1,
+    guestVisible: r.guest_visible === 1,
     displayName: r.display_name,
     sortOrder: r.sort_order,
   };
@@ -328,6 +336,7 @@ CREATE TABLE IF NOT EXISTS cancel_requests (
 CREATE TABLE IF NOT EXISTS model_settings (
   model_ref TEXT PRIMARY KEY,
   visible INTEGER NOT NULL DEFAULT 0,
+  guest_visible INTEGER NOT NULL DEFAULT 0,
   display_name TEXT,
   sort_order INTEGER NOT NULL DEFAULT 0
 );
@@ -560,6 +569,16 @@ export class Store {
     } catch {
       // column already exists
     }
+    // Migration: curation gained a guest dimension. Existing rows default to
+    // 0 — a deployment that adds guests decides what they may reach, rather
+    // than inheriting the owner's whole list the moment roles arrive.
+    try {
+      this.db.exec(
+        "ALTER TABLE model_settings ADD COLUMN guest_visible INTEGER NOT NULL DEFAULT 0",
+      );
+    } catch {
+      // column already exists
+    }
     // Migration: which project a conversation belongs to (NULL = unfiled).
     try {
       this.db.exec("ALTER TABLE conversations ADD COLUMN project_id TEXT");
@@ -677,17 +696,18 @@ export class Store {
     );
 
     this.listSettingsStmt = this.db.prepare(
-      `SELECT model_ref, visible, display_name, sort_order FROM model_settings`,
+      `SELECT model_ref, visible, guest_visible, display_name, sort_order FROM model_settings`,
     );
     this.getSettingStmt = this.db.prepare(
-      `SELECT model_ref, visible, display_name, sort_order
+      `SELECT model_ref, visible, guest_visible, display_name, sort_order
        FROM model_settings WHERE model_ref = ?`,
     );
     this.upsertSettingStmt = this.db.prepare(
-      `INSERT INTO model_settings (model_ref, visible, display_name, sort_order)
-       VALUES (?, ?, ?, ?)
+      `INSERT INTO model_settings (model_ref, visible, guest_visible, display_name, sort_order)
+       VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(model_ref) DO UPDATE SET
          visible = excluded.visible,
+         guest_visible = excluded.guest_visible,
          display_name = excluded.display_name,
          sort_order = excluded.sort_order`,
     );
@@ -1217,7 +1237,13 @@ export class Store {
   }
 
   setModelSetting(s: ModelSetting): void {
-    this.upsertSettingStmt.run(s.ref, s.visible ? 1 : 0, s.displayName, s.sortOrder);
+    this.upsertSettingStmt.run(
+      s.ref,
+      s.visible ? 1 : 0,
+      s.guestVisible ? 1 : 0,
+      s.displayName,
+      s.sortOrder,
+    );
   }
 
   /**

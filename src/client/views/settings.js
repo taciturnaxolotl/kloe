@@ -196,6 +196,29 @@ export function mount(root, _params, ctx) {
     saved.className = "saved";
     saved.textContent = "saved";
 
+    // Guest access, only where it can mean anything: a model nobody can see is
+    // not a model guests can be given.
+    var guest = document.createElement("label");
+    guest.className = "guesttoggle";
+    guest.title = "Also offer this model to guests";
+    var guestBox = document.createElement("input");
+    guestBox.type = "checkbox";
+    guestBox.checked = !!m.guestVisible;
+    guestBox.setAttribute("aria-label", "Offer to guests");
+    guest.appendChild(guestBox);
+    guest.appendChild(document.createTextNode("guests"));
+    if (!m.visible) guest.hidden = true;
+    guestBox.addEventListener("change", async function () {
+      var v = guestBox.checked;
+      if (await patchRaw(m.ref, "guestVisible", v)) {
+        m.guestVisible = v;
+        flash(saved, true);
+      } else {
+        guestBox.checked = !v;
+        flash(saved, false);
+      }
+    });
+
     // Enabling/disabling moves the model between sections, so re-render on success.
     toggle.addEventListener("change", async function () {
       var v = toggle.checked;
@@ -216,6 +239,7 @@ export function mount(root, _params, ctx) {
     row.appendChild(toggle);
     row.appendChild(main);
     row.appendChild(rename);
+    row.appendChild(guest);
     row.appendChild(saved);
     return row;
   }

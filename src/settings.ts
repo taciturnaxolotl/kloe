@@ -361,6 +361,16 @@ const AuthSchema = v.object({
   clientSecret: v.optional(v.string(), ""),
   /** Allowed subject URLs (indiko `me`/`sub`); empty = any authenticated user. */
   allowedSubs: v.optional(v.array(v.string()), []),
+  /**
+   * Subject URLs with full access: curation, every visible model, the admin
+   * views. Everyone else who gets through `allowedSubs` is a guest, who sees
+   * only the models marked guest-visible and cannot change what anyone sees.
+   *
+   * Empty (the default) means the deployment has no guests and every
+   * authenticated user is an owner — which is what a single-user instance is,
+   * and what every instance was before roles existed.
+   */
+  owners: v.optional(v.array(v.string()), []),
   sessionTtlDays: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 30),
   appName: v.optional(v.string(), "kloe"),
   logoUri: v.optional(v.string(), ""),

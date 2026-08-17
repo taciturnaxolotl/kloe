@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { brotliCompressSync, gzipSync, constants as zlibConstants } from "node:zlib";
 import { ConversationActor, type Subscriber, type WireEvent } from "./actor";
-import { authEnabled, gateApi, getSession, sessionUser } from "./auth";
+import {
+  authEnabled,
+  gateApi,
+  getSession,
+  type Role,
+  requestRole,
+  roleFor,
+  sessionUser,
+} from "./auth";
 import type { BlobStore } from "./blobs";
 import { ACTOR_IDLE_TTL_MS, SSE_RETRY_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
 import { Event, type EventData, type EventName, parseEventId } from "./events";
@@ -260,6 +268,27 @@ function requireKnownModel(ref: string): Response | null {
 }
 
 /**
+ * The same gate, narrowed by role: a guest may only run what curation offers
+ * guests. The picker already hides the rest, but the picker is a suggestion —
+ * this is the boundary, and it has to sit on every path that names a model,
+ * because a run costs someone real credits.
+ */
+function requireUsableModel(ref: string, store: Store, role: Role): Response | null {
+  const unknown = requireKnownModel(ref);
+  if (unknown) return unknown;
+  if (role === "owner") return null;
+  const s = store.getModelSetting(ref);
+  if (s?.visible && s.guestVisible) return null;
+  return Response.json({ error: `model "${ref}" is not available to you` }, { status: 403 });
+}
+
+/** 403 unless the caller runs this instance. */
+function requireOwner(req: Request, store: Store): Response | null {
+  if (requestRole(req, store) === "owner") return null;
+  return Response.json({ error: "owners only" }, { status: 403 });
+}
+
+/**
  * Every available model joined to its curation state, for the settings UI.
  * Models with no curation row default to hidden with their catalog name.
  */
@@ -272,6 +301,7 @@ function adminModels(store: Store) {
       return {
         ...m,
         visible: s?.visible ?? false,
+        guestVisible: s?.guestVisible ?? false,
         displayName: s?.displayName ?? null,
         sortOrder: s?.sortOrder ?? 0,
       };
@@ -282,13 +312,14 @@ function adminModels(store: Store) {
  * The curated subset shown in the chat picker: opt-in (visible only), with
  * displayName applied and ordered by sortOrder then name.
  */
-function chatModels(store: Store) {
+function chatModels(store: Store, role: Role) {
   const settings = new Map(store.listModelSettings().map((s) => [s.ref, s]));
   return getRegistry()
     .listModels()
     .flatMap((m) => {
       const s = settings.get(m.ref);
       if (!s?.visible) return [];
+      if (role === "guest" && !s.guestVisible) return [];
       return [
         {
           ref: m.ref,
@@ -387,9 +418,10 @@ function startRun(
   conversationId: string,
   data: PromptBody,
   store: Store,
+  role: Role,
   owner?: string,
 ): Response {
-  const rejected = requireKnownModel(data.model);
+  const rejected = requireUsableModel(data.model, store, role);
   if (rejected) return rejected;
   const badBlob = requireKnownBlobs(data.attachments, store);
   if (badBlob) return badBlob;
@@ -430,8 +462,8 @@ function startRun(
  * the current run finishes, the drive loop promotes the WHOLE pending queue
  * and runs it as a single batched generation.
  */
-function startSteer(conversationId: string, data: SteerBody, store: Store): Response {
-  const rejected = requireKnownModel(data.model);
+function startSteer(conversationId: string, data: SteerBody, store: Store, role: Role): Response {
+  const rejected = requireUsableModel(data.model, store, role);
   if (rejected) return rejected;
   const badBlob = requireKnownBlobs(data.attachments, store);
   if (badBlob) return badBlob;
@@ -592,6 +624,7 @@ function patchModel(data: ModelPatchBody, store: Store): Response {
   const merged = {
     ref: data.ref,
     visible: data.visible ?? prev?.visible ?? false,
+    guestVisible: data.guestVisible ?? prev?.guestVisible ?? false,
     displayName: data.displayName !== undefined ? data.displayName : (prev?.displayName ?? null),
     sortOrder: data.sortOrder ?? prev?.sortOrder ?? 0,
   };
@@ -652,7 +685,11 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     "/api/me": {
       GET: (req: Bun.BunRequest<"/api/me">) => {
         const s = getSession(req, store);
-        return s ? Response.json(sessionUser(s)) : Response.json({ authenticated: false });
+        // The role rides along so the UI can hide what it may not touch; the
+        // API gates on its own reading of the session either way.
+        return s
+          ? Response.json(sessionUser(s))
+          : Response.json({ authenticated: false, role: roleFor(undefined) });
       },
     },
 
@@ -816,7 +853,9 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     // choices made by clicking, and each one should not cost an endpoint.
     "/api/prefs": {
       GET: () => Response.json(prefsPayload(store)),
-      PATCH: withBody(PrefsPatchBody, (data) => {
+      PATCH: withBody(PrefsPatchBody, (data, req: Bun.BunRequest<"/api/prefs">) => {
+        const denied = requireOwner(req, store);
+        if (denied) return denied;
         for (const [key, value] of Object.entries(data)) {
           // Only keys we know: an open key/value endpoint is an invitation to
           // store whatever, and this table is read by the run loop.
@@ -862,14 +901,21 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     },
 
     // Settings/admin view: every available model + its curation state.
+    // Curation is the instance's shape, so it is the owner's to see and change.
     "/api/models": {
-      GET: () => Response.json({ models: adminModels(store) }),
-      PATCH: withBody(ModelPatchBody, (data) => patchModel(data, store)),
+      GET: (req: Bun.BunRequest<"/api/models">) =>
+        requireOwner(req, store) ?? Response.json({ models: adminModels(store) }),
+      PATCH: withBody(
+        ModelPatchBody,
+        (data, req: Bun.BunRequest<"/api/models">) =>
+          requireOwner(req, store) ?? patchModel(data, store),
+      ),
     },
 
     // Chat view: the curated, opt-in subset, ordered for the picker.
     "/api/models/chat": {
-      GET: () => Response.json({ models: chatModels(store) }),
+      GET: (req: Bun.BunRequest<"/api/models/chat">) =>
+        Response.json({ models: chatModels(store, requestRole(req, store)) }),
     },
 
     "/api/conversations/:id/stream": {
@@ -880,7 +926,13 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       POST: withBody(PromptBody, (data, req: Bun.BunRequest<"/api/conversations/:id/prompt">) => {
         const denied = guardConv(req, req.params.id);
         if (denied) return denied;
-        const res = startRun(req.params.id, data, store, getSession(req, store)?.sub);
+        const res = startRun(
+          req.params.id,
+          data,
+          store,
+          requestRole(req, store),
+          getSession(req, store)?.sub,
+        );
         kick();
         return res;
       }),
@@ -897,7 +949,7 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       POST: withBody(SteerBody, (data, req: Bun.BunRequest<"/api/conversations/:id/steer">) => {
         const denied = guardConv(req, req.params.id);
         if (denied) return denied;
-        const res = startSteer(req.params.id, data, store);
+        const res = startSteer(req.params.id, data, store, requestRole(req, store));
         kick();
         return res;
       }),

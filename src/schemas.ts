@@ -79,6 +79,7 @@ export type ProjectAssignBody = v.InferOutput<typeof ProjectAssignBody>;
 export const ModelPatchBody = v.object({
   ref: v.pipe(v.string(), v.minLength(1)),
   visible: v.optional(v.boolean()),
+  guestVisible: v.optional(v.boolean()),
   displayName: v.optional(v.nullable(v.string())),
   sortOrder: v.optional(v.number()),
 });

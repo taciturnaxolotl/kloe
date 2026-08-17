@@ -72,7 +72,13 @@ function registry(): ProviderRegistry {
 function storeWith(...visible: string[]): Store {
   const store = new Store(":memory:");
   for (const ref of visible)
-    store.setModelSetting({ ref, visible: true, sortOrder: 0, displayName: null });
+    store.setModelSetting({
+      ref,
+      visible: true,
+      guestVisible: false,
+      sortOrder: 0,
+      displayName: null,
+    });
   return store;
 }
 

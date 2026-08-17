@@ -310,13 +310,39 @@ export function clientMetadata(): Response {
   });
 }
 
+/**
+ * What a signed-in user is allowed to be.
+ *
+ * `owner` runs the instance: curation, the admin views, every visible model.
+ * `guest` gets a chat and nothing that decides what anyone else sees.
+ *
+ * Two cases deliberately resolve to owner: auth turned off (a local instance
+ * has no one to be a guest to), and an empty `auth.owners` (a deployment that
+ * never named owners hasn't opted into having guests — every instance behaved
+ * this way before roles existed, and an upgrade must not silently demote its
+ * only user).
+ */
+export type Role = "owner" | "guest";
+
+export function roleFor(sub: string | undefined): Role {
+  const cfg = getConfig().auth;
+  if (!cfg.enabled || cfg.owners.length === 0) return "owner";
+  return sub && cfg.owners.includes(sub) ? "owner" : "guest";
+}
+
+/** The role of whoever made this request. */
+export function requestRole(req: Request, store: Store): Role {
+  return roleFor(getSession(req, store)?.sub);
+}
+
 /** The public shape of the signed-in user, for `/api/me`. */
 export function sessionUser(session: Session): {
   sub: string;
+  role: Role;
   name?: string;
   picture?: string;
   url?: string;
   email?: string;
 } {
-  return { sub: session.sub, ...session.profile };
+  return { sub: session.sub, role: roleFor(session.sub), ...session.profile };
 }

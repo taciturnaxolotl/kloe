@@ -4177,6 +4177,24 @@ body.lb-open {
 .modelrow.off {
   opacity: 0.5;
 }
+/* Guest access sits with the row it belongs to, quiet until you look for it. */
+.modelrow .guesttoggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.modelrow .guesttoggle[hidden] {
+  display: none;
+}
+.modelrow .guesttoggle input {
+  margin: 0;
+  accent-color: var(--accent);
+}
 /* While dragging: the grabbed row stays in flow (visibility-hidden, so the
    browser doesn't abort the drag) and becomes the single dashed drop slot; the
    rest of the selection leaves the flow entirely. The drag image (a stacked
