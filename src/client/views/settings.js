@@ -39,6 +39,7 @@ var TEMPLATE =
   '<button class="settab" type="button" data-tab="research" role="tab">Research</button>' +
   '<button class="settab" type="button" data-tab="memory" role="tab" hidden>Memory</button>' +
   '<button class="settab" type="button" data-tab="accounts" role="tab" hidden>Accounts</button>' +
+  '<button class="settab" type="button" data-tab="people" role="tab" hidden>People</button>' +
   "</div>" +
   '<section class="settabpanel" data-panel="models">' +
   '<p class="lede">Turn models on to add them to the chat picker, drag the enabled ones to set their order (⌘-click to move several at once), and give them display names.</p>' +
@@ -47,6 +48,15 @@ var TEMPLATE =
   '<section class="settabpanel" data-panel="research" hidden>' +
   '<p class="lede">Deep research runs two jobs. The <strong>lead</strong> plans the angles, reads each round of notes to decide what to chase next, and writes the report. The <strong>workers</strong> search and read pages — far more tokens, on a much narrower job. Running a strong lead over cheaper workers is usually better than running one model for both.</p>' +
   '<div class="rolepick" id="rolepick">Loading…</div>' +
+  "</section>" +
+  '<section class="settabpanel" data-panel="people" hidden>' +
+  '<p class="lede">What each role may do, and who holds which. A role decides only what nobody can bring for themselves \u2014 this instance\u2019s compute and this domain; models and search follow whose key pays for them.</p>' +
+  '<div class="seclabel">Roles</div>' +
+  '<div id="rolePolicy">Loading\u2026</div>' +
+  '<div class="seclabel">People</div>' +
+  '<p class="lede small">Set here, a role applies at once, including to anyone already signed in. Signing someone out is what makes ' +
+  "their next visit ask the provider again.</p>" +
+  '<div id="peopleList"></div>' +
   "</section>" +
   '<section class="settabpanel" data-panel="accounts" hidden>' +
   '<p class="lede">Connect your own provider account and your chats spend your credits instead of this instance\u2019s. A connected account decides what it can run, so its models appear in the picker alongside the shared ones.</p>' +
@@ -600,6 +610,178 @@ export function mount(root, _params, ctx) {
       });
   }
 
+  // ---- roles + people ----
+  // Two halves of one question: what a role means, and who holds it. The first
+  // writes to the config overlay, the second to kloe's own record of a person.
+  var CAPS = [
+    { key: "admin", label: "admin", hint: "Curation, preferences, these views" },
+    { key: "sandbox", label: "sandbox", hint: "Shell tools \u2014 this instance\u2019s compute" },
+    { key: "publish", label: "publish", hint: "Public links on this domain" },
+  ];
+  var roleList = [];
+
+  function rolePolicyRow(role) {
+    var row = document.createElement("div");
+    row.className = "connrow";
+    var text = document.createElement("div");
+    text.className = "conntext";
+    var title = document.createElement("div");
+    title.className = "conntitle";
+    title.textContent = role.name;
+    text.appendChild(title);
+    row.appendChild(text);
+
+    var saved = document.createElement("span");
+    saved.className = "saved";
+    saved.textContent = "saved";
+
+    CAPS.forEach(function (cap) {
+      var label = document.createElement("label");
+      label.className = "guesttoggle";
+      label.title = cap.hint;
+      var box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = !!role[cap.key];
+      // The last admin is not a checkbox anyone should be able to untick: with
+      // no admin role left, the only way back in is editing nix.
+      var lastAdmin =
+        cap.key === "admin" &&
+        role[cap.key] &&
+        roleList.filter(function (r) {
+          return r.admin;
+        }).length < 2;
+      box.disabled = lastAdmin;
+      if (lastAdmin) label.title = "The only role with admin \u2014 give another one first.";
+      box.addEventListener("change", async function () {
+        var patch = { auth: { roles: {} } };
+        patch.auth.roles[role.name] = {};
+        CAPS.forEach(function (c) {
+          patch.auth.roles[role.name][c.key] = c.key === cap.key ? box.checked : !!role[c.key];
+        });
+        var res = await fetch("/api/config", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(patch),
+        }).catch(function () {
+          return { ok: false };
+        });
+        if (res.ok) {
+          role[cap.key] = box.checked;
+          flash(saved, true);
+          loadRoles();
+        } else {
+          box.checked = !box.checked;
+          flash(saved, false);
+        }
+      });
+      label.appendChild(box);
+      label.appendChild(document.createTextNode(cap.label));
+      row.appendChild(label);
+    });
+    row.appendChild(saved);
+    return row;
+  }
+
+  function personRow(user) {
+    var row = document.createElement("div");
+    row.className = "connrow";
+    var dot = document.createElement("span");
+    dot.className = "conndot";
+    row.appendChild(dot);
+
+    var text = document.createElement("div");
+    text.className = "conntext";
+    var title = document.createElement("div");
+    title.className = "conntitle";
+    title.textContent = user.sub;
+    var sub = document.createElement("div");
+    sub.className = "connsub";
+    sub.textContent = user.override
+      ? "Set here to " + user.override + (user.role ? " \u00b7 provider says " + user.role : "")
+      : user.role
+        ? "From the provider: " + user.role
+        : "No role from the provider";
+    text.appendChild(title);
+    text.appendChild(sub);
+    row.appendChild(text);
+
+    var saved = document.createElement("span");
+    saved.className = "saved";
+    saved.textContent = "saved";
+
+    var pick = document.createElement("select");
+    pick.className = "connkey rolepickone";
+    var options = [{ value: "", label: "provider\u2019s answer" }].concat(
+      roleList.map(function (r) {
+        return { value: r.name, label: r.name };
+      }),
+    );
+    options.forEach(function (o) {
+      var opt = document.createElement("option");
+      opt.value = o.value;
+      opt.textContent = o.label;
+      if (o.value === (user.override || "")) opt.selected = true;
+      pick.appendChild(opt);
+    });
+    pick.addEventListener("change", async function () {
+      var res = await fetch("/api/roles", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sub: user.sub, role: pick.value || null }),
+      }).catch(function () {
+        return { ok: false };
+      });
+      if (res.ok) {
+        user.override = pick.value || undefined;
+        flash(saved, true);
+        loadPeople();
+      } else {
+        flash(saved, false);
+      }
+    });
+    row.appendChild(pick);
+
+    var out = document.createElement("button");
+    out.type = "button";
+    out.className = "btn";
+    out.textContent = "Sign out";
+    out.title = "End their sessions, so their next visit asks the provider again";
+    out.onclick = async function () {
+      out.disabled = true;
+      await fetch("/api/roles", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sub: user.sub, role: user.override || null, signOut: true }),
+      }).catch(function () {});
+      out.disabled = false;
+      flash(saved, true);
+    };
+    row.appendChild(out);
+    row.appendChild(saved);
+    return row;
+  }
+
+  var people = [];
+  function renderPeople() {
+    var policy = byId("rolePolicy");
+    if (!policy) return;
+    policy.innerHTML = "";
+    roleList.forEach(function (r) {
+      policy.appendChild(rolePolicyRow(r));
+    });
+    var list = byId("peopleList");
+    list.innerHTML = "";
+    if (!people.length) {
+      list.innerHTML = '<p class="lede">Nobody has signed in yet.</p>';
+      return;
+    }
+    people.forEach(function (u) {
+      list.appendChild(personRow(u));
+    });
+  }
+
+  var loadPeople = loadRoles;
+
   // ---- provider accounts (BYOK + device-flow OAuth) ----
   // One row per connectable provider: connected ones offer a disconnect,
   // the rest offer whichever routes in they have (a device flow, a key, or both).
@@ -768,16 +950,30 @@ export function mount(root, _params, ctx) {
   }
 
   async function loadRoles() {
+    var tabBtn = root.querySelector('.settab[data-tab="people"]');
     try {
-      var j = await (await fetch("/api/roles")).json();
-      guestRoles = (j.roles || [])
+      var res = await fetch("/api/roles");
+      // Owners only. For everyone else the tab isn't drawn and the model rows
+      // get no role checkboxes, which is what they can't hand out anyway.
+      if (!res.ok) {
+        if (tabBtn) tabBtn.hidden = true;
+        return;
+      }
+      var j = await res.json();
+      roleList = j.roles || [];
+      people = j.users || [];
+      guestRoles = roleList
         .filter(function (r) {
           return !r.admin;
         })
         .map(function (r) {
           return r.name;
         });
-    } catch (_) {}
+      if (tabBtn) tabBtn.hidden = false;
+      renderPeople();
+    } catch (_) {
+      if (tabBtn) tabBtn.hidden = true;
+    }
   }
 
   async function loadAccounts() {
@@ -1150,6 +1346,7 @@ export function mount(root, _params, ctx) {
   loadRoles();
   if (location.hash === "#memory") selectTab("memory");
   if (location.hash === "#accounts") selectTab("accounts");
+  if (location.hash === "#people") selectTab("people");
   loadLard();
   loadAccounts();
   // Models and preferences together: a role picker lists enabled models, so

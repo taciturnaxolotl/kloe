@@ -3539,6 +3539,17 @@ body.lb-open {
   border-color: var(--accent);
 }
 
+/* The role picker on a person's row: a select styled like the key input beside
+   it, so the People panel reads as one column of controls. */
+.rolepickone {
+  width: 165px;
+  cursor: pointer;
+}
+.lede.small {
+  font-size: 12.5px;
+  margin-top: -4px;
+}
+
 /* A provider this instance has no key for: available, but only to whoever
    brings an account. */
 .conntag {

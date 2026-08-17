@@ -462,6 +462,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions (expires_at);
 CREATE TABLE IF NOT EXISTS user_roles (
   sub        TEXT PRIMARY KEY,
   role       TEXT,
+  override   TEXT,
   updated_at INTEGER NOT NULL
 );
 
@@ -644,6 +645,12 @@ export class Store {
     // per-user lard identity). NULL for pre-existing rows / auth-off (→ local).
     try {
       this.db.exec("ALTER TABLE conversations ADD COLUMN owner_sub TEXT");
+    } catch {
+      // column already exists
+    }
+    // Migration: an owner's own answer for a person, alongside the provider's.
+    try {
+      this.db.exec("ALTER TABLE user_roles ADD COLUMN override TEXT");
     } catch {
       // column already exists
     }
@@ -1394,7 +1401,11 @@ export class Store {
       .run(id, sub, JSON.stringify(profile), Date.now(), expiresAt);
   }
 
-  /** Record what the provider said this user's role is, at sign-in. */
+  /**
+   * Record what the provider said this user's role is, at sign-in. Leaves an
+   * owner's override alone: the provider is one opinion about a person, and a
+   * decision made here outranks it until it is cleared.
+   */
   setUserRole(sub: string, role: string | undefined): void {
     this.db
       .query(
@@ -1404,23 +1415,60 @@ export class Store {
       .run(sub, role ?? null, Date.now());
   }
 
-  /** The provider role last recorded for a user, or undefined if never seen. */
+  /**
+   * An owner's own answer for this person, or null to go back to the
+   * provider's. Takes effect at once — every request resolves the role from
+   * this table rather than from anything captured in a session.
+   */
+  setUserRoleOverride(sub: string, role: string | null): void {
+    this.db
+      .query(
+        `INSERT INTO user_roles (sub, role, override, updated_at) VALUES (?, NULL, ?, ?)
+         ON CONFLICT(sub) DO UPDATE SET override = excluded.override, updated_at = excluded.updated_at`,
+      )
+      .run(sub, role, Date.now());
+  }
+
+  /** The role in force for a user: an owner's override, else the provider's. */
   getUserRole(sub: string): string | undefined {
-    const row = this.db.query("SELECT role FROM user_roles WHERE sub = ?").get(sub) as {
+    const row = this.db.query("SELECT role, override FROM user_roles WHERE sub = ?").get(sub) as {
       role: string | null;
+      override: string | null;
     } | null;
-    return row?.role ?? undefined;
+    return row?.override ?? row?.role ?? undefined;
   }
 
   /** Everyone kloe has seen sign in, for the admin view that hands roles out. */
-  listUserRoles(): Array<{ sub: string; role?: string; updatedAt: number }> {
+  listUserRoles(): Array<{
+    sub: string;
+    role?: string;
+    override?: string;
+    updatedAt: number;
+  }> {
     return (
-      this.db.query("SELECT sub, role, updated_at FROM user_roles ORDER BY sub").all() as Array<{
+      this.db
+        .query("SELECT sub, role, override, updated_at FROM user_roles ORDER BY sub")
+        .all() as Array<{
         sub: string;
         role: string | null;
+        override: string | null;
         updated_at: number;
       }>
-    ).map((r) => ({ sub: r.sub, role: r.role ?? undefined, updatedAt: r.updated_at }));
+    ).map((r) => ({
+      sub: r.sub,
+      role: r.role ?? undefined,
+      override: r.override ?? undefined,
+      updatedAt: r.updated_at,
+    }));
+  }
+
+  /**
+   * Ends every session this person holds. The revocation primitive: a role
+   * takes effect immediately, but signing someone out is what forces the
+   * provider to be asked about them again.
+   */
+  deleteSessionsFor(sub: string): number {
+    return this.db.query("DELETE FROM sessions WHERE sub = ?").run(sub).changes;
   }
 
   /** The session for a cookie id, or undefined if missing/expired (expired rows are dropped). */

@@ -54,6 +54,7 @@ import {
   PublishBody,
   RenameBody,
   SteerBody,
+  UserRoleBody,
 } from "./schemas";
 import {
   getConfig,
@@ -1101,8 +1102,39 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         requireOwner(req, store) ??
         Response.json({
           roles: declaredRoles().map((name) => ({ name, ...policyFor(name) })),
-          users: store.listUserRoles(),
+          users: store.listUserRoles().map((u) => ({
+            ...u,
+            // What is actually in force, which is what an owner is deciding
+            // about — the provider's answer is shown beside it as context.
+            effective: roleFor(u.sub, u.override ?? u.role),
+          })),
         }),
+
+      /**
+       * Set (or clear) an owner's own answer for a person.
+       *
+       * This is the fast lever, and the reason it exists: the provider only
+       * tells kloe a role during a fresh sign-in, so waiting for one is no way
+       * to demote somebody. An override lands in the table every request reads,
+       * so it applies to live sessions at once — `signOut` on top of it ends
+       * their sessions, which is what forces the provider to be asked again.
+       */
+      PATCH: withBody(UserRoleBody, (data, req: Bun.BunRequest<"/api/roles">) => {
+        const denied = requireOwner(req, store);
+        if (denied) return denied;
+        const self = getSession(req, store)?.sub;
+        if (data.sub === self && data.role !== null && !roleCan(data.role, "admin")) {
+          // Locking yourself out is recoverable only by editing nix, so it is
+          // worth one refusal rather than one apology.
+          return Response.json(
+            { error: "that would remove your own admin access" },
+            { status: 422 },
+          );
+        }
+        store.setUserRoleOverride(data.sub, data.role);
+        const endedSessions = data.signOut ? store.deleteSessionsFor(data.sub) : 0;
+        return Response.json({ ok: true, endedSessions });
+      }),
     },
 
     // Curation is the instance's shape, so it is the owner's to see and change.

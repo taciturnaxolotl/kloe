@@ -88,6 +88,15 @@ export const CredentialBody = v.object({
 });
 export type CredentialBody = v.InferOutput<typeof CredentialBody>;
 
+/** PATCH /api/roles/users — an owner's own answer for a person; null clears it. */
+export const UserRoleBody = v.object({
+  sub: v.pipe(v.string(), v.minLength(1)),
+  role: v.nullable(v.string()),
+  /** Also end their sessions, so the provider is asked about them afresh. */
+  signOut: v.optional(v.boolean(), false),
+});
+export type UserRoleBody = v.InferOutput<typeof UserRoleBody>;
+
 export const ModelPatchBody = v.object({
   ref: v.pipe(v.string(), v.minLength(1)),
   visible: v.optional(v.boolean()),

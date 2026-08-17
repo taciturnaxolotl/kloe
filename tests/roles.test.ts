@@ -313,3 +313,104 @@ test("roles declared in config carry their own policy", () => {
   // A role the provider sends that this deployment never declared is a guest.
   expect(roleFor("https://a/", "somethingelse")).toBe("guest");
 });
+
+// ---- making a role take effect ---------------------------------------------
+// The provider only reports a role during a fresh sign-in, so waiting for one
+// is no way to demote somebody. An owner's own answer lands in the table every
+// request reads.
+
+test("an owner's answer takes effect at once, on a session already open", async () => {
+  configure([OWNER], "operator");
+  const { base, store } = freshApp();
+  const guestSession = as(store, GUEST, "operator"); // signed in as an admin
+  expect(
+    ((await (await fetch(`${base}/api/me`, { headers: guestSession })).json()) as any).role,
+  ).toBe("owner");
+
+  const res = await fetch(`${base}/api/roles`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", ...as(store, OWNER) },
+    body: JSON.stringify({ sub: GUEST, role: "guest" }),
+  });
+  expect(res.status).toBe(200);
+
+  // The SAME cookie, no re-login: what a request may do is read fresh each time.
+  expect(
+    ((await (await fetch(`${base}/api/me`, { headers: guestSession })).json()) as any).role,
+  ).toBe("guest");
+  expect((await fetch(`${base}/api/models`, { headers: guestSession })).status).toBe(403);
+});
+
+test("clearing the override goes back to what the provider said", async () => {
+  configure([OWNER], "operator");
+  const { base, store } = freshApp();
+  const cookie = as(store, GUEST, "operator");
+  const patch = (role: string | null) =>
+    fetch(`${base}/api/roles`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", ...as(store, OWNER) },
+      body: JSON.stringify({ sub: GUEST, role }),
+    });
+
+  await patch("guest");
+  expect(store.getUserRole(GUEST)).toBe("guest");
+  await patch(null);
+  expect(store.getUserRole(GUEST)).toBe("operator");
+  expect(((await (await fetch(`${base}/api/me`, { headers: cookie })).json()) as any).role).toBe(
+    "owner",
+  );
+});
+
+test("a later sign-in does not undo an owner's answer", () => {
+  configure([OWNER], "operator");
+  const store = new Store(":memory:");
+  store.setUserRole(GUEST, "operator");
+  store.setUserRoleOverride(GUEST, "guest");
+  // They sign in again and the provider repeats itself; the local decision holds.
+  store.setUserRole(GUEST, "operator");
+  expect(store.getUserRole(GUEST)).toBe("guest");
+});
+
+test("signing someone out ends their sessions", async () => {
+  configure([OWNER]);
+  const { base, store } = freshApp();
+  const cookie = as(store, GUEST);
+  expect((await fetch(`${base}/api/me`, { headers: cookie })).status).toBe(200);
+
+  const res = await fetch(`${base}/api/roles`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", ...as(store, OWNER) },
+    body: JSON.stringify({ sub: GUEST, role: null, signOut: true }),
+  });
+  expect(((await res.json()) as any).endedSessions).toBe(1);
+  // The cookie is now a cookie for nothing: the API gate turns them away, and
+  // the client sends them to sign in again — which is the only moment the
+  // provider tells kloe a role.
+  expect((await fetch(`${base}/api/me`, { headers: cookie })).status).toBe(401);
+});
+
+test("an owner cannot take their own admin away", async () => {
+  configure([], "operator"); // no break-glass list: the override is all there is
+  const { base, store } = freshApp();
+  const me = as(store, OWNER, "operator");
+  const res = await fetch(`${base}/api/roles`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", ...me },
+    body: JSON.stringify({ sub: OWNER, role: "guest" }),
+  });
+  // Recoverable only by editing nix, so it is worth one refusal.
+  expect(res.status).toBe(422);
+  expect(store.getUserRole(OWNER)).toBe("operator");
+});
+
+test("only an owner may change anyone's role", async () => {
+  configure([OWNER]);
+  const { base, store } = freshApp();
+  const res = await fetch(`${base}/api/roles`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", ...as(store, GUEST) },
+    body: JSON.stringify({ sub: GUEST, role: "owner" }),
+  });
+  expect(res.status).toBe(403);
+  expect(store.getUserRole(GUEST)).toBeUndefined();
+});
