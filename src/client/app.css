@@ -283,6 +283,20 @@ a.icon {
 .conv[aria-current="true"] svg {
   color: var(--ink);
 }
+/* The footer holds two destinations now: connections (yours) and settings
+   (the instance's). The plug shrinks to its icon so the avatar keeps the room. */
+.railfoots {
+  display: flex;
+  align-items: stretch;
+}
+.railfoots .railfoot {
+  flex: 1;
+  min-width: 0;
+}
+.railfoots .railplug {
+  flex: none;
+  border-right: 1px solid var(--rule);
+}
 .railfoot {
   display: flex;
   align-items: center;
@@ -3548,6 +3562,37 @@ body.lb-open {
 .lede.small {
   font-size: 12.5px;
   margin-top: -4px;
+}
+
+/* The rest of the catalogue: present, but folded away until asked for. */
+.connfold {
+  margin-top: 18px;
+}
+.connfold > summary {
+  cursor: pointer;
+  padding: 8px 2px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.connfold > summary:hover {
+  color: var(--ink);
+}
+.connfold > .connrow:first-of-type {
+  margin-top: 4px;
+}
+
+/* A brand mark stands in for the name it would otherwise repeat. */
+.connlogo {
+  display: inline-flex;
+  align-items: center;
+}
+.connlogo svg {
+  height: 19px;
+  width: auto;
+  display: block;
 }
 
 /* A provider this instance has no key for: available, but only to whoever

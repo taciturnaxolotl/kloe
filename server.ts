@@ -200,6 +200,7 @@ if (import.meta.main) {
       "/": page("index.html"),
       "/c/:id": page("index.html"), // deep link to a conversation — the SPA reads the id from the path
       "/settings": page("index.html"), // SPA route — the shell mounts the settings view
+      "/connections": page("index.html"), // SPA route — the shell mounts the connections view
       "/conversations": page("index.html"), // SPA route — the shell mounts the conversations view
       "/projects": page("index.html"), // SPA route — the shell's router mounts the projects view
       "/p/:id": page("index.html"), // SPA route — the shell mounts the project-detail view

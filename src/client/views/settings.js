@@ -38,7 +38,6 @@ var TEMPLATE =
   '<button class="settab active" type="button" data-tab="models" role="tab">Models</button>' +
   '<button class="settab" type="button" data-tab="research" role="tab">Research</button>' +
   '<button class="settab" type="button" data-tab="memory" role="tab" hidden>Memory</button>' +
-  '<button class="settab" type="button" data-tab="accounts" role="tab" hidden>Accounts</button>' +
   '<button class="settab" type="button" data-tab="people" role="tab" hidden>People</button>' +
   "</div>" +
   '<section class="settabpanel" data-panel="models">' +
@@ -54,10 +53,6 @@ var TEMPLATE =
   '<div id="rolePolicy">Loading\u2026</div>' +
   '<div class="seclabel">People</div>' +
   '<div id="peopleList"></div>' +
-  "</section>" +
-  '<section class="settabpanel" data-panel="accounts" hidden>' +
-  '<p class="lede">Connect an account and your chats bill to it instead of this instance\u2019s key. Whatever your account can reach turns up in the model picker.</p>' +
-  '<div id="accountList">Loading\u2026</div>' +
   "</section>" +
   '<section class="settabpanel" data-panel="memory" hidden>' +
   '<div id="lardStatus" class="connrow"></div>' +
@@ -729,187 +724,23 @@ export function mount(root, _params, ctx) {
     });
   }
 
-  // ---- provider accounts (BYOK + device-flow OAuth) ----
-  // One row per connectable provider: connected ones offer a disconnect,
-  // the rest offer whichever routes in they have (a device flow, a key, or both).
-  var devicePoll = null;
-
-  function stopPolling() {
-    if (devicePoll) {
-      clearTimeout(devicePoll);
-      devicePoll = null;
-    }
-  }
-
-  function accountRow(p, conn) {
-    var row = document.createElement("div");
-    row.className = "connrow" + (conn ? " on" : "");
-    var path = "/api/credentials/" + encodeURIComponent(p.service) + "/" + encodeURIComponent(p.id);
-
-    var dot = document.createElement("span");
-    dot.className = "conndot";
-    row.appendChild(dot);
-
-    var text = document.createElement("div");
-    text.className = "conntext";
-    var title = document.createElement("div");
-    title.className = "conntitle";
-    title.textContent = p.id;
-    if (p.userOnly) {
-      var tag = document.createElement("span");
-      tag.className = "conntag";
-      tag.textContent = "bring your own";
-      tag.title = "No key here. Connect an account and it\u2019s yours to use.";
-      title.appendChild(tag);
-    }
-    var sub = document.createElement("div");
-    sub.className = "connsub";
-    if (conn) {
-      sub.textContent =
-        conn.kind === "oauth"
-          ? "Connected" + (conn.label ? " as " + conn.label : "") + ". Billed to you."
-          : "Your key " + (conn.label || "") + ". Billed to you.";
-    } else {
-      sub.textContent = p.userOnly
-        ? "Not set up here. Connect an account to use it."
-        : "Using this instance\u2019s key.";
-    }
-    text.appendChild(title);
-    text.appendChild(sub);
-    row.appendChild(text);
-
-    if (conn) {
-      var off = document.createElement("button");
-      off.type = "button";
-      off.className = "btn";
-      off.textContent = "Disconnect";
-      off.onclick = async function () {
-        off.disabled = true;
-        await fetch(path, { method: "DELETE" }).catch(function () {});
-        loadAccounts();
-      };
-      row.appendChild(off);
-      return row;
-    }
-
-    if (p.oauth) {
-      var connect = document.createElement("button");
-      connect.type = "button";
-      connect.className = "btn primary";
-      connect.textContent = "Connect";
-      connect.onclick = function () {
-        startDevice(p, row);
-      };
-      row.appendChild(connect);
-    }
-    if (p.byok) {
-      var key = document.createElement("input");
-      key.type = "password";
-      key.className = "connkey";
-      key.placeholder = "Paste an API key";
-      key.autocomplete = "off";
-      key.addEventListener("change", async function () {
-        var value = key.value.trim();
-        if (!value) return;
-        key.disabled = true;
-        var res = await fetch("/api/credentials", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ service: p.service, providerId: p.id, apiKey: value }),
-        }).catch(function () {
-          return { ok: false };
-        });
-        key.value = "";
-        key.disabled = false;
-        if (res.ok) loadAccounts();
-      });
-      row.appendChild(key);
-    }
-    return row;
-  }
-
   /**
-   * The device flow, from the user's side: show the code, open the page they
-   * type it into, and poll until hyper says they finished. Polling stops when
-   * the code expires or the view goes away — a forgotten timer here would keep
-   * hitting the provider from a page nobody is looking at.
+   * One fetch feeds both halves of the roles story: the People panel, and the
+   * per-role checkboxes on each model row. Owners only, so a non-owner simply
+   * gets no tab and no checkboxes, which is what they cannot hand out anyway.
    */
-  async function startDevice(p, row) {
-    var base = "/api/credentials/" + encodeURIComponent(p.service) + "/" + encodeURIComponent(p.id);
-    stopPolling();
-    var panel = document.createElement("div");
-    panel.className = "conndevice";
-    panel.textContent = "Getting a code\u2026";
-    row.appendChild(panel);
-
-    var start;
-    try {
-      start = await (await fetch(base + "/device", { method: "POST" })).json();
-      if (start.error) throw new Error(start.error);
-    } catch (e) {
-      panel.textContent = "Couldn\u2019t start: " + e.message;
-      return;
-    }
-
-    panel.innerHTML = "";
-    var code = document.createElement("div");
-    code.className = "conncode";
-    code.textContent = start.userCode;
-    var hint = document.createElement("div");
-    hint.className = "connhint";
-    hint.textContent = "Type this code to approve, then come back. This page is watching for it.";
-    var open = document.createElement("a");
-    open.className = "btn primary";
-    open.target = "_blank";
-    open.rel = "noopener";
-    open.href = start.verificationUrl;
-    open.textContent = "Open approval page";
-    panel.appendChild(code);
-    panel.appendChild(hint);
-    panel.appendChild(open);
-
-    var url = base + "/device/" + encodeURIComponent(start.deviceCode);
-    var tick = async function () {
-      if (Date.now() > start.expiresAt) {
-        hint.textContent = "That code ran out. Try again.";
-        return;
-      }
-      var j = {};
-      try {
-        j = await (await fetch(url)).json();
-      } catch (_) {}
-      if (j.status === "connected") {
-        stopPolling();
-        loadAccounts();
-        return;
-      }
-      if (j.status === "denied") {
-        hint.textContent = "That was denied.";
-        return;
-      }
-      if (j.status === "expired") {
-        hint.textContent = "That code ran out. Try again.";
-        return;
-      }
-      devicePoll = setTimeout(tick, 2000);
-    };
-    devicePoll = setTimeout(tick, 2000);
-  }
-
   async function loadRoles() {
     var tabBtn = root.querySelector('.settab[data-tab="people"]');
     try {
       var res = await fetch("/api/roles");
-      // Owners only. For everyone else the tab isn't drawn and the model rows
-      // get no role checkboxes, which is what they can't hand out anyway.
       if (!res.ok) {
         if (tabBtn) tabBtn.hidden = true;
         return;
       }
       var j = await res.json();
       roleList = j.roles || [];
-      if (j.provider) providerName = j.provider;
       people = j.users || [];
+      if (j.provider) providerName = j.provider;
       guestRoles = roleList
         .filter(function (r) {
           return !r.admin;
@@ -922,47 +753,6 @@ export function mount(root, _params, ctx) {
     } catch (_) {
       if (tabBtn) tabBtn.hidden = true;
     }
-  }
-
-  async function loadAccounts() {
-    var tabBtn = root.querySelector('.settab[data-tab="accounts"]');
-    var list = byId("accountList");
-    var data = { providers: [], connections: [] };
-    try {
-      data = await (await fetch("/api/credentials")).json();
-    } catch (_) {}
-    var offered = data.providers || [];
-    if (tabBtn) tabBtn.hidden = offered.length === 0;
-    if (offered.length === 0) {
-      if (currentTab() === "accounts") selectTab("models");
-      return;
-    }
-    var byKey = {};
-    (data.connections || []).forEach(function (c) {
-      byKey[c.service + "/" + c.providerId] = c;
-    });
-    list.innerHTML = "";
-    // Grouped by what the account is FOR: an inference endpoint and a search
-    // engine can share a name, and reading them in one flat list invites the
-    // reader to think they are the same account.
-    ["inference", "search"].forEach(function (service) {
-      var mine = offered.filter(function (p) {
-        return p.service === service;
-      });
-      if (!mine.length) return;
-      list.appendChild(seclabel(service === "inference" ? "Models" : "Search"));
-      // Connected first, then what this instance already pays for, then the
-      // long tail nobody has touched.
-      mine
-        .sort(function (a, b) {
-          var ca = byKey[a.service + "/" + a.id] ? 0 : a.userOnly ? 2 : 1;
-          var cb = byKey[b.service + "/" + b.id] ? 0 : b.userOnly ? 2 : 1;
-          return ca - cb || a.id.localeCompare(b.id);
-        })
-        .forEach(function (p) {
-          list.appendChild(accountRow(p, byKey[p.service + "/" + p.id]));
-        });
-    });
   }
 
   // ---- lard (memory) ----
@@ -1292,10 +1082,8 @@ export function mount(root, _params, ctx) {
   // before they render.
   loadRoles();
   if (location.hash === "#memory") selectTab("memory");
-  if (location.hash === "#accounts") selectTab("accounts");
   if (location.hash === "#people") selectTab("people");
   loadLard();
-  loadAccounts();
   // Models and preferences together: a role picker lists enabled models, so
   // rendering it needs both and rendering it twice would flicker.
   Promise.all([
@@ -1322,9 +1110,6 @@ export function mount(root, _params, ctx) {
 
   return {
     destroy: function () {
-      // A device poll outlives the view otherwise, hitting the provider from a
-      // page nobody is looking at.
-      stopPolling();
       document.removeEventListener("mousedown", onDocMousedown);
       document.removeEventListener("dragover", onDocDragover);
       document.removeEventListener("drop", onDocDrop);

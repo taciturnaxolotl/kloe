@@ -1,7 +1,7 @@
 import { getCatalog } from "./inference";
 import { flowFor } from "./oauthflows";
 import { encryptionConfigured } from "./secrets";
-import { getConfig } from "./settings";
+import { getConfig, resolveRef } from "./settings";
 
 /**
  * Everything a user can connect an account to, in one vocabulary.
@@ -61,7 +61,7 @@ function inferenceConnectors(): Connector[] {
       id: p.id,
       byok: p.byok !== false,
       oauth: p.oauth && flowFor(p.oauth.flow) ? p.oauth : undefined,
-      endpoint: p.apiEndpoint,
+      endpoint: resolveRef(p.apiEndpoint),
       type: p.type,
     });
   }
@@ -78,7 +78,11 @@ function inferenceConnectors(): Connector[] {
         service: "inference",
         id: p.id,
         byok: true,
-        endpoint: p.apiEndpoint,
+        // Catwalk records endpoints as "$VAR" for providers whose address is
+        // deployment-specific; unresolved, that string would be sent to fetch
+        // verbatim. Empty is the right answer, since the SDK adapter for a
+        // known provider already has its default.
+        endpoint: resolveRef(p.apiEndpoint),
         type: p.type,
         userOnly: true,
       });
