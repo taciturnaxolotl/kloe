@@ -42,7 +42,7 @@ function fixtureRegistry(): ProviderRegistry {
 
 /** Owners by name, plus (optionally) the provider role that maps to owner. */
 function configure(owners: string[], ownerRole?: string): void {
-  const base = loadConfig({ path: "does-not-exist.json", env: {}, overlay: {} });
+  const base = loadConfig({ path: "does-not-exist.json", env: {} });
   const roles: Record<string, RolePolicy> =
     owners.length || ownerRole
       ? {
@@ -113,7 +113,7 @@ test("an instance that names no owners has no guests", () => {
 });
 
 test("auth off means there is nobody to be a guest to", () => {
-  const base = loadConfig({ path: "does-not-exist.json", env: {}, overlay: {} });
+  const base = loadConfig({ path: "does-not-exist.json", env: {} });
   setConfig({
     ...base,
     auth: {
@@ -356,63 +356,11 @@ test("roles declared in config carry their own policy", () => {
 // is no way to demote somebody. An owner's own answer lands in the table every
 // request reads.
 
-test("an assignment takes effect at once, on a session already open", async () => {
-  configure([OWNER], "operator");
-  const { base, store } = freshApp();
-  const guestSession = as(store, GUEST, "operator"); // signed in as an admin
-  expect(
-    ((await (await fetch(`${base}/api/me`, { headers: guestSession })).json()) as any).role,
-  ).toBe("owner");
-
-  const res = await fetch(`${base}/api/roles`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json", ...as(store, OWNER) },
-    body: JSON.stringify({ sub: GUEST, role: "guest" }),
-  });
-  expect(res.status).toBe(200);
-
-  // The SAME cookie, no re-login: what a request may do is read fresh each time.
-  expect(
-    ((await (await fetch(`${base}/api/me`, { headers: guestSession })).json()) as any).role,
-  ).toBe("guest");
-  expect((await fetch(`${base}/api/models`, { headers: guestSession })).status).toBe(403);
-});
-
-test("only a declared role can be handed out", async () => {
-  configure([OWNER], "operator");
-  const { base, store } = freshApp();
-  const res = await fetch(`${base}/api/roles`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json", ...as(store, OWNER) },
-    body: JSON.stringify({ sub: GUEST, role: "wizard" }),
-  });
-  expect(res.status).toBe(422);
-});
-
-test("clearing an assignment goes back to what the provider said", async () => {
-  configure([OWNER], "operator");
-  const { base, store } = freshApp();
-  const cookie = as(store, GUEST, "operator"); // the provider calls them an operator
-  const patch = (role: string | null) =>
-    fetch(`${base}/api/roles`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json", ...as(store, OWNER) },
-      body: JSON.stringify({ sub: GUEST, role }),
-    });
-  const roleOf = async () =>
-    ((await (await fetch(`${base}/api/me`, { headers: cookie })).json()) as any).role;
-
-  await patch("guest");
-  expect(await roleOf()).toBe("guest");
-  await patch(null);
-  expect(await roleOf()).toBe("owner");
-});
-
 test("a later sign-in does not undo an assignment made here", () => {
   // The provider keeps saying "operator"; naming them in a role says otherwise,
   // and a name wins.
   configure([], "operator");
-  const base = loadConfig({ path: "does-not-exist.json", env: {}, overlay: {} });
+  const base = loadConfig({ path: "does-not-exist.json", env: {} });
   setConfig({
     ...base,
     auth: {
@@ -434,46 +382,47 @@ test("a later sign-in does not undo an assignment made here", () => {
   expect(roleFor(GUEST, "operator")).toBe("guest");
 });
 
-test("signing someone out ends their sessions", async () => {
-  configure([OWNER]);
+test("the roles view reports the config, and says where each person's role came from", async () => {
+  configure([OWNER], "operator");
   const { base, store } = freshApp();
-  const cookie = as(store, GUEST);
-  expect((await fetch(`${base}/api/me`, { headers: cookie })).status).toBe(200);
+  as(store, GUEST, "operator"); // signed in once, so kloe has heard of them
 
-  const res = await fetch(`${base}/api/roles`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json", ...as(store, OWNER) },
-    body: JSON.stringify({ sub: GUEST, role: null, signOut: true }),
+  const view = (await (
+    await fetch(`${base}/api/roles`, { headers: as(store, OWNER) })
+  ).json()) as any;
+
+  expect(view.roles.map((r: any) => r.name).sort()).toEqual(["guest", "owner"]);
+  expect(view.roles.find((r: any) => r.name === "owner").subs).toEqual([OWNER]);
+  expect(view.users.find((u: any) => u.sub === GUEST)).toMatchObject({
+    role: "operator", // what the provider said
+    effective: "owner", // …which this deployment maps to owner
   });
-  expect(((await res.json()) as any).endedSessions).toBe(1);
-  // The cookie is now a cookie for nothing: the API gate turns them away, and
-  // the client sends them to sign in again — which is the only moment the
-  // provider tells kloe a role.
-  expect((await fetch(`${base}/api/me`, { headers: cookie })).status).toBe(401);
 });
 
-test("an owner cannot take their own admin away", async () => {
-  configure([], "operator"); // no break-glass list: the override is all there is
-  const { base, store } = freshApp();
-  const me = as(store, OWNER, "operator");
-  const res = await fetch(`${base}/api/roles`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json", ...me },
-    body: JSON.stringify({ sub: OWNER, role: "guest" }),
-  });
-  // Recoverable only by editing nix, so it is worth one refusal.
-  expect(res.status).toBe(422);
-  expect(store.getUserRole(OWNER)).toBe("operator");
-});
-
-test("only an owner may change anyone's role", async () => {
+test("signing someone out ends their sessions, and not your own", async () => {
   configure([OWNER]);
   const { base, store } = freshApp();
-  const res = await fetch(`${base}/api/roles`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json", ...as(store, GUEST) },
-    body: JSON.stringify({ sub: GUEST, role: "owner" }),
-  });
-  expect(res.status).toBe(403);
-  expect(store.getUserRole(GUEST)).toBeUndefined();
+  const theirs = as(store, GUEST);
+  expect((await fetch(`${base}/api/me`, { headers: theirs })).status).toBe(200);
+
+  const signOut = (sub: string, as_: { cookie: string }) =>
+    fetch(`${base}/api/roles/signout`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...as_ },
+      body: JSON.stringify({ sub }),
+    });
+
+  expect((await signOut(GUEST, as(store, GUEST))).status).toBe(403); // guests may not
+
+  // Two sessions now (a second browser, and the one the refusal above made):
+  // signing someone out ends every one of them, not the newest.
+  const res = await signOut(GUEST, as(store, OWNER));
+  expect(((await res.json()) as any).endedSessions).toBe(2);
+  // Their cookie is now a cookie for nothing; the next visit is a fresh login,
+  // which is the only moment the provider reports a role.
+  expect((await fetch(`${base}/api/me`, { headers: theirs })).status).toBe(401);
+
+  // Signing yourself out here would be a confusing way to log out.
+  const self = as(store, OWNER);
+  expect((await signOut(OWNER, self)).status).toBe(422);
 });

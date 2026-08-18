@@ -1,5 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import * as v from "valibot";
 
 /**
@@ -573,8 +572,6 @@ function applyEnvOverrides(raw: Record<string, unknown>, env: Env): Record<strin
 export interface LoadOptions {
   path?: string;
   env?: Env;
-  /** The mutable layer; read from disk when omitted. `{}` means "none". */
-  overlay?: Record<string, unknown>;
 }
 
 /**
@@ -584,146 +581,10 @@ export interface LoadOptions {
  * are resolved lazily by the registry (via `resolveRef`), preserving its
  * rotate-rebuild behavior and its direct-injection test path.
  */
-/**
- * Settings an owner may change from the UI, as dotted paths.
- *
- * A deliberately short list. The overlay is written by a running server on the
- * strength of a session cookie, so it must not be able to reach anything that
- * decides WHO may do things (owners, allowedSubs, the OAuth client) or anything
- * holding a secret (providers, security) — those stay declared in nix, where a
- * change is a diff somebody reviews. What is left is policy and taste: what
- * each role may do, how the assistant talks, how hard research works.
- */
-const OVERLAY_PATHS = ["auth.roles", "prompt", "research", "search.maxResults"];
-
-/**
- * Where the mutable layer lives. Beside the database rather than beside
- * kloe.json, because kloe.json is generated into the nix store and nothing can
- * write next to it.
- */
-function overlayPathOf(env: Env): string {
-  return env.KLOE_OVERLAY ?? "data/overrides.json";
-}
-
-/** The overlay's path, for the endpoint that writes it. */
-export function overlayFile(env: Env = process.env): string {
-  return overlayPathOf(env);
-}
-
-/** The mutable half of the config: what owners changed by clicking. */
-export function readOverlay(path: string): Record<string, unknown> {
-  if (!existsSync(path)) return {};
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8"));
-    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
-  } catch (e) {
-    // A broken overlay must not take the server down with it: the declared
-    // config is still a complete, valid deployment on its own.
-    console.warn(`[settings] ignoring unreadable overlay "${path}":`, (e as Error).message);
-    return {};
-  }
-}
-
-/** Is this dotted path one the UI is allowed to write? */
-export function overlayAllows(path: string): boolean {
-  return OVERLAY_PATHS.some((p) => path === p || path.startsWith(`${p}.`));
-}
-
-/**
- * Merge a patch into the overlay file and return what it now holds.
- *
- * Rejects any path the UI does not own, so a request that tries to grant
- * itself a provider key or a place in `auth.owners` fails loudly instead of
- * writing something the next boot would honour. Written pretty-printed and
- * key-sorted: the whole point of a file is that a person can read the diff.
- */
-export function writeOverlay(
-  patch: Record<string, unknown>,
-  path: string = overlayFile(),
-): Record<string, unknown> {
-  const flat = flatten(patch);
-  for (const key of Object.keys(flat)) {
-    if (!overlayAllows(key)) {
-      throw new Error(`"${key}" is declared in kloe.json and cannot be changed from here`);
-    }
-  }
-  const merged = structuredClone(readOverlay(path));
-  for (const [key, value] of Object.entries(flat)) setPath(merged, key.split("."), value);
-
-  // Validate the whole result before it reaches disk: a bad role policy should
-  // fail the request that wrote it, not the next restart.
-  v.parse(
-    ConfigSchema,
-    applyOverlay(readConfigFile(process.env.KLOE_CONFIG ?? "kloe.json"), merged),
-  );
-
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(sortKeys(merged), null, 2)}\n`);
-  return merged;
-}
-
-/** Dotted leaves of a patch, so each can be checked against the allow-list. */
-function flatten(obj: Record<string, unknown>, prefix = ""): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [k, v0] of Object.entries(obj)) {
-    const key = prefix ? `${prefix}.${k}` : k;
-    // A plain object is a branch to walk; an array or a scalar is a value. A
-    // role's policy is an object, so the walk stops where the allow-list does.
-    if (v0 && typeof v0 === "object" && !Array.isArray(v0) && !overlayAllows(key)) {
-      Object.assign(out, flatten(v0 as Record<string, unknown>, key));
-    } else {
-      out[key] = v0;
-    }
-  }
-  return out;
-}
-
-function sortKeys(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeys);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([k, v0]) => [k, sortKeys(v0)]),
-    );
-  }
-  return value;
-}
-
-export function overlayPaths(): string[] {
-  return [...OVERLAY_PATHS];
-}
-
-/**
- * Merge an overlay into the declared config, honouring only the paths the UI
- * owns. Anything else in the file is ignored rather than rejected — an overlay
- * carried over from an older version shouldn't stop the server booting.
- */
-function applyOverlay(
-  base: Record<string, unknown>,
-  overlay: Record<string, unknown>,
-): Record<string, unknown> {
-  const out = structuredClone(base);
-  for (const path of OVERLAY_PATHS) {
-    const keys = path.split(".");
-    let src: unknown = overlay;
-    for (const k of keys) {
-      if (!src || typeof src !== "object") {
-        src = undefined;
-        break;
-      }
-      src = (src as Record<string, unknown>)[k];
-    }
-    if (src !== undefined) setPath(out, keys, src);
-  }
-  return out;
-}
-
 export function loadConfig(opts: LoadOptions = {}): Config {
   const env = opts.env ?? process.env;
   const path = opts.path ?? env.KLOE_CONFIG ?? "kloe.json";
-  const overlay = opts.overlay ?? readOverlay(overlayPathOf(env));
-  const withEnv = applyEnvOverrides(applyOverlay(readConfigFile(path), overlay), env);
+  const withEnv = applyEnvOverrides(readConfigFile(path), env);
 
   const { providers, ...rest } = withEnv;
   const resolved = { ...(interpolateDeep(rest, env) as object), providers };

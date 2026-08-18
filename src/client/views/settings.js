@@ -50,11 +50,9 @@ var TEMPLATE =
   '<div class="rolepick" id="rolepick">Loading…</div>' +
   "</section>" +
   '<section class="settabpanel" data-panel="people" hidden>' +
-  '<p class="lede">Roles cover the two things people can\u2019t bring themselves: shell tools, which run on this machine, and public links, which live on this domain. Models and search are settled by whose key pays.</p>' +
   '<div class="seclabel">Roles</div>' +
   '<div id="rolePolicy">Loading\u2026</div>' +
   '<div class="seclabel">People</div>' +
-  '<p class="lede small">A role set here applies straight away, even to someone already signed in, and is saved to the config file. Sign someone out to make their next login pick up the role from your identity provider instead.</p>' +
   '<div id="peopleList"></div>' +
   "</section>" +
   '<section class="settabpanel" data-panel="accounts" hidden>' +
@@ -610,14 +608,16 @@ export function mount(root, _params, ctx) {
   }
 
   // ---- roles + people ----
-  // Two halves of one question: what a role means, and who holds it. The first
-  // writes to the config overlay, the second to kloe's own record of a person.
+  // A report, not an editor: roles are declared in kloe.json, so the panel says
+  // what that file adds up to. Signing someone out is the one thing here that
+  // isn't config, and so the one button.
   var CAPS = [
     { key: "admin", label: "admin", hint: "Curate models, set preferences, open this page" },
     { key: "sandbox", label: "sandbox", hint: "Shell tools, which run on this machine" },
     { key: "publish", label: "publish", hint: "Share a chat on a public link" },
   ];
   var roleList = [];
+  var people = [];
   /** What to call the identity provider in copy; its hostname reads best. */
   var providerName = "your login";
 
@@ -629,57 +629,23 @@ export function mount(root, _params, ctx) {
     var title = document.createElement("div");
     title.className = "conntitle";
     title.textContent = role.name;
-    text.appendChild(title);
-    row.appendChild(text);
-
-    var saved = document.createElement("span");
-    saved.className = "saved";
-    saved.textContent = "saved";
-
-    CAPS.forEach(function (cap) {
-      var label = document.createElement("label");
-      label.className = "guesttoggle";
-      label.title = cap.hint;
-      var box = document.createElement("input");
-      box.type = "checkbox";
-      box.checked = !!role[cap.key];
-      // The last admin is not a checkbox anyone should be able to untick: with
-      // no admin role left, the only way back in is editing nix.
-      var lastAdmin =
-        cap.key === "admin" &&
-        role[cap.key] &&
-        roleList.filter(function (r) {
-          return r.admin;
-        }).length < 2;
-      box.disabled = lastAdmin;
-      if (lastAdmin) label.title = "The only role with admin. Give it to another role first.";
-      box.addEventListener("change", async function () {
-        var patch = { auth: { roles: {} } };
-        patch.auth.roles[role.name] = {};
-        CAPS.forEach(function (c) {
-          patch.auth.roles[role.name][c.key] = c.key === cap.key ? box.checked : !!role[c.key];
-        });
-        var res = await fetch("/api/config", {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(patch),
-        }).catch(function () {
-          return { ok: false };
-        });
-        if (res.ok) {
-          role[cap.key] = box.checked;
-          flash(saved, true);
-          loadRoles();
-        } else {
-          box.checked = !box.checked;
-          flash(saved, false);
-        }
-      });
-      label.appendChild(box);
-      label.appendChild(document.createTextNode(cap.label));
-      row.appendChild(label);
+    var sub = document.createElement("div");
+    sub.className = "connsub";
+    var can = CAPS.filter(function (c) {
+      return role[c.key];
+    }).map(function (c) {
+      return c.label;
     });
-    row.appendChild(saved);
+    var held = [];
+    if ((role.subs || []).length) held.push(role.subs.length + " named");
+    if ((role.providerRoles || []).length)
+      held.push(providerName + ": " + role.providerRoles.join(", "));
+    sub.textContent =
+      (can.length ? "Can " + can.join(", ") : "Chat only") +
+      (held.length ? " \u00b7 " + held.join(" \u00b7 ") : "");
+    text.appendChild(title);
+    text.appendChild(sub);
+    row.appendChild(text);
     return row;
   }
 
@@ -697,71 +663,54 @@ export function mount(root, _params, ctx) {
     title.textContent = user.sub;
     var sub = document.createElement("div");
     sub.className = "connsub";
-    sub.textContent = user.role
-      ? providerName + " calls them " + user.role
-      : providerName + " gives them no role";
+    // Where the role came from matters more than the role itself: named in the
+    // config, or whatever the provider said this time.
+    var named = (
+      roleList.find(function (r) {
+        return r.name === user.effective;
+      }) || {}
+    ).subs;
+    sub.textContent =
+      (named || []).indexOf(user.sub) >= 0
+        ? "Named in kloe.json"
+        : user.role
+          ? providerName + " calls them " + user.role
+          : providerName + " gives them no role";
     text.appendChild(title);
     text.appendChild(sub);
     row.appendChild(text);
 
+    var role = document.createElement("span");
+    role.className = "conntag";
+    role.textContent = user.effective;
+    row.appendChild(role);
+
     var saved = document.createElement("span");
     saved.className = "saved";
-    saved.textContent = "saved";
-
-    var pick = document.createElement("select");
-    pick.className = "connkey rolepickone";
-    var options = [{ value: "", label: "follow " + providerName }].concat(
-      roleList.map(function (r) {
-        return { value: r.name, label: r.name };
-      }),
-    );
-    options.forEach(function (o) {
-      var opt = document.createElement("option");
-      opt.value = o.value;
-      opt.textContent = o.label;
-      if (o.value === (user.override || "")) opt.selected = true;
-      pick.appendChild(opt);
-    });
-    pick.addEventListener("change", async function () {
-      var res = await fetch("/api/roles", {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sub: user.sub, role: pick.value || null }),
-      }).catch(function () {
-        return { ok: false };
-      });
-      if (res.ok) {
-        user.override = pick.value || undefined;
-        flash(saved, true);
-        loadPeople();
-      } else {
-        flash(saved, false);
-      }
-    });
-    row.appendChild(pick);
+    saved.textContent = "signed out";
 
     var out = document.createElement("button");
     out.type = "button";
     out.className = "btn";
     out.textContent = "Sign out";
-    out.title =
-      "Ends their sessions. Their next login re-reads their role from " + providerName + ".";
+    out.title = "Ends their sessions, so their next login re-reads their role.";
     out.onclick = async function () {
       out.disabled = true;
-      await fetch("/api/roles", {
-        method: "PATCH",
+      var res = await fetch("/api/roles/signout", {
+        method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sub: user.sub, role: user.override || null, signOut: true }),
-      }).catch(function () {});
+        body: JSON.stringify({ sub: user.sub }),
+      }).catch(function () {
+        return { ok: false };
+      });
       out.disabled = false;
-      flash(saved, true);
+      flash(saved, res.ok);
     };
     row.appendChild(out);
     row.appendChild(saved);
     return row;
   }
 
-  var people = [];
   function renderPeople() {
     var policy = byId("rolePolicy");
     if (!policy) return;
@@ -779,8 +728,6 @@ export function mount(root, _params, ctx) {
       list.appendChild(personRow(u));
     });
   }
-
-  var loadPeople = loadRoles;
 
   // ---- provider accounts (BYOK + device-flow OAuth) ----
   // One row per connectable provider: connected ones offer a disconnect,

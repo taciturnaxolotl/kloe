@@ -53,17 +53,10 @@ import {
   PromptBody,
   PublishBody,
   RenameBody,
+  SignOutBody,
   SteerBody,
-  UserRoleBody,
 } from "./schemas";
-import {
-  getConfig,
-  overlayFile,
-  overlayPaths,
-  readOverlay,
-  setConfig,
-  writeOverlay,
-} from "./settings";
+import { getConfig } from "./settings";
 import { sseBlock } from "./sse";
 import type { Store } from "./store";
 import { describeRef, forgetUserModels, userModelRefs } from "./usermodels";
@@ -1059,44 +1052,9 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     },
 
     /**
-     * The settings an owner may change without a deploy — role policy, the
-     * assistant's persona, research budgets. Writes land in an overlay file
-     * beside the database (kloe.json is generated into the nix store and cannot
-     * be written), so what an owner clicked is one small JSON file they can
-     * read, commit, or delete to go back to what nix declares.
+     * Who holds which role, and what each role may do. Read-only: roles are
+     * declared in kloe.json, so this reports the config rather than editing it.
      */
-    "/api/config": {
-      GET: (req: Bun.BunRequest<"/api/config">) =>
-        requireOwner(req, store) ??
-        Response.json({
-          paths: overlayPaths(),
-          overlay: readOverlay(overlayFile()),
-          file: overlayFile(),
-        }),
-      PATCH: async (req: Bun.BunRequest<"/api/config">) => {
-        const denied = requireOwner(req, store);
-        if (denied) return denied;
-        let patch: Record<string, unknown>;
-        try {
-          patch = (await req.json()) as Record<string, unknown>;
-        } catch {
-          return Response.json({ error: "invalid JSON" }, { status: 400 });
-        }
-        try {
-          const overlay = writeOverlay(patch);
-          // Re-read so the next request sees it, and so an overlay that no
-          // longer validates is rejected here rather than at the next boot.
-          setConfig(null);
-          getConfig();
-          return Response.json({ overlay });
-        } catch (e) {
-          return Response.json({ error: (e as Error).message }, { status: 422 });
-        }
-      },
-    },
-
-    // The roles this deployment declares and what each may do. The settings UI
-    // reads it to know which boxes to draw; there is nothing secret in it.
     "/api/roles": {
       GET: (req: Bun.BunRequest<"/api/roles">) =>
         requireOwner(req, store) ??
@@ -1113,62 +1071,29 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
           roles: declaredRoles().map((name) => ({ name, ...policyFor(name) })),
           users: store.listUserRoles().map((u) => ({
             ...u,
-            // What is in force, which is what an owner is deciding about. The
-            // provider's answer sits beside it as context.
+            // What is in force. The provider's answer sits beside it, since the
+            // two differ whenever a role is held by name.
             effective: roleFor(u.sub, u.role),
           })),
         }),
+    },
 
-      /**
-       * Put someone in a role, by name, in the config overlay.
-       *
-       * Config is the only place a role is assigned, so this is a config edit
-       * rather than a second store of who-is-what. It applies at once (every
-       * request resolves the role afresh) and it leaves a line in a file you
-       * can read. `signOut` on top of it ends their sessions, which is what
-       * makes their next visit ask the provider again.
-       */
-      PATCH: withBody(UserRoleBody, (data, req: Bun.BunRequest<"/api/roles">) => {
+    /**
+     * End someone's sessions.
+     *
+     * Not a config change, which is why it survived the config becoming the
+     * only place roles live: a role mapped from the identity provider only
+     * reaches kloe at a fresh login, so this is what makes a change there
+     * apply without waiting out a session.
+     */
+    "/api/roles/signout": {
+      POST: withBody(SignOutBody, (data, req: Bun.BunRequest<"/api/roles/signout">) => {
         const denied = requireOwner(req, store);
         if (denied) return denied;
-        const self = getSession(req, store)?.sub;
-        if (data.sub === self && (data.role === null || !roleCan(data.role, "admin"))) {
-          // Locking yourself out is recoverable only by editing nix, so it is
-          // worth one refusal rather than one apology.
-          return Response.json(
-            { error: "that would remove your own admin access" },
-            { status: 422 },
-          );
+        if (data.sub === getSession(req, store)?.sub) {
+          return Response.json({ error: "use log out for your own session" }, { status: 422 });
         }
-        try {
-          const roles = structuredClone(getConfig().auth.roles) as Record<
-            string,
-            { subs?: string[] }
-          >;
-          // One role at a time: drop them from every list before adding, so a
-          // person can never hold two.
-          for (const policy of Object.values(roles)) {
-            policy.subs = (policy.subs ?? []).filter((s) => s !== data.sub);
-          }
-          if (data.role) {
-            if (!roles[data.role]) return Response.json({ error: "no such role" }, { status: 422 });
-            roles[data.role].subs = [...(roles[data.role].subs ?? []), data.sub];
-          }
-          // Persist to the overlay, then apply to the config already in
-          // memory. Re-reading from disk instead would pull in every other
-          // change made to the file since boot, which is not what this request
-          // asked for.
-          writeOverlay({ auth: { roles } });
-          const cfg = getConfig();
-          setConfig({
-            ...cfg,
-            auth: { ...cfg.auth, roles: roles as typeof cfg.auth.roles },
-          });
-        } catch (e) {
-          return Response.json({ error: (e as Error).message }, { status: 422 });
-        }
-        const endedSessions = data.signOut ? store.deleteSessionsFor(data.sub) : 0;
-        return Response.json({ ok: true, endedSessions });
+        return Response.json({ endedSessions: store.deleteSessionsFor(data.sub) });
       }),
     },
 
