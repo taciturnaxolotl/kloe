@@ -627,6 +627,16 @@ export class Store {
     } catch {
       // column already exists
     }
+    // Migration: a picker began as a bare list of refs and grew a name and an
+    // order per person. CREATE TABLE IF NOT EXISTS leaves an existing table
+    // exactly as it found it, so the columns have to be added by hand.
+    for (const column of ["display_name TEXT", "sort_order INTEGER NOT NULL DEFAULT 0"]) {
+      try {
+        this.db.exec(`ALTER TABLE user_models ADD COLUMN ${column}`);
+      } catch {
+        // column already exists
+      }
+    }
     // Migration: room for the non-secret bits a provider needs alongside the
     // token (a ChatGPT account id, so far).
     try {

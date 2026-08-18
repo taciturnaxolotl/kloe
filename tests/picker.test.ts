@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterAll, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -149,4 +150,34 @@ test("your picker survives a restart", async () => {
   expect(new Store(dbPath).listUserModels("local")).toEqual([
     { ref: "acme/acme-1", displayName: "Persisted", sortOrder: 0 },
   ]);
+});
+
+test("a database from before the picker grew columns still opens", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "kloe-migrate-"));
+  tmpDirs.push(tmp);
+  const dbPath = join(tmp, "old.db");
+
+  // The shape user_models had when it was a bare list of refs. CREATE TABLE IF
+  // NOT EXISTS leaves an existing table exactly as it found it, so a schema
+  // that grew columns only reaches an old database through a migration — and
+  // forgetting one is a 500 on the first request, not a failing test.
+  const old = new Database(dbPath);
+  old.exec(
+    `CREATE TABLE user_models (
+       sub TEXT NOT NULL, model_ref TEXT NOT NULL, updated_at INTEGER NOT NULL,
+       PRIMARY KEY (sub, model_ref)
+     )`,
+  );
+  old.exec(
+    "INSERT INTO user_models (sub, model_ref, updated_at) VALUES ('local', 'acme/acme-1', 1)",
+  );
+  old.close();
+
+  const store = new Store(dbPath);
+  expect(store.listUserModels("local")).toEqual([
+    { ref: "acme/acme-1", displayName: null, sortOrder: 0 },
+  ]);
+  // …and it can be written to afterwards.
+  store.setUserModel("local", "acme/acme-1", { enabled: true, displayName: "Renamed" });
+  expect(store.listUserModels("local")[0]?.displayName).toBe("Renamed");
 });
