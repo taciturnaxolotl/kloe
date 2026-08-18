@@ -3633,6 +3633,37 @@ body.lb-open {
   background: var(--bg-sunk);
 }
 
+/* Pasting a credential file: wide enough to see it went in, with the line that
+   says where to get it directly underneath. */
+.connpastewrap {
+  flex-basis: 100%;
+  width: 100%;
+  margin-top: 10px;
+}
+.connpaste {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunk);
+  color: var(--ink);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  resize: vertical;
+}
+.connpaste:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.connhelp {
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+.connhelp.bad {
+  color: var(--danger, #d9534f);
+}
+
 /* The device code, while a user is approving it elsewhere. The code itself is
    the point: big, monospace, and selectable, because it gets read off a screen
    and typed into another one. */

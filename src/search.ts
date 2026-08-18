@@ -632,7 +632,7 @@ export async function searchProviderFor(
     const built: SearchProvider[] = [];
     for (const id of mine) {
       const key = await credentialFor(store, sub, "search", id);
-      const p = key ? backend(id, key, undefined, cfg.maxResults) : null;
+      const p = key ? backend(id, key.secret, undefined, cfg.maxResults) : null;
       if (p) built.push(p);
     }
     if (built.length === 1) return built[0]!;

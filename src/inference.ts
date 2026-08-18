@@ -3,7 +3,7 @@ import type { RunStep } from "./actor";
 import type { Role } from "./auth";
 import type { BlobStore } from "./blobs";
 import { type Catalog, type LoadCatalogOptions, loadCatalog } from "./catalog";
-import { credentialFor } from "./credentials";
+import { type Credential, credentialFor } from "./credentials";
 import type { TokenUsage } from "./events";
 import { contextToText, getContext, LOCAL_SUB, lardConnected, lardEnabled } from "./lard";
 import { buildSystemPrompt } from "./prompt";
@@ -328,8 +328,8 @@ export function modelSupportsImages(modelRef: string): boolean {
 }
 
 /** Resolves a model ref to a rate-limited LanguageModel. */
-export function resolveModel(modelRef: string, apiKey?: string): LanguageModel {
-  const model = getRegistry().resolveModel(modelRef, apiKey);
+export function resolveModel(modelRef: string, credential?: Credential): LanguageModel {
+  const model = getRegistry().resolveModel(modelRef, credential);
   const providerName = modelRef.split("/")[0]!;
   const limiter = limiterFor(providerName);
   return limiter ? limiter.wrap(model) : model;
@@ -350,8 +350,8 @@ export async function resolveModelFor(
 ): Promise<LanguageModel> {
   if (!who.store || !who.sub || isEchoModel(modelRef)) return resolveModel(modelRef);
   const providerName = modelRef.split("/")[0]!;
-  const key = await credentialFor(who.store, who.sub, "inference", providerName);
-  return resolveModel(modelRef, key);
+  const credential = await credentialFor(who.store, who.sub, "inference", providerName);
+  return resolveModel(modelRef, credential);
 }
 
 /** Project-scoped context to fold into a run: the pinned lard project (whose

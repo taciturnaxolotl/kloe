@@ -9,6 +9,7 @@ import {
   oauthFlow,
   saveApiKey,
   saveOAuthGrant,
+  saveTokenBundle,
 } from "../src/credentials";
 import { exchangeToken, pollDeviceAuth, startDeviceAuth } from "../src/hyperauth";
 import { flowNames } from "../src/oauthflows";
@@ -96,7 +97,9 @@ test("a pasted key is what gets sent", async () => {
   configure();
   const store = memStore();
   saveApiKey(store, SUB, "inference", "hyper", "sk-mine-9999");
-  expect(await credentialFor(store, SUB, "inference", "hyper")).toBe("sk-mine-9999");
+  expect(await credentialFor(store, SUB, "inference", "hyper")).toMatchObject({
+    secret: "sk-mine-9999",
+  });
   expect(listConnections(store, SUB)).toEqual([
     {
       service: "inference",
@@ -133,7 +136,9 @@ test("a live access token is used as-is, without an exchange", async () => {
   const never = (async () => {
     throw new Error("should not have exchanged");
   }) as unknown as typeof fetch;
-  expect(await credentialFor(store, SUB, "inference", "hyper", never)).toBe("at-live");
+  expect(await credentialFor(store, SUB, "inference", "hyper", never)).toMatchObject({
+    secret: "at-live",
+  });
 });
 
 test("an expired token is exchanged, and the rotated pair is what gets stored", async () => {
@@ -154,7 +159,9 @@ test("an expired token is exchanged, and the rotated pair is what gets stored", 
     );
   }) as unknown as typeof fetch;
 
-  expect(await credentialFor(store, SUB, "inference", "hyper", fetchImpl)).toBe("at-new");
+  expect(await credentialFor(store, SUB, "inference", "hyper", fetchImpl)).toMatchObject({
+    secret: "at-new",
+  });
   expect(sentRefresh).toBe("rt-old");
 
   // The old refresh token is revoked upstream, so the new one MUST be what we
@@ -209,8 +216,8 @@ test("two runs refreshing at once exchange the token exactly once", async () => 
   // A second exchange would have revoked the token the first one just stored,
   // leaving the user connected to nothing.
   expect(exchanges).toBe(1);
-  expect(a).toBe("at-new");
-  expect(b).toBe("at-new");
+  expect(a).toMatchObject({ secret: "at-new" });
+  expect(b).toMatchObject({ secret: "at-new" });
 });
 
 test("one user's credential is invisible to another", async () => {
@@ -286,15 +293,21 @@ test("the same provider name under two services is two accounts", async () => {
   saveApiKey(store, SUB, "inference", "hyper", "sk-inference-1111");
   saveApiKey(store, SUB, "search", "exa", "sk-search-2222");
 
-  expect(await credentialFor(store, SUB, "inference", "hyper")).toBe("sk-inference-1111");
-  expect(await credentialFor(store, SUB, "search", "exa")).toBe("sk-search-2222");
+  expect(await credentialFor(store, SUB, "inference", "hyper")).toMatchObject({
+    secret: "sk-inference-1111",
+  });
+  expect(await credentialFor(store, SUB, "search", "exa")).toMatchObject({
+    secret: "sk-search-2222",
+  });
   // Neither leaks into the other's service.
   expect(await credentialFor(store, SUB, "search", "hyper")).toBeUndefined();
   expect(await credentialFor(store, SUB, "inference", "exa")).toBeUndefined();
 
   // …and disconnecting one leaves the other alone.
   disconnect(store, SUB, "search", "exa");
-  expect(await credentialFor(store, SUB, "inference", "hyper")).toBe("sk-inference-1111");
+  expect(await credentialFor(store, SUB, "inference", "hyper")).toMatchObject({
+    secret: "sk-inference-1111",
+  });
 });
 
 test("a search engine this deployment never configured is still connectable", () => {
@@ -442,4 +455,89 @@ test("an engine you connected yourself is yours to use, whatever the role allows
   saveApiKey(store, SUB, "search", "exa", "sk-my-own-exa");
   // Their key, their money: the role bounds the instance's engines, not theirs.
   expect(await searchProviderFor(store, SUB, "guest")).toBeInstanceOf(ExaSearchProvider);
+});
+
+// ---- codex: a credential a local tool already holds ------------------------
+
+test("a codex auth file is read into a grant, with the account id beside it", () => {
+  configure();
+  const store = memStore();
+  // Shape of ~/.codex/auth.json after `codex login`, tokens stubbed.
+  const authFile = JSON.stringify({
+    auth_mode: "chatgpt",
+    OPENAI_API_KEY: null,
+    tokens: { id_token: "x", access_token: "at-1", refresh_token: "rt-1", account_id: "acc-1" },
+  });
+  saveTokenBundle(store, SUB, "inference", "codex", authFile);
+
+  const row = store.getCredentialRow(SUB, "inference", "codex")!;
+  expect(decryptSecret(row.secret)).toBe("at-1");
+  expect(decryptSecret(row.refresh_token!)).toBe("rt-1");
+  // The account id rides along unencrypted: it is a header, not a secret, and
+  // the endpoint answers 401 without it however good the token is.
+  expect(JSON.parse(row.meta!)).toEqual({ accountId: "acc-1" });
+  expect(row.label).toBe("ChatGPT account");
+});
+
+test("a codex file that isn't one says what to do about it", () => {
+  configure();
+  const store = memStore();
+  expect(() => saveTokenBundle(store, SUB, "inference", "codex", "not json")).toThrow(/not JSON/);
+  expect(() =>
+    saveTokenBundle(store, SUB, "inference", "codex", JSON.stringify({ tokens: {} })),
+  ).toThrow(/codex login/);
+  // An API-key file is a real thing to have, and belongs in a different row.
+  expect(() =>
+    saveTokenBundle(
+      store,
+      SUB,
+      "inference",
+      "codex",
+      JSON.stringify({ OPENAI_API_KEY: "sk-1", tokens: {} }),
+    ),
+  ).toThrow(/API key/);
+});
+
+test("codex is offered everywhere, and refreshes itself", async () => {
+  configure();
+  const codex = connectableProviders().find((c) => c.id === "codex");
+  // No deployment configures it: the account is the user's and so is the bill.
+  expect(codex?.paste?.flow).toBe("codex");
+  expect(codex?.byok).toBe(false); // one way in, not two boxes for one job
+  expect(codex?.models?.length).toBeGreaterThan(0);
+
+  const store = memStore();
+  saveTokenBundle(
+    store,
+    SUB,
+    "inference",
+    "codex",
+    JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: { access_token: "at-old", refresh_token: "rt-old", account_id: "acc-1" },
+    }),
+  );
+  // The pasted access token was minted long ago; kloe refreshes without being
+  // able to sign in, because refreshing needs only the public client id.
+  store.setCredentialRow({
+    ...store.getCredentialRow(SUB, "inference", "codex")!,
+    expires_at: Date.now() - 1000,
+  });
+
+  let sent: Record<string, string> = {};
+  const fetchImpl = (async (_url: string, init: RequestInit) => {
+    sent = JSON.parse(init.body as string);
+    return new Response(JSON.stringify({ access_token: "at-new", expires_in: 3600 }), {
+      status: 200,
+    });
+  }) as unknown as typeof fetch;
+
+  const got = await credentialFor(store, SUB, "inference", "codex", fetchImpl);
+  expect(got).toMatchObject({ secret: "at-new", meta: { accountId: "acc-1" } });
+  expect(sent.grant_type).toBe("refresh_token");
+  // OpenAI need not rotate it; keeping the old one is what makes the
+  // connection last rather than expire on the next refresh.
+  expect(decryptSecret(store.getCredentialRow(SUB, "inference", "codex")!.refresh_token!)).toBe(
+    "rt-old",
+  );
 });

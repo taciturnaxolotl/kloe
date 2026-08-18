@@ -45,8 +45,19 @@ function decode(row: CredentialRow): UserCredential {
     refreshToken: row.refresh_token ? decryptSecret(row.refresh_token) : undefined,
     expiresAt: row.expires_at ?? undefined,
     label: row.label ?? undefined,
+    meta: parseMeta(row.meta),
     updatedAt: row.updated_at,
   };
+}
+
+function parseMeta(raw: string | null): Record<string, string> | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, string>) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Whether a user may paste their own key here. */
@@ -62,7 +73,7 @@ export function oauthFlow(service: Service, providerId: string): Connector["oaut
 
 /** Everything a user could connect an account to, for the settings page. */
 export function connectableProviders(): Connector[] {
-  return listConnectors().filter((c) => c.byok || c.oauth);
+  return listConnectors().filter((c) => c.byok || c.oauth || c.paste);
 }
 
 export function saveApiKey(
@@ -84,7 +95,28 @@ export function saveApiKey(
     refresh_token: null,
     expires_at: null,
     label: hint(apiKey),
+    meta: null,
   });
+}
+
+/**
+ * Store a credential a user pasted from a tool on their own machine.
+ *
+ * The flow parses it, so what counts as valid — and what to say when it isn't —
+ * belongs to whoever knows that provider, not here.
+ */
+export function saveTokenBundle(
+  store: Store,
+  sub: string,
+  service: Service,
+  providerId: string,
+  pasted: string,
+): void {
+  const connector = findConnector(service, providerId);
+  const flow = connector?.paste && flowFor(connector.paste.flow);
+  if (!flow?.parse) throw new Error(`"${providerId}" is not connected by pasting a credential`);
+  const parsed = flow.parse(pasted);
+  saveOAuthGrant(store, sub, service, providerId, parsed.pair, parsed.label, parsed.meta);
 }
 
 /** Store a fresh OAuth grant. Called with the pair an exchange just produced. */
@@ -95,6 +127,7 @@ export function saveOAuthGrant(
   providerId: string,
   pair: { accessToken: string; refreshToken: string; expiresAt: number },
   label?: string,
+  meta?: Record<string, string>,
 ): void {
   store.setCredentialRow({
     sub,
@@ -105,6 +138,9 @@ export function saveOAuthGrant(
     refresh_token: encryptSecret(pair.refreshToken),
     expires_at: pair.expiresAt,
     label: label ?? null,
+    // Not encrypted: an account id is an identifier the provider puts in a
+    // header, not a thing that grants anything on its own.
+    meta: meta ? JSON.stringify(meta) : null,
   });
 }
 
@@ -141,9 +177,15 @@ export function connectedProviders(
   return store.listCredentialRows(sub, service).map((r) => r.provider_id);
 }
 
+/** What a request needs to act as this user: the secret, and anything beside it. */
+export interface Credential {
+  secret: string;
+  meta?: Record<string, string>;
+}
+
 /**
- * The bearer string to use for this user and provider, or undefined when they
- * have none and the deployment's own credential should be used.
+ * The credential to use for this user and provider, or undefined when they
+ * have none and the deployment's own should be used.
  *
  * Never throws on a broken connection: a revoked or unrefreshable credential
  * resolves to undefined, so the run falls back rather than failing outright.
@@ -155,7 +197,7 @@ export async function credentialFor(
   service: Service,
   providerId: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<string | undefined> {
+): Promise<Credential | undefined> {
   if (!sub || !encryptionConfigured()) return undefined;
   const row = store.getCredentialRow(sub, service, providerId);
   if (!row) return undefined;
@@ -170,9 +212,12 @@ export async function credentialFor(
     return undefined;
   }
 
-  if (cred.kind === "key") return cred.secret;
-  if (cred.expiresAt && cred.expiresAt - REFRESH_SKEW_MS > Date.now()) return cred.secret;
-  return refresh(store, cred, fetchImpl);
+  if (cred.kind === "key") return { secret: cred.secret };
+  if (cred.expiresAt && cred.expiresAt - REFRESH_SKEW_MS > Date.now()) {
+    return { secret: cred.secret, meta: cred.meta };
+  }
+  const refreshed = await refresh(store, cred, fetchImpl);
+  return refreshed ? { secret: refreshed, meta: cred.meta } : undefined;
 }
 
 /**
@@ -187,9 +232,11 @@ async function refresh(
   cred: UserCredential,
   fetchImpl: typeof fetch,
 ): Promise<string | undefined> {
-  const ref = oauthFlow(cred.service, cred.providerId);
-  const flow = ref && flowFor(ref.flow);
-  if (!ref || !flow || !cred.refreshToken) return undefined;
+  const connector = findConnector(cred.service, cred.providerId);
+  const named = connector?.oauth?.flow ?? connector?.paste?.flow;
+  const flow = named ? flowFor(named) : undefined;
+  const baseUrl = connector?.oauth?.baseUrl ?? "";
+  if (!flow || !cred.refreshToken) return undefined;
 
   const now = Date.now();
   if (!store.claimRefresh(cred.sub, cred.service, cred.providerId, now, now + REFRESH_LEASE_MS)) {
@@ -197,10 +244,10 @@ async function refresh(
   }
 
   try {
-    const pair = await flow.exchange(ref.baseUrl, cred.refreshToken, fetchImpl);
-    // Persist BEFORE returning: the token we just spent is already revoked, so
-    // an unsaved result is a connection thrown away.
-    saveOAuthGrant(store, cred.sub, cred.service, cred.providerId, pair, cred.label);
+    const pair = await flow.exchange(baseUrl, cred.refreshToken, fetchImpl);
+    // Persist BEFORE returning: a rotated token we didn't store is a connection
+    // thrown away.
+    saveOAuthGrant(store, cred.sub, cred.service, cred.providerId, pair, cred.label, cred.meta);
     return pair.accessToken;
   } catch (e) {
     // The grant is gone (revoked, expired, or the provider said no). Drop the

@@ -18,7 +18,7 @@ import {
 } from "./auth";
 import type { BlobStore } from "./blobs";
 import { ACTOR_IDLE_TTL_MS, SSE_RETRY_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
-import { credentialsReady, isService } from "./connectors";
+import { credentialsReady, findConnector, isService } from "./connectors";
 import {
   byokAllowed,
   connectableProviders,
@@ -27,6 +27,7 @@ import {
   oauthFlow,
   saveApiKey,
   saveOAuthGrant,
+  saveTokenBundle,
 } from "./credentials";
 import { Event, type EventData, type EventName, parseEventId } from "./events";
 import { getExecutor } from "./executor";
@@ -314,10 +315,11 @@ function requireUsableModel(
 }
 
 /**
- * Whose settings a request is touching. With auth off there is one user and
- * `LOCAL_SUB` is them; the two must agree, or a preference gets written under
- * one name and read under another (which is exactly what happened to the
- * per-user model list).
+ * Whose request this is. With auth off there is one user and `LOCAL_SUB` is
+ * them; every path must agree, or a credential gets stored under one name and
+ * looked up under another — which is how a connected account turned into
+ * "unknown model" the first time, and how a hidden model came back the time
+ * before that.
  */
 function whoami(req: Request, store: Store): string {
   return getSession(req, store)?.sub ?? LOCAL_SUB;
@@ -965,13 +967,29 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
             { status: 503 },
           );
         }
-        if (!isService(data.service) || !byokAllowed(data.service, data.providerId)) {
+        if (!isService(data.service)) {
+          return Response.json({ error: "unknown service" }, { status: 422 });
+        }
+        const service = data.service;
+        const connector = findConnector(service, data.providerId);
+        if (!connector || !(connector.byok || connector.paste)) {
           return Response.json(
-            { error: `"${data.providerId}" does not take a user key here` },
+            { error: `"${data.providerId}" does not take a user credential here` },
             { status: 422 },
           );
         }
-        saveApiKey(store, sub, data.service, data.providerId, data.apiKey);
+        try {
+          // A provider connected by pasting a whole credential file parses it
+          // through its own flow; one connected by key just stores the key.
+          if (connector.paste) {
+            saveTokenBundle(store, sub, service, data.providerId, data.apiKey);
+          } else {
+            saveApiKey(store, sub, service, data.providerId, data.apiKey);
+          }
+        } catch (e) {
+          // The flow's message is written for whoever pasted it.
+          return Response.json({ error: (e as Error).message }, { status: 422 });
+        }
         forgetUserModels(sub, data.providerId);
         return Response.json({ connections: listConnections(store, sub) });
       }),
@@ -997,7 +1015,7 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         const service = req.params.service;
         const ref = isService(service) ? oauthFlow(service, req.params.providerId) : undefined;
         const flow = ref && flowFor(ref.flow);
-        if (!ref || !flow) {
+        if (!ref || !flow?.start) {
           return Response.json({ error: "no device flow for this provider" }, { status: 422 });
         }
         try {
@@ -1019,7 +1037,7 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         const providerId = req.params.providerId;
         const ref = isService(service) ? oauthFlow(service, providerId) : undefined;
         const flow = ref && flowFor(ref.flow);
-        if (!ref || !flow || !isService(service)) {
+        if (!ref || !flow?.poll || !isService(service)) {
           return Response.json({ error: "no device flow for this provider" }, { status: 422 });
         }
         const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
@@ -1143,7 +1161,7 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
           data,
           store,
           requestRole(req, store),
-          getSession(req, store)?.sub,
+          whoami(req, store),
         );
         kick();
         return res;
@@ -1166,7 +1184,7 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
           data,
           store,
           requestRole(req, store),
-          getSession(req, store)?.sub,
+          whoami(req, store),
         );
         kick();
         return res;

@@ -495,6 +495,7 @@ CREATE TABLE IF NOT EXISTS user_credentials (
   refresh_token TEXT,
   expires_at    INTEGER,
   label         TEXT,
+  meta          TEXT,
   refresh_lease INTEGER NOT NULL DEFAULT 0,
   updated_at    INTEGER NOT NULL,
   PRIMARY KEY (sub, service, provider_id)
@@ -511,6 +512,8 @@ export interface CredentialRow {
   refresh_token: string | null;
   expires_at: number | null;
   label: string | null;
+  /** JSON: non-secret bits a request needs, e.g. a ChatGPT account id. */
+  meta: string | null;
   refresh_lease: number;
   updated_at: number;
 }
@@ -539,6 +542,8 @@ export interface UserCredential {
   sub: string;
   service: "inference" | "search";
   providerId: string;
+  /** Non-secret provider bits stored beside the token. */
+  meta?: Record<string, string>;
   kind: "key" | "oauth";
   secret: string;
   refreshToken?: string;
@@ -622,6 +627,13 @@ export class Store {
     } catch {
       // column already exists
     }
+    // Migration: room for the non-secret bits a provider needs alongside the
+    // token (a ChatGPT account id, so far).
+    try {
+      this.db.exec("ALTER TABLE user_credentials ADD COLUMN meta TEXT");
+    } catch {
+      // column already exists
+    }
     // Migration: a credential's identity gained the service it belongs to. The
     // primary key changes, which SQLite only does by rebuilding — cheap here,
     // and every existing row is an inference credential by construction.
@@ -634,8 +646,8 @@ export class Store {
         this.db.exec(SCHEMA);
         this.db.exec(
           `INSERT INTO user_credentials
-             (sub, service, provider_id, kind, secret, refresh_token, expires_at, label, refresh_lease, updated_at)
-           SELECT sub, 'inference', provider_id, kind, secret, refresh_token, expires_at, label, refresh_lease, updated_at
+             (sub, service, provider_id, kind, secret, refresh_token, expires_at, label, meta, refresh_lease, updated_at)
+           SELECT sub, 'inference', provider_id, kind, secret, refresh_token, expires_at, label, NULL, refresh_lease, updated_at
            FROM user_credentials_old`,
         );
         this.db.exec("DROP TABLE user_credentials_old");
@@ -1528,7 +1540,7 @@ export class Store {
     return (
       (this.db
         .query(
-          `SELECT sub, service, provider_id, kind, secret, refresh_token, expires_at, label, refresh_lease, updated_at
+          `SELECT sub, service, provider_id, kind, secret, refresh_token, expires_at, label, meta, refresh_lease, updated_at
            FROM user_credentials WHERE sub = ? AND service = ? AND provider_id = ?`,
         )
         .get(sub, service, providerId) as CredentialRow | null) ?? undefined
@@ -1536,7 +1548,7 @@ export class Store {
   }
 
   listCredentialRows(sub: string, service?: string): CredentialRow[] {
-    const cols = `sub, service, provider_id, kind, secret, refresh_token, expires_at, label, refresh_lease, updated_at`;
+    const cols = `sub, service, provider_id, kind, secret, refresh_token, expires_at, label, meta, refresh_lease, updated_at`;
     return service
       ? (this.db
           .query(
@@ -1552,11 +1564,11 @@ export class Store {
     this.db
       .query(
         `INSERT INTO user_credentials
-           (sub, service, provider_id, kind, secret, refresh_token, expires_at, label, refresh_lease, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+           (sub, service, provider_id, kind, secret, refresh_token, expires_at, label, meta, refresh_lease, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
          ON CONFLICT(sub, service, provider_id) DO UPDATE SET
            kind=excluded.kind, secret=excluded.secret, refresh_token=excluded.refresh_token,
-           expires_at=excluded.expires_at, label=excluded.label,
+           expires_at=excluded.expires_at, label=excluded.label, meta=excluded.meta,
            refresh_lease=0, updated_at=excluded.updated_at`,
       )
       .run(
@@ -1568,6 +1580,7 @@ export class Store {
         row.refresh_token,
         row.expires_at,
         row.label,
+        row.meta,
         Date.now(),
       );
   }

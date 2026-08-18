@@ -1,9 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import type { LanguageModel } from "ai";
+import { type LanguageModel, wrapLanguageModel } from "ai";
 import type { Catalog, CatalogModel, ProviderType } from "./catalog";
 import { parseModel } from "./catalog";
+import type { Credential } from "./credentials";
 import { discoverModels, enrichModels } from "./discover";
 import { resolveRef } from "./settings";
 import { wellKnownProvider } from "./wellknown";
@@ -265,7 +267,8 @@ export class ProviderRegistry {
    * required (no bare/default form): a ref must name both a provider and a
    * model, both must be enabled/known, or this throws.
    */
-  resolveModel(modelRef: string, apiKeyOverride?: string): LanguageModel {
+  resolveModel(modelRef: string, credential?: Credential): LanguageModel {
+    const apiKeyOverride = credential?.secret;
     if (isEchoModel(modelRef)) {
       return createEchoModel();
     }
@@ -296,7 +299,7 @@ export class ProviderRegistry {
       throw new Error(`unknown model "${modelId}" for provider "${providerId}"`);
     }
 
-    return this.factoryFor(providerId, config, apiKeyOverride)(modelId);
+    return this.factoryFor(providerId, config, credential)(modelId);
   }
 
   /**
@@ -331,8 +334,9 @@ export class ProviderRegistry {
   private factoryFor(
     providerId: string,
     config: ProviderConfig,
-    apiKeyOverride?: string,
+    credential?: Credential,
   ): ModelFactory {
+    const apiKeyOverride = credential?.secret;
     const catProvider = this.catalog.getProvider(providerId);
     const inline = this.inline.get(providerId);
     // Keyless is allowed when NO key is declared: it resolves to undefined and
@@ -351,12 +355,17 @@ export class ProviderRegistry {
     // so it always wins here via config.apiEndpoint.
     const baseURL = resolveRef(config.apiEndpoint) ?? resolveRef(catProvider?.apiEndpoint);
 
-    const type = catProvider?.type ?? inline?.type ?? "openai-compat";
+    // The well-known entry has a say too: a borrowed provider is in neither the
+    // catalog nor the ops file, and defaulting it to openai-compat sends a
+    // Responses endpoint a chat-completions body — which it answers 403, from a
+    // stack that names the wrong adapter.
+    const type =
+      catProvider?.type ?? inline?.type ?? wellKnownProvider(providerId)?.type ?? "openai-compat";
     // A user's own credential builds a throwaway adapter rather than a cache
     // entry. Keeping one per credential would hold a closure for every user and
     // every hourly token rotation, to save an object construction — and the
     // entry most likely to be reused is the one most likely to be stale.
-    if (apiKeyOverride) return buildFactory(providerId, type, apiKey, baseURL);
+    if (apiKeyOverride) return buildFactory(providerId, type, apiKey, baseURL, credential?.meta);
 
     const cached = this.factories.get(providerId);
     if (cached && cached.apiKey === apiKey && cached.baseURL === baseURL) {
@@ -374,6 +383,7 @@ function buildFactory(
   type: ProviderType,
   apiKey: string | undefined,
   baseURL: string | undefined,
+  meta?: Record<string, string>,
 ): ModelFactory {
   // Omit the credential entirely when there isn't one, so keyless (local)
   // endpoints work and keyed ones are unchanged.
@@ -386,6 +396,43 @@ function buildFactory(
     case "openai": {
       const p = createOpenAI({ ...key, ...(baseURL ? { baseURL } : {}) });
       return (modelId) => p(modelId);
+    }
+    // OpenAI's Responses API, as the Codex CLI speaks it. A ChatGPT account is
+    // identified by a header rather than by the token, and the endpoint wants
+    // to be told which client it is talking to; without either it answers 401
+    // to a perfectly good token.
+    case "openai-responses": {
+      const p = createOpenAI({
+        ...key,
+        ...(baseURL ? { baseURL } : {}),
+        headers: {
+          ...(meta?.accountId ? { "chatgpt-account-id": meta.accountId } : {}),
+          "OpenAI-Beta": "responses=experimental",
+          originator: "codex_cli_rs",
+          session_id: randomUUID(),
+        },
+      });
+      // `store: false` is not a preference an operator might hold, it is what
+      // this endpoint requires: without it every request is a 400 saying so.
+      // It belongs with the adapter that knows the endpoint rather than in
+      // config somebody could forget.
+      //
+      // Keyed "openai" because the SDK namespaces provider options by adapter
+      // family, not by the id kloe knows the provider as — naming the adapter
+      // "codex" changes what `model.provider` reads and nothing else.
+      return (modelId) =>
+        wrapLanguageModel({
+          model: p.responses(modelId),
+          middleware: {
+            transformParams: async ({ params }) => ({
+              ...params,
+              providerOptions: {
+                ...params.providerOptions,
+                openai: { store: false, ...params.providerOptions?.openai },
+              },
+            }),
+          },
+        });
     }
     // openai-compat, openrouter, and any other type fall back to the
     // OpenAI-compatible adapter, which requires an explicit baseURL.

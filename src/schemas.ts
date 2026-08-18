@@ -84,7 +84,13 @@ export const CredentialBody = v.object({
   /** "inference" | "search" — validated against the connector registry. */
   service: v.pipe(v.string(), v.minLength(1)),
   providerId: v.pipe(v.string(), v.minLength(1)),
-  apiKey: v.pipe(v.string(), v.minLength(8), v.maxLength(500)),
+  /**
+   * The credential itself: an API key, or the whole credential file for a
+   * provider connected by pasting one. The ceiling is generous because a
+   * `~/.codex/auth.json` is a few kilobytes of JWTs, and mean enough that the
+   * endpoint is not a place to post a novel.
+   */
+  apiKey: v.pipe(v.string(), v.minLength(8), v.maxLength(20_000)),
 });
 export type CredentialBody = v.InferOutput<typeof CredentialBody>;
 

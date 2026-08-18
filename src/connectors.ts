@@ -31,10 +31,19 @@ export interface Connector {
   service: Service;
   /** Provider id within the service — "hyper", "exa". */
   id: string;
+  /** What to call it, when the id is not what people say. */
+  label?: string;
   /** Whether a user may paste their own API key here. */
   byok: boolean;
   /** The device flow a user can run, when the provider offers one. */
   oauth?: OAuthFlowRef;
+  /**
+   * Connect by pasting a credential a local tool already holds, for a provider
+   * whose sign-in a server cannot run on the user's behalf.
+   */
+  paste?: { flow: string; label: string; help: string };
+  /** Models nothing enumerates, carried by the provider's own entry. */
+  models?: Array<{ id: string; name: string }>;
   /** Where the provider's API lives, for a per-user client. */
   endpoint?: string;
   /** Adapter/type hint, for a per-user client. */
@@ -93,11 +102,18 @@ function inferenceConnectors(): Connector[] {
   for (const p of WELL_KNOWN) {
     if (enabled.has(p.id)) continue;
     enabled.add(p.id);
+    const paste = p.paste && flowFor(p.paste.flow) ? p.paste : undefined;
     out.push({
       service: p.service,
       id: p.id,
-      byok: true,
-      oauth: flowFor(p.oauth.flow) ? p.oauth : undefined,
+      label: p.label,
+      // A provider you connect by pasting a whole credential file has no
+      // separate "here is my API key" path; offering both would be two boxes
+      // for one job.
+      byok: !paste,
+      oauth: p.oauth && flowFor(p.oauth.flow) ? p.oauth : undefined,
+      paste,
+      models: p.models,
       endpoint: p.apiEndpoint,
       type: p.type,
       userOnly: true,
