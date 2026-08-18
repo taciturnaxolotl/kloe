@@ -3609,6 +3609,48 @@ body.lb-open {
 .connrow.connecting > .btn.primary {
   display: none;
 }
+/* The second way in, for whoever the first turned down. Folded away so it does
+   not read as a choice everybody has to make. */
+.connfallback {
+  flex-basis: 100%;
+  width: 100%;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--rule);
+}
+.connfallback > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+.connfallback > summary:hover {
+  color: var(--ink);
+}
+.connpaste {
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunk);
+  color: var(--ink);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  resize: vertical;
+}
+.connpaste:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.connhelp {
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+.connhelp.bad {
+  color: var(--danger, #d9534f);
+}
+
 /* The device code, while a user is approving it elsewhere. The code itself is
    the point: big, monospace, and selectable, because it gets read off a screen
    and typed into another one. */

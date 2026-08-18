@@ -21,6 +21,14 @@ import {
  * rather than the browser in front of them.
  */
 
+/** What a pasted credential file yields: a grant, plus whatever else it carries. */
+export interface ParsedGrant {
+  pair: TokenPair;
+  /** Provider-specific bits a request needs later, e.g. an account id. */
+  meta?: Record<string, string>;
+  label?: string;
+}
+
 export interface DeviceFlow {
   /**
    * Ask the provider for a code the user types in, and where to type it.
@@ -29,6 +37,12 @@ export interface DeviceFlow {
   start?(baseUrl: string, deviceName: string, fetchImpl?: typeof fetch): Promise<DeviceStart>;
   /** Has the user approved it yet? */
   poll?(baseUrl: string, deviceCode: string, fetchImpl?: typeof fetch): Promise<DevicePoll>;
+  /**
+   * Read a credential file a local tool already holds, for whoever cannot use
+   * `start` — a workspace can switch device sign-in off, and then this is the
+   * only way in. Throws with something a person can act on.
+   */
+  parse?(pasted: string): ParsedGrant;
   /**
    * Trade a refresh token for an access token and its replacement.
    *
@@ -100,10 +114,16 @@ const codex: DeviceFlow = {
       body: JSON.stringify({ client_id: CODEX_CLIENT_ID }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (res.status === 404) {
-      throw new Error("this issuer has device sign-in turned off");
+    if (!res.ok) {
+      // 404 is "not enabled here"; 403 is a workspace that has switched it off.
+      // Either way the fallback below is the answer, so say so.
+      const detail = await res.text().catch(() => "");
+      throw new Error(
+        /admin|enable|not enabled/i.test(detail) || res.status === 403 || res.status === 404
+          ? "your workspace has device sign-in turned off"
+          : `codex: device code → ${res.status}`,
+      );
     }
-    if (!res.ok) throw new Error(`codex: device code → ${res.status}`);
     const data = (await res.json()) as {
       device_auth_id?: string;
       user_code?: string;
@@ -181,6 +201,46 @@ const codex: DeviceFlow = {
         meta: accountId ? { accountId } : undefined,
         teamName: "ChatGPT account",
       },
+    };
+  },
+
+  /**
+   * The fallback: what `codex login` wrote on the user's own machine.
+   *
+   * Device sign-in is a workspace setting, and an admin can turn it off — the
+   * endpoint then says so and there is nothing kloe can do about it. The
+   * browser flow still works locally, so the tokens it stored are still a way
+   * in, and refreshing them afterwards needs only the public client id.
+   */
+  parse(pasted) {
+    let file: {
+      auth_mode?: string;
+      OPENAI_API_KEY?: string | null;
+      tokens?: { access_token?: string; refresh_token?: string; account_id?: string };
+    };
+    try {
+      file = JSON.parse(pasted);
+    } catch {
+      throw new Error("that is not JSON; paste the whole contents of ~/.codex/auth.json");
+    }
+    const tokens = file.tokens;
+    if (!tokens?.access_token || !tokens.refresh_token) {
+      throw new Error(
+        file.OPENAI_API_KEY
+          ? "that file holds an API key rather than a ChatGPT sign-in; paste the key into the OpenAI row instead"
+          : "no tokens in that file; run `codex login` first",
+      );
+    }
+    return {
+      pair: {
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token,
+        expiresAt: jwtExpiry(tokens.access_token),
+      },
+      // A header on every request, not a secret; without it the endpoint
+      // answers 401 however good the token is.
+      meta: tokens.account_id ? { accountId: tokens.account_id } : undefined,
+      label: file.auth_mode === "chatgpt" ? "ChatGPT account" : file.auth_mode,
     };
   },
 

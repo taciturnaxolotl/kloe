@@ -9,6 +9,7 @@ import {
   oauthFlow,
   saveApiKey,
   saveOAuthGrant,
+  saveTokenBundle,
 } from "../src/credentials";
 import { exchangeToken, pollDeviceAuth, startDeviceAuth } from "../src/hyperauth";
 import { flowFor, flowNames } from "../src/oauthflows";
@@ -555,4 +556,56 @@ test("a codex grant refreshes on the public client id alone", async () => {
   expect(decryptSecret(store.getCredentialRow(SUB, "inference", "codex")!.refresh_token!)).toBe(
     "rt-old",
   );
+});
+
+test("a workspace that forbids device sign-in leaves the fallback", async () => {
+  configure();
+  const flow = flowFor("codex")!;
+  const forbidden = (async () =>
+    new Response("Please contact your workspace admin to enable device code authentication", {
+      status: 403,
+    })) as unknown as typeof fetch;
+
+  // The message a person can act on, rather than a status code they cannot.
+  await expect(flow.start!("", "kloe", forbidden)).rejects.toThrow(/device sign-in turned off/);
+
+  // …and the other way in is still offered, and still works.
+  const codex = connectableProviders().find((c) => c.id === "codex");
+  expect(codex?.oauth?.flow).toBe("codex");
+  expect(codex?.paste?.flow).toBe("codex");
+
+  const store = memStore();
+  saveTokenBundle(
+    store,
+    SUB,
+    "inference",
+    "codex",
+    JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: { access_token: "at-1", refresh_token: "rt-1", account_id: "acc-1" },
+    }),
+  );
+  expect(await credentialFor(store, SUB, "inference", "codex")).toMatchObject({
+    secret: "at-1",
+    meta: { accountId: "acc-1" },
+  });
+});
+
+test("a pasted file that isn't a codex sign-in says what to do about it", () => {
+  configure();
+  const store = memStore();
+  expect(() => saveTokenBundle(store, SUB, "inference", "codex", "not json")).toThrow(/not JSON/);
+  expect(() =>
+    saveTokenBundle(store, SUB, "inference", "codex", JSON.stringify({ tokens: {} })),
+  ).toThrow(/codex login/);
+  // An API-key file is a real thing to have, and belongs in a different row.
+  expect(() =>
+    saveTokenBundle(
+      store,
+      SUB,
+      "inference",
+      "codex",
+      JSON.stringify({ OPENAI_API_KEY: "sk-1", tokens: {} }),
+    ),
+  ).toThrow(/API key/);
 });

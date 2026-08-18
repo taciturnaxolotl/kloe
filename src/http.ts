@@ -27,6 +27,7 @@ import {
   oauthFlow,
   saveApiKey,
   saveOAuthGrant,
+  saveTokenBundle,
 } from "./credentials";
 import { Event, type EventData, type EventName, parseEventId } from "./events";
 import { getExecutor } from "./executor";
@@ -971,15 +972,22 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         }
         const service = data.service;
         const connector = findConnector(service, data.providerId);
-        if (!connector?.byok) {
+        if (!connector || !(connector.byok || connector.paste)) {
           return Response.json(
             { error: `"${data.providerId}" does not take a user credential here` },
             { status: 422 },
           );
         }
         try {
-          saveApiKey(store, sub, service, data.providerId, data.apiKey);
+          // A whole credential file goes through its provider's parser; a key
+          // is just a key.
+          if (connector.paste) {
+            saveTokenBundle(store, sub, service, data.providerId, data.apiKey);
+          } else {
+            saveApiKey(store, sub, service, data.providerId, data.apiKey);
+          }
         } catch (e) {
+          // The parser's message is written for whoever pasted it.
           return Response.json({ error: (e as Error).message }, { status: 422 });
         }
         forgetUserModels(sub, data.providerId);

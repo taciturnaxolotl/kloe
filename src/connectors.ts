@@ -37,6 +37,8 @@ export interface Connector {
   byok: boolean;
   /** The device flow a user can run, when the provider offers one. */
   oauth?: OAuthFlowRef;
+  /** A credential a local tool holds, for whoever cannot use the flow above. */
+  paste?: { flow: string; label: string; help: string };
   /** Models nothing enumerates, carried by the provider's own entry. */
   models?: Array<{ id: string; name: string }>;
   /** Where the provider's API lives, for a per-user client. */
@@ -104,6 +106,7 @@ function inferenceConnectors(): Connector[] {
       label: p.label,
       byok: p.byok !== false,
       oauth,
+      paste: p.paste && flowFor(p.paste.flow)?.parse ? p.paste : undefined,
       models: p.models,
       endpoint: p.apiEndpoint,
       type: p.type,

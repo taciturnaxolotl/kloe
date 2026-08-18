@@ -143,6 +143,32 @@ function providerRow(p, conn) {
       },
     });
   }
+  if (p.paste) {
+    // Second way in, folded away: it only matters to whoever the first way
+    // turned down, and two boxes side by side would make everyone choose.
+    row.fallback = {
+      summary: "Device sign-in blocked?",
+      placeholder: p.paste.label,
+      help: p.paste.help,
+      onSubmit: async function (value, ctx) {
+        var res = await fetch("/api/credentials", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ service: p.service, providerId: p.id, apiKey: value }),
+        }).catch(function () {
+          return { ok: false };
+        });
+        if (res.ok) {
+          ctx.reload();
+          return null;
+        }
+        var body = await res.json().catch(function () {
+          return {};
+        });
+        return body.error || "That was refused.";
+      },
+    };
+  }
   if (p.byok) {
     row.input = {
       placeholder: "Paste an API key",
@@ -216,7 +242,9 @@ async function runDeviceFlow(basePath, ctx) {
     start = await getJSON(basePath + "/device", { method: "POST" });
     if (start.error) throw new Error(start.error);
   } catch (e) {
-    panel.textContent = "Couldn’t start: " + e.message;
+    panel.textContent = e.message + ". Try the fallback below.";
+    var fold = panel.parentElement && panel.parentElement.querySelector(".connfallback");
+    if (fold) fold.open = true;
     return;
   }
 
@@ -331,6 +359,37 @@ function renderRow(row, ctx) {
       el.classList.remove("connecting");
     },
   };
+
+  if (row.fallback) {
+    var fold = document.createElement("details");
+    fold.className = "connfallback";
+    var summary = document.createElement("summary");
+    summary.textContent = row.fallback.summary;
+    var box = document.createElement("textarea");
+    box.className = "connpaste";
+    box.rows = 2;
+    box.placeholder = row.fallback.placeholder;
+    box.spellcheck = false;
+    var help = document.createElement("div");
+    help.className = "connhelp";
+    help.textContent = row.fallback.help;
+    box.addEventListener("change", async function () {
+      var value = box.value.trim();
+      if (!value) return;
+      box.disabled = true;
+      var err = await row.fallback.onSubmit(value, rowCtx);
+      box.value = "";
+      box.disabled = false;
+      if (err) {
+        help.textContent = err;
+        help.classList.add("bad");
+      }
+    });
+    fold.appendChild(summary);
+    fold.appendChild(box);
+    fold.appendChild(help);
+    el.appendChild(fold);
+  }
 
   if (row.input) {
     var input = document.createElement("input");

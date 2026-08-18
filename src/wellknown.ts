@@ -25,6 +25,11 @@ export interface WellKnownProvider {
   /** A device flow a user can run here, for providers that offer one. */
   oauth?: { flow: string; baseUrl: string };
   /**
+   * A credential a local tool already holds, for whoever cannot use the device
+   * flow. Shown as a fallback, not a second front door.
+   */
+  paste?: { flow: string; label: string; help: string };
+  /**
    * Whether a pasted API key is also a way in. True for most: a key and a
    * sign-in are different credentials and people hold one or the other. False
    * where the provider has no key to hold — a ChatGPT subscription is reached
@@ -58,6 +63,14 @@ export const WELL_KNOWN: WellKnownProvider[] = [
     type: "openai-responses",
     apiEndpoint: "https://chatgpt.com/backend-api/codex",
     oauth: { flow: "codex", baseUrl: "https://auth.openai.com" },
+    // Device sign-in is a workspace setting an admin can switch off. When they
+    // have, the browser flow still works on the user's own machine, so what it
+    // stored is the way in.
+    paste: {
+      flow: "codex",
+      label: "Paste ~/.codex/auth.json",
+      help: "Device sign-in blocked? Run `codex login` on your own machine and paste ~/.codex/auth.json here.",
+    },
     byok: false,
     // This endpoint enumerates nothing, and what a ChatGPT plan may run is not
     // what an API key may run: asking for a model outside the list is a 400
