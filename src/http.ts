@@ -1101,29 +1101,38 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       GET: (req: Bun.BunRequest<"/api/roles">) =>
         requireOwner(req, store) ??
         Response.json({
+          // The issuer's host, so the UI can name it rather than saying "the
+          // identity provider" at somebody who calls it something else.
+          provider: (() => {
+            try {
+              return new URL(getConfig().auth.issuer).hostname;
+            } catch {
+              return "";
+            }
+          })(),
           roles: declaredRoles().map((name) => ({ name, ...policyFor(name) })),
           users: store.listUserRoles().map((u) => ({
             ...u,
-            // What is actually in force, which is what an owner is deciding
-            // about — the provider's answer is shown beside it as context.
-            effective: roleFor(u.sub, u.override ?? u.role),
+            // What is in force, which is what an owner is deciding about. The
+            // provider's answer sits beside it as context.
+            effective: roleFor(u.sub, u.role),
           })),
         }),
 
       /**
-       * Set (or clear) an owner's own answer for a person.
+       * Put someone in a role, by name, in the config overlay.
        *
-       * This is the fast lever, and the reason it exists: the provider only
-       * tells kloe a role during a fresh sign-in, so waiting for one is no way
-       * to demote somebody. An override lands in the table every request reads,
-       * so it applies to live sessions at once — `signOut` on top of it ends
-       * their sessions, which is what forces the provider to be asked again.
+       * Config is the only place a role is assigned, so this is a config edit
+       * rather than a second store of who-is-what. It applies at once (every
+       * request resolves the role afresh) and it leaves a line in a file you
+       * can read. `signOut` on top of it ends their sessions, which is what
+       * makes their next visit ask the provider again.
        */
       PATCH: withBody(UserRoleBody, (data, req: Bun.BunRequest<"/api/roles">) => {
         const denied = requireOwner(req, store);
         if (denied) return denied;
         const self = getSession(req, store)?.sub;
-        if (data.sub === self && data.role !== null && !roleCan(data.role, "admin")) {
+        if (data.sub === self && (data.role === null || !roleCan(data.role, "admin"))) {
           // Locking yourself out is recoverable only by editing nix, so it is
           // worth one refusal rather than one apology.
           return Response.json(
@@ -1131,7 +1140,33 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
             { status: 422 },
           );
         }
-        store.setUserRoleOverride(data.sub, data.role);
+        try {
+          const roles = structuredClone(getConfig().auth.roles) as Record<
+            string,
+            { subs?: string[] }
+          >;
+          // One role at a time: drop them from every list before adding, so a
+          // person can never hold two.
+          for (const policy of Object.values(roles)) {
+            policy.subs = (policy.subs ?? []).filter((s) => s !== data.sub);
+          }
+          if (data.role) {
+            if (!roles[data.role]) return Response.json({ error: "no such role" }, { status: 422 });
+            roles[data.role].subs = [...(roles[data.role].subs ?? []), data.sub];
+          }
+          // Persist to the overlay, then apply to the config already in
+          // memory. Re-reading from disk instead would pull in every other
+          // change made to the file since boot, which is not what this request
+          // asked for.
+          writeOverlay({ auth: { roles } });
+          const cfg = getConfig();
+          setConfig({
+            ...cfg,
+            auth: { ...cfg.auth, roles: roles as typeof cfg.auth.roles },
+          });
+        } catch (e) {
+          return Response.json({ error: (e as Error).message }, { status: 422 });
+        }
         const endedSessions = data.signOut ? store.deleteSessionsFor(data.sub) : 0;
         return Response.json({ ok: true, endedSessions });
       }),

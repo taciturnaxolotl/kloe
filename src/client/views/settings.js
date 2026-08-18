@@ -50,16 +50,15 @@ var TEMPLATE =
   '<div class="rolepick" id="rolepick">Loading…</div>' +
   "</section>" +
   '<section class="settabpanel" data-panel="people" hidden>' +
-  '<p class="lede">What each role may do, and who holds which. A role decides only what nobody can bring for themselves \u2014 this instance\u2019s compute and this domain; models and search follow whose key pays for them.</p>' +
+  '<p class="lede">Roles cover the two things people can\u2019t bring themselves: shell tools, which run on this machine, and public links, which live on this domain. Models and search are settled by whose key pays.</p>' +
   '<div class="seclabel">Roles</div>' +
   '<div id="rolePolicy">Loading\u2026</div>' +
   '<div class="seclabel">People</div>' +
-  '<p class="lede small">Set here, a role applies at once, including to anyone already signed in. Signing someone out is what makes ' +
-  "their next visit ask the provider again.</p>" +
+  '<p class="lede small">A role set here applies straight away, even to someone already signed in, and is saved to the config file. Sign someone out to make their next login pick up the role from your identity provider instead.</p>' +
   '<div id="peopleList"></div>' +
   "</section>" +
   '<section class="settabpanel" data-panel="accounts" hidden>' +
-  '<p class="lede">Connect your own provider account and your chats spend your credits instead of this instance\u2019s. A connected account decides what it can run, so its models appear in the picker alongside the shared ones.</p>' +
+  '<p class="lede">Connect an account and your chats bill to it instead of this instance\u2019s key. Whatever your account can reach turns up in the model picker.</p>' +
   '<div id="accountList">Loading\u2026</div>' +
   "</section>" +
   '<section class="settabpanel" data-panel="memory" hidden>' +
@@ -363,7 +362,7 @@ export function mount(root, _params, ctx) {
     content.innerHTML = "";
     if (!allModels.length) {
       content.innerHTML =
-        '<p class="lede">No models available. Enable providers in <code>providers.json</code> and restart the server.</p>';
+        '<p class="lede">No models available. Add a provider to <code>kloe.json</code> and restart the server.</p>';
       return;
     }
 
@@ -614,11 +613,13 @@ export function mount(root, _params, ctx) {
   // Two halves of one question: what a role means, and who holds it. The first
   // writes to the config overlay, the second to kloe's own record of a person.
   var CAPS = [
-    { key: "admin", label: "admin", hint: "Curation, preferences, these views" },
-    { key: "sandbox", label: "sandbox", hint: "Shell tools \u2014 this instance\u2019s compute" },
-    { key: "publish", label: "publish", hint: "Public links on this domain" },
+    { key: "admin", label: "admin", hint: "Curate models, set preferences, open this page" },
+    { key: "sandbox", label: "sandbox", hint: "Shell tools, which run on this machine" },
+    { key: "publish", label: "publish", hint: "Share a chat on a public link" },
   ];
   var roleList = [];
+  /** What to call the identity provider in copy; its hostname reads best. */
+  var providerName = "your login";
 
   function rolePolicyRow(role) {
     var row = document.createElement("div");
@@ -651,7 +652,7 @@ export function mount(root, _params, ctx) {
           return r.admin;
         }).length < 2;
       box.disabled = lastAdmin;
-      if (lastAdmin) label.title = "The only role with admin \u2014 give another one first.";
+      if (lastAdmin) label.title = "The only role with admin. Give it to another role first.";
       box.addEventListener("change", async function () {
         var patch = { auth: { roles: {} } };
         patch.auth.roles[role.name] = {};
@@ -696,11 +697,9 @@ export function mount(root, _params, ctx) {
     title.textContent = user.sub;
     var sub = document.createElement("div");
     sub.className = "connsub";
-    sub.textContent = user.override
-      ? "Set here to " + user.override + (user.role ? " \u00b7 provider says " + user.role : "")
-      : user.role
-        ? "From the provider: " + user.role
-        : "No role from the provider";
+    sub.textContent = user.role
+      ? providerName + " calls them " + user.role
+      : providerName + " gives them no role";
     text.appendChild(title);
     text.appendChild(sub);
     row.appendChild(text);
@@ -711,7 +710,7 @@ export function mount(root, _params, ctx) {
 
     var pick = document.createElement("select");
     pick.className = "connkey rolepickone";
-    var options = [{ value: "", label: "provider\u2019s answer" }].concat(
+    var options = [{ value: "", label: "follow " + providerName }].concat(
       roleList.map(function (r) {
         return { value: r.name, label: r.name };
       }),
@@ -745,7 +744,8 @@ export function mount(root, _params, ctx) {
     out.type = "button";
     out.className = "btn";
     out.textContent = "Sign out";
-    out.title = "End their sessions, so their next visit asks the provider again";
+    out.title =
+      "Ends their sessions. Their next login re-reads their role from " + providerName + ".";
     out.onclick = async function () {
       out.disabled = true;
       await fetch("/api/roles", {
@@ -811,8 +811,8 @@ export function mount(root, _params, ctx) {
     if (p.userOnly) {
       var tag = document.createElement("span");
       tag.className = "conntag";
-      tag.textContent = "yours only";
-      tag.title = "This instance has no key for it; connect one and it is yours to use.";
+      tag.textContent = "bring your own";
+      tag.title = "No key here. Connect an account and it\u2019s yours to use.";
       title.appendChild(tag);
     }
     var sub = document.createElement("div");
@@ -820,11 +820,11 @@ export function mount(root, _params, ctx) {
     if (conn) {
       sub.textContent =
         conn.kind === "oauth"
-          ? "Connected" + (conn.label ? " \u00b7 " + conn.label : "") + " \u00b7 your credits"
-          : "Your key " + (conn.label || "") + " \u00b7 your credits";
+          ? "Connected" + (conn.label ? " as " + conn.label : "") + ". Billed to you."
+          : "Your key " + (conn.label || "") + ". Billed to you.";
     } else {
       sub.textContent = p.userOnly
-        ? "Not configured here \u2014 connect an account to use it."
+        ? "Not set up here. Connect an account to use it."
         : "Using this instance\u2019s key.";
     }
     text.appendChild(title);
@@ -892,7 +892,7 @@ export function mount(root, _params, ctx) {
     stopPolling();
     var panel = document.createElement("div");
     panel.className = "conndevice";
-    panel.textContent = "Requesting a code\u2026";
+    panel.textContent = "Getting a code\u2026";
     row.appendChild(panel);
 
     var start;
@@ -900,7 +900,7 @@ export function mount(root, _params, ctx) {
       start = await (await fetch(base + "/device", { method: "POST" })).json();
       if (start.error) throw new Error(start.error);
     } catch (e) {
-      panel.textContent = "Could not start: " + e.message;
+      panel.textContent = "Couldn\u2019t start: " + e.message;
       return;
     }
 
@@ -910,7 +910,7 @@ export function mount(root, _params, ctx) {
     code.textContent = start.userCode;
     var hint = document.createElement("div");
     hint.className = "connhint";
-    hint.textContent = "Enter this code to approve, then come back \u2014 this page is waiting.";
+    hint.textContent = "Type this code to approve, then come back. This page is watching for it.";
     var open = document.createElement("a");
     open.className = "btn primary";
     open.target = "_blank";
@@ -924,7 +924,7 @@ export function mount(root, _params, ctx) {
     var url = base + "/device/" + encodeURIComponent(start.deviceCode);
     var tick = async function () {
       if (Date.now() > start.expiresAt) {
-        hint.textContent = "That code expired. Try again.";
+        hint.textContent = "That code ran out. Try again.";
         return;
       }
       var j = {};
@@ -937,11 +937,11 @@ export function mount(root, _params, ctx) {
         return;
       }
       if (j.status === "denied") {
-        hint.textContent = "Approval was denied.";
+        hint.textContent = "That was denied.";
         return;
       }
       if (j.status === "expired") {
-        hint.textContent = "That code expired. Try again.";
+        hint.textContent = "That code ran out. Try again.";
         return;
       }
       devicePoll = setTimeout(tick, 2000);
@@ -961,6 +961,7 @@ export function mount(root, _params, ctx) {
       }
       var j = await res.json();
       roleList = j.roles || [];
+      if (j.provider) providerName = j.provider;
       people = j.users || [];
       guestRoles = roleList
         .filter(function (r) {
@@ -1031,8 +1032,8 @@ export function mount(root, _params, ctx) {
     var sub = document.createElement("div");
     sub.className = "connsub";
     sub.textContent = connected
-      ? "Connected \u00b7 your chats can read and record durable context in lard."
-      : "Connect lard so chats can read and update your durable context.";
+      ? "Your chats can read and add to what lard remembers about you."
+      : "Connect lard and your chats can read and add to what it remembers about you.";
     text.appendChild(title);
     text.appendChild(sub);
     var btn = document.createElement(connected ? "button" : "a");

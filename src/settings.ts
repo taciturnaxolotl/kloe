@@ -391,12 +391,16 @@ const ServerSchema = v.object({
  * the operator's own compute, and publishing, which is the operator's domain.
  */
 const RolePolicySchema = v.object({
-  /** Curation, prefs, the admin views — running the instance. */
+  /** Curation, prefs, the admin views: running the instance. */
   admin: v.optional(v.boolean(), false),
-  /** May reach the shell sandbox: real compute on a machine you pay for. */
+  /** May reach the shell sandbox, which is real compute on a machine you pay for. */
   sandbox: v.optional(v.boolean(), false),
   /** May mint public share links on this instance's domain. */
   publish: v.optional(v.boolean(), false),
+  /** Subject URLs holding this role outright. Checked before anything else. */
+  subs: v.optional(v.array(v.string()), []),
+  /** Provider role strings that map to this one (indiko's per-app RBAC). */
+  providerRoles: v.optional(v.array(v.string()), []),
 });
 export type RolePolicy = v.InferOutput<typeof RolePolicySchema>;
 
@@ -413,30 +417,17 @@ const AuthSchema = v.object({
   /** Allowed subject URLs (indiko `me`/`sub`); empty = any authenticated user. */
   allowedSubs: v.optional(v.array(v.string()), []),
   /**
-   * Subject URLs with full access: curation, every visible model, the admin
-   * views. Everyone else who gets through `allowedSubs` is a guest, who sees
-   * only the models marked guest-visible and cannot change what anyone sees.
+   * Every role this deployment has: what it may do, and who holds it.
    *
-   * Empty (the default) means the deployment has no guests and every
-   * authenticated user is an owner — which is what a single-user instance is,
-   * and what every instance was before roles existed.
-   */
-  owners: v.optional(v.array(v.string()), []),
-  /**
-   * The provider's role string that means "owner" — indiko assigns roles per
-   * app (an admin picks them on the pre-registered client), and hands the
-   * user's role back in the token response, so this is the mechanism that
-   * scales past editing config for every person.
+   * Two ways to hold one, and a role can use both. `subs` names people
+   * outright, which is how a small instance works and how the break-glass
+   * always works. `providerRoles` maps the strings the identity provider
+   * assigns (indiko does per-app RBAC) onto a role here, which is how it scales
+   * past editing config for every person.
    *
-   * Empty (the default) means only `owners` decides. Setting either one is
-   * what tells kloe this deployment has guests at all.
-   */
-  ownerRole: v.optional(v.string(), ""),
-  /**
-   * What each role may do, keyed by the provider's role string. A role the
-   * provider sends that isn't named here falls to `guest`, and a deployment
-   * that names none gets the built-in pair: an all-powerful `owner` and a
-   * `guest` who may chat and nothing else.
+   * Declaring none means the deployment has no guests: everyone who can sign in
+   * is an owner, which is what a single-user instance is and what every
+   * instance was before roles existed.
    */
   roles: v.optional(v.record(v.string(), RolePolicySchema), {}),
   sessionTtlDays: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 30),

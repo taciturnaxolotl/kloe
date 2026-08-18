@@ -342,39 +342,44 @@ export const GUEST: Role = "guest";
 export type Capability = "admin" | "sandbox" | "publish";
 
 const BUILT_IN: Record<string, RolePolicy> = {
-  owner: { admin: true, sandbox: true, publish: true },
-  guest: { admin: false, sandbox: false, publish: false },
+  owner: { admin: true, sandbox: true, publish: true, subs: [], providerRoles: [] },
+  guest: { admin: false, sandbox: false, publish: false, subs: [], providerRoles: [] },
 };
 
 /**
- * Whether this deployment has said who its owners are — by naming subjects, by
- * naming the provider role that means owner, or by declaring roles at all.
- * Until it says one of those there are no guests to be, and everyone who can
- * sign in is an owner: that is what a single-user instance is, and what every
- * instance was before roles.
+ * Whether this deployment has declared any roles. Until it does there are no
+ * guests to be, and everyone who can sign in is an owner: that is what a
+ * single-user instance is, and what every instance was before roles.
  */
 function rolesInPlay(cfg: ReturnType<typeof getConfig>["auth"]): boolean {
-  return cfg.owners.length > 0 || cfg.ownerRole !== "" || Object.keys(cfg.roles).length > 0;
+  return Object.keys(cfg.roles).length > 0;
 }
 
 /**
- * The role this person holds, from three sources answering in order:
+ * The role this person holds.
  *
- *   1. `auth.owners` — subjects named in the deployment's own config. The
- *      break-glass: it holds when the provider is misconfigured, when a role
- *      was never assigned, and when you are the person fixing it.
- *   2. `auth.ownerRole` — the one provider role that means owner, for a
- *      deployment that wants nothing more elaborate than that.
- *   3. the provider's role itself, when `auth.roles` declares it.
+ * Named subjects win over the provider's answer. That order is the whole
+ * break-glass: a role you assigned in config holds when the provider is
+ * misconfigured, when it never assigned one, and when you are the person
+ * fixing it — and it applies the moment the config is written, where the
+ * provider's answer only arrives with a fresh sign-in.
  *
- * Anything else is a guest.
+ * Anyone matching neither is a guest.
  */
 export function roleFor(sub: string | undefined, providerRole?: string): Role {
   const cfg = getConfig().auth;
   if (!cfg.enabled || !rolesInPlay(cfg)) return OWNER;
-  if (sub && cfg.owners.includes(sub)) return OWNER;
-  if (cfg.ownerRole && providerRole === cfg.ownerRole) return OWNER;
-  if (providerRole && cfg.roles[providerRole]) return providerRole;
+  const roles = Object.entries(cfg.roles);
+  if (sub) {
+    const named = roles.find(([, policy]) => policy.subs.includes(sub));
+    if (named) return named[0];
+  }
+  if (providerRole) {
+    const mapped = roles.find(
+      ([name, policy]) => policy.providerRoles.includes(providerRole) || name === providerRole,
+    );
+    if (mapped) return mapped[0];
+  }
   return GUEST;
 }
 
@@ -392,9 +397,7 @@ export function roleCan(role: Role, capability: Capability): boolean {
 /** Roles this deployment knows about, for the UI that hands things out. */
 export function declaredRoles(): Role[] {
   const cfg = getConfig().auth;
-  const names = new Set<string>([OWNER, GUEST, ...Object.keys(cfg.roles)]);
-  if (cfg.ownerRole) names.add(cfg.ownerRole);
-  return [...names];
+  return [...new Set<string>([OWNER, GUEST, ...Object.keys(cfg.roles)])];
 }
 
 /** The role of whoever made this request. */

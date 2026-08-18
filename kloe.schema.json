@@ -416,17 +416,6 @@
           },
           "default": []
         },
-        "owners": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "default": []
-        },
-        "ownerRole": {
-          "type": "string",
-          "default": ""
-        },
         "roles": {
           "type": "object",
           "propertyNames": {
@@ -446,6 +435,20 @@
               "publish": {
                 "type": "boolean",
                 "default": false
+              },
+              "subs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "providerRoles": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
               }
             },
             "required": []
@@ -474,8 +477,6 @@
         "clientId": "",
         "clientSecret": "",
         "allowedSubs": [],
-        "owners": [],
-        "ownerRole": "",
         "roles": {},
         "sessionTtlDays": 30,
         "appName": "kloe",

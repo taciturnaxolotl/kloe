@@ -8,7 +8,7 @@ import { Catalog } from "../src/catalog";
 import { apiRoutes } from "../src/http";
 import { setRegistry } from "../src/inference";
 import { ProviderRegistry } from "../src/providers";
-import { loadConfig, setConfig } from "../src/settings";
+import { loadConfig, type RolePolicy, setConfig } from "../src/settings";
 import { Store } from "../src/store";
 import { toolSet } from "../src/tools";
 
@@ -40,10 +40,32 @@ function fixtureRegistry(): ProviderRegistry {
   });
 }
 
-function configure(owners: string[], ownerRole = ""): void {
-  const base = loadConfig({ path: "does-not-exist.json", env: {} });
-  setConfig({ ...base, auth: { ...base.auth, enabled: true, owners, ownerRole } });
+/** Owners by name, plus (optionally) the provider role that maps to owner. */
+function configure(owners: string[], ownerRole?: string): void {
+  const base = loadConfig({ path: "does-not-exist.json", env: {}, overlay: {} });
+  const roles: Record<string, RolePolicy> =
+    owners.length || ownerRole
+      ? {
+          owner: {
+            admin: true,
+            sandbox: true,
+            publish: true,
+            subs: owners,
+            providerRoles: ownerRole ? [ownerRole] : [],
+          },
+          guest: { admin: false, sandbox: false, publish: false, subs: [], providerRoles: [] },
+        }
+      : {};
+  setConfig({ ...base, auth: { ...base.auth, enabled: true, roles } });
   resetAuthCache();
+}
+
+/**
+ * Assigning a role writes the config overlay, so each test points it at a file
+ * it owns. Without this the suite would edit the checkout's own data/ directory.
+ */
+function overlayIn(dir: string): void {
+  process.env.KLOE_OVERLAY = join(dir, "overrides.json");
 }
 
 const servers: Array<ReturnType<typeof Bun.serve>> = [];
@@ -51,6 +73,7 @@ const tmpDirs: string[] = [];
 function freshApp() {
   const tmp = mkdtempSync(join(tmpdir(), "kloe-roles-"));
   tmpDirs.push(tmp);
+  overlayIn(tmp);
   const store = new Store(join(tmp, "test.db"));
   const blobs = new FsBlobStore(join(tmp, "blobs"));
   const server = Bun.serve({ port: 0, routes: apiRoutes({ store, blobs }) });
@@ -77,6 +100,7 @@ beforeEach(() => {
 afterEach(() => {
   setConfig(null);
   resetAuthCache();
+  delete process.env.KLOE_OVERLAY;
 });
 
 test("an instance that names no owners has no guests", () => {
@@ -89,8 +113,17 @@ test("an instance that names no owners has no guests", () => {
 });
 
 test("auth off means there is nobody to be a guest to", () => {
-  const base = loadConfig({ path: "does-not-exist.json", env: {} });
-  setConfig({ ...base, auth: { ...base.auth, enabled: false, owners: [OWNER] } });
+  const base = loadConfig({ path: "does-not-exist.json", env: {}, overlay: {} });
+  setConfig({
+    ...base,
+    auth: {
+      ...base.auth,
+      enabled: false,
+      roles: {
+        owner: { admin: true, sandbox: true, publish: true, subs: [OWNER], providerRoles: [] },
+      },
+    },
+  });
   resetAuthCache();
   expect(roleFor(undefined)).toBe("owner");
 });
@@ -206,14 +239,14 @@ test("the provider's role decides, when the deployment says which role means own
   expect(roleFor("https://anyone/", undefined)).toBe("guest");
 });
 
-test("naming the role is enough to bring roles into play", () => {
-  // Without `owners`, an earlier version treated everyone as an owner; a
-  // deployment that has said which role means owner has plainly opted in.
+test("declaring any role is what brings roles into play", () => {
+  // An instance that declares none has no guests to be; one that has said
+  // anything about roles has plainly opted in.
   configure([], "operator");
   expect(roleFor("https://anyone/", undefined)).toBe("guest");
 });
 
-test("the configured owner list outranks whatever the provider says", () => {
+test("a named subject outranks whatever the provider says", () => {
   configure([OWNER], "operator");
   // The break-glass: it holds when the role was never assigned, which is the
   // state every pre-registered app starts in.
@@ -296,11 +329,15 @@ test("roles declared in config carry their own policy", () => {
     auth: {
       ...base.auth,
       enabled: true,
-      owners: [],
-      ownerRole: "",
       roles: {
-        staff: { admin: false, sandbox: true, publish: true },
-        visitor: { admin: false, sandbox: false, publish: false },
+        staff: { admin: false, sandbox: true, publish: true, subs: [], providerRoles: ["staff"] },
+        visitor: {
+          admin: false,
+          sandbox: false,
+          publish: false,
+          subs: [],
+          providerRoles: ["visitor"],
+        },
       },
     },
   });
@@ -319,7 +356,7 @@ test("roles declared in config carry their own policy", () => {
 // is no way to demote somebody. An owner's own answer lands in the table every
 // request reads.
 
-test("an owner's answer takes effect at once, on a session already open", async () => {
+test("an assignment takes effect at once, on a session already open", async () => {
   configure([OWNER], "operator");
   const { base, store } = freshApp();
   const guestSession = as(store, GUEST, "operator"); // signed in as an admin
@@ -341,34 +378,60 @@ test("an owner's answer takes effect at once, on a session already open", async 
   expect((await fetch(`${base}/api/models`, { headers: guestSession })).status).toBe(403);
 });
 
-test("clearing the override goes back to what the provider said", async () => {
+test("only a declared role can be handed out", async () => {
   configure([OWNER], "operator");
   const { base, store } = freshApp();
-  const cookie = as(store, GUEST, "operator");
+  const res = await fetch(`${base}/api/roles`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", ...as(store, OWNER) },
+    body: JSON.stringify({ sub: GUEST, role: "wizard" }),
+  });
+  expect(res.status).toBe(422);
+});
+
+test("clearing an assignment goes back to what the provider said", async () => {
+  configure([OWNER], "operator");
+  const { base, store } = freshApp();
+  const cookie = as(store, GUEST, "operator"); // the provider calls them an operator
   const patch = (role: string | null) =>
     fetch(`${base}/api/roles`, {
       method: "PATCH",
       headers: { "content-type": "application/json", ...as(store, OWNER) },
       body: JSON.stringify({ sub: GUEST, role }),
     });
+  const roleOf = async () =>
+    ((await (await fetch(`${base}/api/me`, { headers: cookie })).json()) as any).role;
 
   await patch("guest");
-  expect(store.getUserRole(GUEST)).toBe("guest");
+  expect(await roleOf()).toBe("guest");
   await patch(null);
-  expect(store.getUserRole(GUEST)).toBe("operator");
-  expect(((await (await fetch(`${base}/api/me`, { headers: cookie })).json()) as any).role).toBe(
-    "owner",
-  );
+  expect(await roleOf()).toBe("owner");
 });
 
-test("a later sign-in does not undo an owner's answer", () => {
-  configure([OWNER], "operator");
-  const store = new Store(":memory:");
-  store.setUserRole(GUEST, "operator");
-  store.setUserRoleOverride(GUEST, "guest");
-  // They sign in again and the provider repeats itself; the local decision holds.
-  store.setUserRole(GUEST, "operator");
-  expect(store.getUserRole(GUEST)).toBe("guest");
+test("a later sign-in does not undo an assignment made here", () => {
+  // The provider keeps saying "operator"; naming them in a role says otherwise,
+  // and a name wins.
+  configure([], "operator");
+  const base = loadConfig({ path: "does-not-exist.json", env: {}, overlay: {} });
+  setConfig({
+    ...base,
+    auth: {
+      ...base.auth,
+      enabled: true,
+      roles: {
+        owner: {
+          admin: true,
+          sandbox: true,
+          publish: true,
+          subs: [],
+          providerRoles: ["operator"],
+        },
+        guest: { admin: false, sandbox: false, publish: false, subs: [GUEST], providerRoles: [] },
+      },
+    },
+  });
+  resetAuthCache();
+  expect(roleFor(GUEST, "operator")).toBe("guest");
 });
 
 test("signing someone out ends their sessions", async () => {
