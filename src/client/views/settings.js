@@ -35,13 +35,22 @@ var TEMPLATE =
   "</header>" +
   '<div class="chatscroll"><div class="setpage">' +
   '<div class="settabs" id="settabs" role="tablist">' +
-  '<button class="settab active" type="button" data-tab="models" role="tab">Models</button>' +
-  '<button class="settab" type="button" data-tab="research" role="tab">Research</button>' +
+  '<button class="settab active" type="button" data-tab="mine" role="tab">Your models</button>' +
+  '<button class="settab" type="button" data-tab="connections" role="tab">Connections</button>' +
+  '<button class="settab" type="button" data-tab="models" role="tab" hidden>Curation</button>' +
+  '<button class="settab" type="button" data-tab="research" role="tab" hidden>Research</button>' +
   '<button class="settab" type="button" data-tab="memory" role="tab" hidden>Memory</button>' +
   '<button class="settab" type="button" data-tab="people" role="tab" hidden>People</button>' +
   "</div>" +
-  '<section class="settabpanel" data-panel="models">' +
-  '<p class="lede">Turn models on to add them to the chat picker, drag the enabled ones to set their order (⌘-click to move several at once), and give them display names.</p>' +
+  '<section class="settabpanel" data-panel="mine">' +
+  '<p class="lede">Everything you can use, and whether it shows in your picker. Models this instance offers your role are here, along with anything your own connected accounts reach.</p>' +
+  '<div id="myModels">Loading…</div>' +
+  "</section>" +
+  '<section class="settabpanel" data-panel="connections" hidden>' +
+  '<div id="connectionsHost"></div>' +
+  "</section>" +
+  '<section class="settabpanel" data-panel="models" hidden>' +
+  '<p class="lede">What this instance offers, for everyone. Turn models on to add them to the picker, drag the enabled ones to set their order (⌘-click to move several at once), and give them display names.</p>' +
   '<div id="content">Loading…</div>' +
   "</section>" +
   '<section class="settabpanel" data-panel="research" hidden>' +
@@ -55,7 +64,7 @@ var TEMPLATE =
   '<div id="peopleList"></div>' +
   "</section>" +
   '<section class="settabpanel" data-panel="memory" hidden>' +
-  '<div id="lardStatus" class="connrow"></div>' +
+  '<p class="lede">What lard remembers about you. Connect or disconnect it under Connections.</p>' +
   '<div id="lardInspector" class="lardinspect" hidden>' +
   '<aside class="lardbrowser">' +
   '<input id="lardSearch" class="lardsearch" type="search" placeholder="Search subjects" autocomplete="off">' +
@@ -748,50 +757,100 @@ export function mount(root, _params, ctx) {
         .map(function (r) {
           return r.name;
         });
-      if (tabBtn) tabBtn.hidden = false;
+      // Reaching this endpoint at all is what proves the caller is an admin.
+      ["people", "models", "research"].forEach(function (name) {
+        var t = root.querySelector('.settab[data-tab="' + name + '"]');
+        if (t) t.hidden = false;
+      });
       renderPeople();
     } catch (_) {
       if (tabBtn) tabBtn.hidden = true;
     }
   }
 
-  // ---- lard (memory) ----
-  function renderLard(el, connected) {
-    // No status dot: there is one card here, and its own text already says
-    // whether it is connected.
-    el.className = "connrow" + (connected ? " on" : "");
-    el.innerHTML = "";
-    var text = document.createElement("div");
-    text.className = "conntext";
-    var title = document.createElement("div");
-    title.className = "conntitle";
-    title.textContent = "Memory";
-    var sub = document.createElement("div");
-    sub.className = "connsub";
-    sub.textContent = connected
-      ? "Your chats can read and add to what lard remembers about you."
-      : "Connect lard and your chats can read and add to what it remembers about you.";
-    text.appendChild(title);
-    text.appendChild(sub);
-    var btn = document.createElement(connected ? "button" : "a");
-    btn.className = "btn " + (connected ? "" : "primary");
-    if (connected) {
-      btn.type = "button";
-      btn.textContent = "Disconnect";
-      btn.onclick = async function () {
-        btn.disabled = true;
-        btn.textContent = "Disconnecting\u2026";
-        await fetch("/api/lard", { method: "DELETE" }).catch(function () {});
-        byId("lardInspector").hidden = true;
-        renderLard(el, false);
-      };
-    } else {
-      btn.href = "/lard/connect";
-      btn.textContent = "Connect";
+  // ---- your own models ----
+  // The second of two layers: the operator decides what this instance offers
+  // your role, and this decides which of those you want to look at. A row you
+  // switch off is stored as an exception, so a model added later just appears.
+  function myModelRow(m) {
+    var row = document.createElement("div");
+    row.className = "modelrow" + (m.enabled ? "" : " off");
+
+    var toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.className = "toggle";
+    toggle.checked = !!m.enabled;
+    toggle.setAttribute("aria-label", "Show in my picker");
+
+    var main = document.createElement("div");
+    main.className = "modelmain";
+    var nm = document.createElement("div");
+    nm.className = "mname";
+    nm.textContent = m.name || m.ref;
+    var meta = document.createElement("div");
+    meta.className = "mmeta";
+    meta.textContent = m.ref + (cap(m) ? "  ·  " + cap(m) : "");
+    main.appendChild(nm);
+    main.appendChild(meta);
+
+    var saved = document.createElement("span");
+    saved.className = "saved";
+    saved.textContent = "saved";
+
+    if (m.yours) {
+      var tag = document.createElement("span");
+      tag.className = "conntag";
+      tag.textContent = "your account";
+      tag.title = "Reached with an account you connected, and billed to it";
+      main.appendChild(tag);
     }
-    el.appendChild(text);
-    el.appendChild(btn);
+
+    toggle.addEventListener("change", async function () {
+      var res = await fetch("/api/models/mine", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ref: m.ref, enabled: toggle.checked }),
+      }).catch(function () {
+        return { ok: false };
+      });
+      if (res.ok) {
+        m.enabled = toggle.checked;
+        row.classList.toggle("off", !m.enabled);
+        flash(saved, true);
+      } else {
+        toggle.checked = !toggle.checked;
+        flash(saved, false);
+      }
+    });
+
+    row.appendChild(toggle);
+    row.appendChild(main);
+    row.appendChild(saved);
+    return row;
   }
+
+  async function loadMyModels() {
+    var host = byId("myModels");
+    if (!host) return;
+    var models = [];
+    try {
+      models = ((await (await fetch("/api/models/mine")).json()) || {}).models || [];
+    } catch (_) {}
+    host.innerHTML = "";
+    if (!models.length) {
+      host.innerHTML =
+        '<p class="lede">No models available to you yet. Connect an account, or ask whoever runs this instance.</p>';
+      return;
+    }
+    var list = document.createElement("div");
+    list.className = "modellist";
+    models.forEach(function (m) {
+      list.appendChild(myModelRow(m));
+    });
+    host.appendChild(list);
+  }
+
+  // ---- lard (memory) ----
   async function loadLard() {
     var tabBtn = root.querySelector('.settab[data-tab="memory"]');
     var inspector = byId("lardInspector");
@@ -802,12 +861,13 @@ export function mount(root, _params, ctx) {
       enabled = !!j.enabled;
       connected = !!j.connected;
     } catch (_) {}
-    if (tabBtn) tabBtn.hidden = !enabled;
     if (!enabled) {
-      if (currentTab() === "memory") selectTab("models");
+      if (tabBtn) tabBtn.hidden = true;
+      if (currentTab() === "memory") selectTab("mine");
       return;
     }
-    renderLard(byId("lardStatus"), connected);
+    // The tab is only worth showing once there is something in it to read.
+    if (tabBtn) tabBtn.hidden = !connected;
     inspector.hidden = !connected;
     if (connected) {
       byId("lardViewer").innerHTML = '<p class="lardhint">Select a subject to read or edit it.</p>';
@@ -1078,10 +1138,21 @@ export function mount(root, _params, ctx) {
 
   // ---- boot the view (auth + sidebar are already up in the shell) ----
   setupTabs();
+  loadMyModels();
+
+  // Connections are the same list the standalone page shows, mounted here so
+  // one page holds everything a person adjusts about themselves.
+  var connections = null;
+  import("./connections.js").then(function (mod) {
+    var host = byId("connectionsHost");
+    if (host) connections = mod.mountList(host);
+  });
+
   // Roles first: the model rows draw a checkbox per role, so they need the list
   // before they render.
   loadRoles();
   if (location.hash === "#memory") selectTab("memory");
+  if (location.hash === "#connections") selectTab("connections");
   if (location.hash === "#people") selectTab("people");
   loadLard();
   // Models and preferences together: a role picker lists enabled models, so
@@ -1110,6 +1181,7 @@ export function mount(root, _params, ctx) {
 
   return {
     destroy: function () {
+      if (connections) connections.destroy();
       document.removeEventListener("mousedown", onDocMousedown);
       document.removeEventListener("dragover", onDocDragover);
       document.removeEventListener("drop", onDocDrop);

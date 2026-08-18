@@ -455,6 +455,17 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions (expires_at);
 
+-- Models a user has switched OFF for themselves. Exceptions, not a whitelist:
+-- absence means shown, so a model the operator adds (or one that arrives with
+-- an account the user connects) turns up without anybody opting in to it, and
+-- nobody's picker starts empty.
+CREATE TABLE IF NOT EXISTS user_models (
+  sub        TEXT NOT NULL,
+  model_ref  TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (sub, model_ref)
+);
+
 -- The role the identity provider last reported for a user, recorded at every
 -- sign-in. Durable rather than session-scoped because a queued job outlives the
 -- request that enqueued it — and often the session too — and the run still has
@@ -1414,6 +1425,30 @@ export class Store {
       role: string | null;
     } | null;
     return row?.role ?? undefined;
+  }
+
+  // ---- per-user model choices ---------------------------------------------
+
+  /** Refs this user has hidden from their own picker. */
+  hiddenModels(sub: string): Set<string> {
+    const rows = this.db
+      .query("SELECT model_ref FROM user_models WHERE sub = ?")
+      .all(sub) as Array<{ model_ref: string }>;
+    return new Set(rows.map((r) => r.model_ref));
+  }
+
+  /** Show or hide one model for one user. Showing deletes the exception. */
+  setModelHidden(sub: string, ref: string, hidden: boolean): void {
+    if (hidden) {
+      this.db
+        .query(
+          `INSERT INTO user_models (sub, model_ref, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT(sub, model_ref) DO UPDATE SET updated_at = excluded.updated_at`,
+        )
+        .run(sub, ref, Date.now());
+      return;
+    }
+    this.db.query("DELETE FROM user_models WHERE sub = ? AND model_ref = ?").run(sub, ref);
   }
 
   /** Everyone kloe has seen sign in, for the admin view that hands roles out. */

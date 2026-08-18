@@ -3453,16 +3453,6 @@ import { mountSidebar } from "./sidebar.js";
         },
       };
     }
-    if (u.pathname === "/connections") {
-      return {
-        kind: "view",
-        nav: "connections",
-        params: {},
-        load: function () {
-          return import("./views/connections.js");
-        },
-      };
-    }
     if (u.pathname === "/settings") {
       return {
         kind: "view",

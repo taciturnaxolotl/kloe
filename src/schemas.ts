@@ -94,6 +94,13 @@ export const SignOutBody = v.object({
 });
 export type SignOutBody = v.InferOutput<typeof SignOutBody>;
 
+/** PATCH /api/models/mine — show or hide one model in your own picker. */
+export const MyModelBody = v.object({
+  ref: v.pipe(v.string(), v.minLength(1)),
+  enabled: v.boolean(),
+});
+export type MyModelBody = v.InferOutput<typeof MyModelBody>;
+
 export const ModelPatchBody = v.object({
   ref: v.pipe(v.string(), v.minLength(1)),
   visible: v.optional(v.boolean()),

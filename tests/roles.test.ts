@@ -426,3 +426,85 @@ test("signing someone out ends their sessions, and not your own", async () => {
   const self = as(store, OWNER);
   expect((await signOut(OWNER, self)).status).toBe(422);
 });
+
+// ---- your own model list ---------------------------------------------------
+// Two layers: the operator decides what this instance offers your role, and you
+// decide which of those you want to look at.
+
+test("hiding a model is personal, and stored as an exception", async () => {
+  configure([OWNER]);
+  const { base, store } = freshApp();
+  for (const ref of ["acme/cheap", "acme/spendy"]) {
+    store.setModelSetting({
+      ref,
+      visible: true,
+      allowedRoles: ["*"],
+      displayName: null,
+      sortOrder: 0,
+    });
+  }
+  const owner = as(store, OWNER);
+  const guest = as(store, GUEST);
+
+  const picker = async (who: { cookie: string }) =>
+    ((await (await fetch(`${base}/api/models/chat`, { headers: who })).json()) as any).models.map(
+      (m: any) => m.ref,
+    );
+
+  // Nobody has chosen anything yet, so everybody sees everything: an empty
+  // picker for a new user would be a worse default than a full one.
+  expect(await picker(owner)).toEqual(["acme/cheap", "acme/spendy"]);
+
+  const res = await fetch(`${base}/api/models/mine`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", ...owner },
+    body: JSON.stringify({ ref: "acme/spendy", enabled: false }),
+  });
+  expect(res.status).toBe(200);
+
+  expect(await picker(owner)).toEqual(["acme/cheap"]);
+  // …and it is nobody else's business.
+  expect(await picker(guest)).toEqual(["acme/cheap", "acme/spendy"]);
+
+  // Turning it back on removes the exception rather than recording a second one.
+  await fetch(`${base}/api/models/mine`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", ...owner },
+    body: JSON.stringify({ ref: "acme/spendy", enabled: true }),
+  });
+  expect(store.hiddenModels(OWNER).size).toBe(0);
+});
+
+test("your list is what you can reach, and you cannot hide what you cannot", async () => {
+  configure([OWNER]);
+  const { base, store } = freshApp();
+  store.setModelSetting({
+    ref: "acme/cheap",
+    visible: true,
+    allowedRoles: ["*"],
+    displayName: null,
+    sortOrder: 0,
+  });
+  store.setModelSetting({
+    ref: "acme/spendy",
+    visible: true,
+    allowedRoles: [],
+    displayName: null,
+    sortOrder: 1,
+  });
+  const guest = as(store, GUEST);
+
+  const mine = ((await (await fetch(`${base}/api/models/mine`, { headers: guest })).json()) as any)
+    .models;
+  expect(mine.map((m: any) => m.ref)).toEqual(["acme/cheap"]);
+  expect(mine[0].enabled).toBe(true);
+
+  // An exception for a model you cannot use would be a row that means nothing.
+  const res = await fetch(`${base}/api/models/mine`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", ...guest },
+    body: JSON.stringify({ ref: "acme/spendy", enabled: false }),
+  });
+  expect(res.status).toBe(403);
+  expect(store.hiddenModels(GUEST).size).toBe(0);
+});

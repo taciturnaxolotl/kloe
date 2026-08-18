@@ -46,6 +46,7 @@ import { flowFor } from "./oauthflows";
 import {
   CredentialBody,
   ModelPatchBody,
+  MyModelBody,
   PrefsPatchBody,
   ProjectAssignBody,
   ProjectCreateBody,
@@ -316,6 +317,16 @@ function offeredTo(allowedRoles: string[], role: Role): boolean {
   return allowedRoles.includes("*") || allowedRoles.includes(role);
 }
 
+/**
+ * Whose settings a request is touching. With auth off there is one user and
+ * `LOCAL_SUB` is them; the two must agree, or a preference gets written under
+ * one name and read under another (which is exactly what happened to the
+ * per-user model list).
+ */
+function whoami(req: Request, store: Store): string {
+  return getSession(req, store)?.sub ?? LOCAL_SUB;
+}
+
 /** 403 unless the caller may do `capability`. */
 function require(req: Request, store: Store, capability: Capability): Response | null {
   if (can(req, store, capability)) return null;
@@ -347,7 +358,11 @@ function adminModels(store: Store) {
  * The curated subset shown in the chat picker: opt-in (visible only), with
  * displayName applied and ordered by sortOrder then name.
  */
-async function chatModelsFor(store: Store, role: Role, sub: string | undefined) {
+/**
+ * Everything this person could use: what curation offers their role, plus
+ * whatever their own connected accounts reach.
+ */
+async function availableModels(store: Store, role: Role, sub: string | undefined) {
   const curated = chatModels(store, role);
   const mine = await userModelRefs(store, sub);
   if (mine.length === 0) return curated;
@@ -358,6 +373,13 @@ async function chatModelsFor(store: Store, role: Role, sub: string | undefined) 
     .filter((ref) => !seen.has(ref))
     .map((ref) => ({ ...describeRef(ref), sortOrder: Number.MAX_SAFE_INTEGER, yours: true }));
   return [...curated, ...extra.sort((a, b) => a.name.localeCompare(b.name))];
+}
+
+/** The picker: what they could use, minus what they switched off for themselves. */
+async function chatModelsFor(store: Store, role: Role, sub: string) {
+  const available = await availableModels(store, role, sub);
+  const hidden = store.hiddenModels(sub);
+  return available.filter((m) => !hidden.has(m.ref));
 }
 
 function chatModels(store: Store, role: Role) {
@@ -1120,11 +1142,44 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       ),
     },
 
+    /**
+     * Your own model list: everything available to you, and whether it shows in
+     * your picker. Two layers meet here — the operator decides what this
+     * instance offers your role, you decide which of those you want to see —
+     * and the second is nobody else's business, which is why it needs no role.
+     */
+    "/api/models/mine": {
+      GET: async (req: Bun.BunRequest<"/api/models/mine">) => {
+        const sub = whoami(req, store);
+        const available = await availableModels(store, requestRole(req, store), sub);
+        const hidden = store.hiddenModels(sub);
+        return Response.json({
+          models: available.map((m) => ({ ...m, enabled: !hidden.has(m.ref) })),
+        });
+      },
+      PATCH: withBody(MyModelBody, async (data, req: Bun.BunRequest<"/api/models/mine">) => {
+        const sub = whoami(req, store);
+        // You may only hide what you could otherwise use: an exception for a
+        // model you cannot reach is a row that means nothing.
+        const available = await availableModels(store, requestRole(req, store), sub);
+        if (!available.some((m) => m.ref === data.ref)) {
+          return Response.json(
+            { error: `model "${data.ref}" is not available to you` },
+            {
+              status: 403,
+            },
+          );
+        }
+        store.setModelHidden(sub, data.ref, !data.enabled);
+        return Response.json({ ok: true });
+      }),
+    },
+
     // Chat view: the curated, opt-in subset, ordered for the picker.
     "/api/models/chat": {
       GET: async (req: Bun.BunRequest<"/api/models/chat">) =>
         Response.json({
-          models: await chatModelsFor(store, requestRole(req, store), getSession(req, store)?.sub),
+          models: await chatModelsFor(store, requestRole(req, store), whoami(req, store)),
         }),
     },
 

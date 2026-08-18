@@ -1,9 +1,10 @@
 /*
  * Connections: the accounts this user has linked, and the ones they could.
  *
- * Its own page rather than a settings tab, because it is the one settings
- * surface that belongs to whoever is looking at it. Settings is the operator's
- * (curation, roles, research); this is yours, guest or owner alike.
+ * Mounted as a settings tab (`mountList`), so one page holds everything a
+ * person adjusts. It stays a module of its own because it answers a different
+ * question from the rest of settings — whose account pays — and because of the
+ * registry below.
  *
  * ADDING A CONNECTION: write a source and put it in SOURCES. A source fetches
  * its own state and returns plain row descriptors; everything after that —
@@ -27,18 +28,6 @@
  * every source.
  */
 import { logoFor } from "../logos.js";
-
-var TEMPLATE =
-  '<header class="head chatshead">' +
-  '<button class="icon menu" data-menu type="button" aria-label="Toggle sidebar" title="Toggle sidebar">' +
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>' +
-  "</button>" +
-  '<span class="title">Connections</span>' +
-  "</header>" +
-  '<div class="chatscroll"><div class="setpage">' +
-  '<p class="lede">Link an account and your chats use it instead of this instance’s. Whatever your account can reach turns up where you pick a model.</p>' +
-  "<div data-sections>Loading…</div>" +
-  "</div></div>";
 
 async function getJSON(url, opts) {
   var res = await fetch(url, opts);
@@ -377,11 +366,12 @@ function renderRow(row, ctx) {
   return el;
 }
 
-export function mount(root, _params, ctx) {
-  root.innerHTML = TEMPLATE;
-  var menu = root.querySelector("[data-menu]");
-  if (menu) menu.addEventListener("click", ctx.toggleRail);
-  var host = root.querySelector("[data-sections]");
+/**
+ * The list on its own, for a host that brings its own chrome — Settings mounts
+ * it as a tab, and the standalone page below is the same list under a header.
+ * Returns { destroy } so whoever mounted it can stop the polling.
+ */
+export function mountList(host) {
   var timers = [];
   var alive = true;
 
