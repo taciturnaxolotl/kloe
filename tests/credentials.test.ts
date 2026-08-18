@@ -9,10 +9,9 @@ import {
   oauthFlow,
   saveApiKey,
   saveOAuthGrant,
-  saveTokenBundle,
 } from "../src/credentials";
 import { exchangeToken, pollDeviceAuth, startDeviceAuth } from "../src/hyperauth";
-import { flowNames } from "../src/oauthflows";
+import { flowFor, flowNames } from "../src/oauthflows";
 import {
   BlendSearchProvider,
   CeramicSearchProvider,
@@ -459,70 +458,86 @@ test("an engine you connected yourself is yours to use, whatever the role allows
 
 // ---- codex: a credential a local tool already holds ------------------------
 
-test("a codex auth file is read into a grant, with the account id beside it", () => {
-  configure();
-  const store = memStore();
-  // Shape of ~/.codex/auth.json after `codex login`, tokens stubbed.
-  const authFile = JSON.stringify({
-    auth_mode: "chatgpt",
-    OPENAI_API_KEY: null,
-    tokens: { id_token: "x", access_token: "at-1", refresh_token: "rt-1", account_id: "acc-1" },
-  });
-  saveTokenBundle(store, SUB, "inference", "codex", authFile);
-
-  const row = store.getCredentialRow(SUB, "inference", "codex")!;
-  expect(decryptSecret(row.secret)).toBe("at-1");
-  expect(decryptSecret(row.refresh_token!)).toBe("rt-1");
-  // The account id rides along unencrypted: it is a header, not a secret, and
-  // the endpoint answers 401 without it however good the token is.
-  expect(JSON.parse(row.meta!)).toEqual({ accountId: "acc-1" });
-  expect(row.label).toBe("ChatGPT account");
-});
-
-test("a codex file that isn't one says what to do about it", () => {
-  configure();
-  const store = memStore();
-  expect(() => saveTokenBundle(store, SUB, "inference", "codex", "not json")).toThrow(/not JSON/);
-  expect(() =>
-    saveTokenBundle(store, SUB, "inference", "codex", JSON.stringify({ tokens: {} })),
-  ).toThrow(/codex login/);
-  // An API-key file is a real thing to have, and belongs in a different row.
-  expect(() =>
-    saveTokenBundle(
-      store,
-      SUB,
-      "inference",
-      "codex",
-      JSON.stringify({ OPENAI_API_KEY: "sk-1", tokens: {} }),
-    ),
-  ).toThrow(/API key/);
-});
-
-test("codex is offered everywhere, and refreshes itself", async () => {
+test("codex is offered everywhere, signs in by device code, and refreshes itself", async () => {
   configure();
   const codex = connectableProviders().find((c) => c.id === "codex");
   // No deployment configures it: the account is the user's and so is the bill.
-  expect(codex?.paste?.flow).toBe("codex");
-  expect(codex?.byok).toBe(false); // one way in, not two boxes for one job
+  expect(codex?.oauth).toEqual({ flow: "codex", baseUrl: "https://auth.openai.com" });
+  expect(codex?.byok).toBe(false); // a sign-in and a key box would be two doors
   expect(codex?.models?.length).toBeGreaterThan(0);
 
+  const flow = flowFor("codex")!;
+
+  // 1. a code to type in, and where to type it
+  const started = await flow.start!(
+    "",
+    "kloe",
+    (async () =>
+      new Response(
+        JSON.stringify({ device_auth_id: "da-1", user_code: "ABCD-EFGHI", interval: "5" }),
+        { status: 200 },
+      )) as unknown as typeof fetch,
+  );
+  expect(started.userCode).toBe("ABCD-EFGHI");
+  expect(started.verificationUrl).toBe("https://auth.openai.com/codex/device");
+
+  // 2. pending is a 403 here, not a body with an error in it
+  const pending = (async () => new Response("", { status: 403 })) as unknown as typeof fetch;
+  expect(await flow.poll!("", started.deviceCode, pending)).toEqual({ status: "pending" });
+
+  // 3. approval yields a code plus the verifier to spend it with, and the poll
+  //    finishes the exchange itself
+  const idToken = [
+    "x",
+    Buffer.from(
+      JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acc-9" } }),
+    ).toString("base64url"),
+    "y",
+  ].join(".");
+  const calls: string[] = [];
+  const approving = (async (url: string) => {
+    calls.push(new URL(url).pathname);
+    if (url.endsWith("/deviceauth/token")) {
+      return new Response(
+        JSON.stringify({ authorization_code: "ac-1", code_verifier: "cv-1", code_challenge: "cc" }),
+        { status: 200 },
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        access_token: "at-1",
+        refresh_token: "rt-1",
+        id_token: idToken,
+        expires_in: 3600,
+      }),
+      { status: 200 },
+    );
+  }) as unknown as typeof fetch;
+
+  const granted = await flow.poll!("", started.deviceCode, approving);
+  expect(calls).toEqual(["/api/accounts/deviceauth/token", "/oauth/token"]);
+  expect(granted).toMatchObject({
+    status: "granted",
+    grant: {
+      tokens: { accessToken: "at-1", refreshToken: "rt-1" },
+      // Without this the endpoint answers 401 to a perfectly good token.
+      meta: { accountId: "acc-9" },
+    },
+  });
+});
+
+test("a codex grant refreshes on the public client id alone", async () => {
+  configure();
   const store = memStore();
-  saveTokenBundle(
+  saveOAuthGrant(
     store,
     SUB,
     "inference",
     "codex",
-    JSON.stringify({
-      auth_mode: "chatgpt",
-      tokens: { access_token: "at-old", refresh_token: "rt-old", account_id: "acc-1" },
-    }),
+    { accessToken: "at-old", refreshToken: "rt-old", expiresAt: Date.now() - 1000 },
+    "ChatGPT account",
+    { accountId: "acc-9" },
   );
-  // The pasted access token was minted long ago; kloe refreshes without being
-  // able to sign in, because refreshing needs only the public client id.
-  store.setCredentialRow({
-    ...store.getCredentialRow(SUB, "inference", "codex")!,
-    expires_at: Date.now() - 1000,
-  });
 
   let sent: Record<string, string> = {};
   const fetchImpl = (async (_url: string, init: RequestInit) => {
@@ -533,10 +548,10 @@ test("codex is offered everywhere, and refreshes itself", async () => {
   }) as unknown as typeof fetch;
 
   const got = await credentialFor(store, SUB, "inference", "codex", fetchImpl);
-  expect(got).toMatchObject({ secret: "at-new", meta: { accountId: "acc-1" } });
+  expect(got).toMatchObject({ secret: "at-new", meta: { accountId: "acc-9" } });
   expect(sent.grant_type).toBe("refresh_token");
-  // OpenAI need not rotate it; keeping the old one is what makes the
-  // connection last rather than expire on the next refresh.
+  // OpenAI need not rotate it; keeping the old one is what makes a connection
+  // last rather than expire on the next refresh.
   expect(decryptSecret(store.getCredentialRow(SUB, "inference", "codex")!.refresh_token!)).toBe(
     "rt-old",
   );

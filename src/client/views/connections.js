@@ -143,31 +143,7 @@ function providerRow(p, conn) {
       },
     });
   }
-  if (p.paste) {
-    // A whole credential file, not a key: a textarea, and a line saying where
-    // to get it, since nobody guesses "run codex login" from a placeholder.
-    row.paste = {
-      placeholder: p.paste.label,
-      help: p.paste.help,
-      onSubmit: async function (value, ctx) {
-        var res = await fetch("/api/credentials", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ service: p.service, providerId: p.id, apiKey: value }),
-        }).catch(function () {
-          return { ok: false };
-        });
-        if (res.ok) {
-          ctx.reload();
-          return null;
-        }
-        var body = await res.json().catch(function () {
-          return {};
-        });
-        return body.error || "That was refused.";
-      },
-    };
-  } else if (p.byok) {
+  if (p.byok) {
     row.input = {
       placeholder: "Paste an API key",
       onSubmit: async function (value, ctx) {
@@ -355,34 +331,6 @@ function renderRow(row, ctx) {
       el.classList.remove("connecting");
     },
   };
-
-  if (row.paste) {
-    var box = document.createElement("textarea");
-    box.className = "connpaste";
-    box.rows = 2;
-    box.placeholder = row.paste.placeholder;
-    box.spellcheck = false;
-    var help = document.createElement("div");
-    help.className = "connhelp";
-    help.textContent = row.paste.help;
-    var wrap = document.createElement("div");
-    wrap.className = "connpastewrap";
-    wrap.appendChild(box);
-    wrap.appendChild(help);
-    box.addEventListener("change", async function () {
-      var value = box.value.trim();
-      if (!value) return;
-      box.disabled = true;
-      var err = await row.paste.onSubmit(value, rowCtx);
-      box.value = "";
-      box.disabled = false;
-      if (err) {
-        help.textContent = err;
-        help.classList.add("bad");
-      }
-    });
-    el.appendChild(wrap);
-  }
 
   if (row.input) {
     var input = document.createElement("input");

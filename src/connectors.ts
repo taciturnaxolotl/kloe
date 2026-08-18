@@ -37,11 +37,6 @@ export interface Connector {
   byok: boolean;
   /** The device flow a user can run, when the provider offers one. */
   oauth?: OAuthFlowRef;
-  /**
-   * Connect by pasting a credential a local tool already holds, for a provider
-   * whose sign-in a server cannot run on the user's behalf.
-   */
-  paste?: { flow: string; label: string; help: string };
   /** Models nothing enumerates, carried by the provider's own entry. */
   models?: Array<{ id: string; name: string }>;
   /** Where the provider's API lives, for a per-user client. */
@@ -102,17 +97,13 @@ function inferenceConnectors(): Connector[] {
   for (const p of WELL_KNOWN) {
     if (enabled.has(p.id)) continue;
     enabled.add(p.id);
-    const paste = p.paste && flowFor(p.paste.flow) ? p.paste : undefined;
+    const oauth = p.oauth && flowFor(p.oauth.flow) ? p.oauth : undefined;
     out.push({
       service: p.service,
       id: p.id,
       label: p.label,
-      // A provider you connect by pasting a whole credential file has no
-      // separate "here is my API key" path; offering both would be two boxes
-      // for one job.
-      byok: !paste,
-      oauth: p.oauth && flowFor(p.oauth.flow) ? p.oauth : undefined,
-      paste,
+      byok: p.byok !== false,
+      oauth,
       models: p.models,
       endpoint: p.apiEndpoint,
       type: p.type,

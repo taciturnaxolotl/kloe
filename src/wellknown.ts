@@ -25,14 +25,12 @@ export interface WellKnownProvider {
   /** A device flow a user can run here, for providers that offer one. */
   oauth?: { flow: string; baseUrl: string };
   /**
-   * Connect by pasting a credential a tool on your own machine already holds.
-   *
-   * For providers whose OAuth client only redirects to localhost — a server
-   * cannot be the redirect target, and registering a second client is not on
-   * offer — so the honest path is to let the local tool do the sign-in and
-   * hand kloe what it got.
+   * Whether a pasted API key is also a way in. True for most: a key and a
+   * sign-in are different credentials and people hold one or the other. False
+   * where the provider has no key to hold — a ChatGPT subscription is reached
+   * by signing in, and an OpenAI API key is a different provider entirely.
    */
-  paste?: { flow: string; label: string; help: string };
+  byok?: boolean;
   /**
    * Models this provider serves that nothing enumerates. Discovery is the
    * better answer where an endpoint exists; this is for the ones where it
@@ -50,20 +48,17 @@ export const WELL_KNOWN: WellKnownProvider[] = [
     oauth: { flow: "hyper-device", baseUrl: "https://hyper.charm.land" },
   },
   {
-    // A ChatGPT subscription, through the endpoint the Codex CLI uses. The
-    // sign-in is OpenAI's, and its client redirects only to localhost:1455 —
-    // so kloe cannot run it, and instead takes what `codex login` already
-    // stored. It refreshes from there on its own.
+    // A ChatGPT subscription, through the endpoint the Codex CLI uses, signed
+    // into with the device flow `codex login --device-auth` runs. None of it is
+    // documented — the issuer's discovery advertises no device endpoint — but
+    // the CLI is open source and the endpoints answer.
     service: "inference",
     id: "codex",
     label: "ChatGPT (Codex)",
     type: "openai-responses",
     apiEndpoint: "https://chatgpt.com/backend-api/codex",
-    paste: {
-      flow: "codex",
-      label: "Paste ~/.codex/auth.json",
-      help: "Run `codex login` on your own machine, then paste the contents of ~/.codex/auth.json.",
-    },
+    oauth: { flow: "codex", baseUrl: "https://auth.openai.com" },
+    byok: false,
     // This endpoint enumerates nothing, and what a ChatGPT plan may run is not
     // what an API key may run: asking for a model outside the list is a 400
     // saying so.

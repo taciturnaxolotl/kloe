@@ -27,7 +27,6 @@ import {
   oauthFlow,
   saveApiKey,
   saveOAuthGrant,
-  saveTokenBundle,
 } from "./credentials";
 import { Event, type EventData, type EventName, parseEventId } from "./events";
 import { getExecutor } from "./executor";
@@ -972,22 +971,15 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         }
         const service = data.service;
         const connector = findConnector(service, data.providerId);
-        if (!connector || !(connector.byok || connector.paste)) {
+        if (!connector?.byok) {
           return Response.json(
             { error: `"${data.providerId}" does not take a user credential here` },
             { status: 422 },
           );
         }
         try {
-          // A provider connected by pasting a whole credential file parses it
-          // through its own flow; one connected by key just stores the key.
-          if (connector.paste) {
-            saveTokenBundle(store, sub, service, data.providerId, data.apiKey);
-          } else {
-            saveApiKey(store, sub, service, data.providerId, data.apiKey);
-          }
+          saveApiKey(store, sub, service, data.providerId, data.apiKey);
         } catch (e) {
-          // The flow's message is written for whoever pasted it.
           return Response.json({ error: (e as Error).message }, { status: 422 });
         }
         forgetUserModels(sub, data.providerId);
@@ -1044,8 +1036,20 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         try {
           const poll = await flow.poll(ref.baseUrl, req.params.deviceCode);
           if (poll.status !== "granted") return Response.json({ status: poll.status });
-          const pair = await flow.exchange(ref.baseUrl, poll.grant.refreshToken);
-          saveOAuthGrant(store, sub, service, providerId, pair, poll.grant.teamName);
+          // A flow whose poll already finished the exchange hands the pair
+          // over; one that hands back a one-time refresh token has it traded
+          // here, before anything else can spend it.
+          const pair =
+            poll.grant.tokens ?? (await flow.exchange(ref.baseUrl, poll.grant.refreshToken));
+          saveOAuthGrant(
+            store,
+            sub,
+            service,
+            providerId,
+            pair,
+            poll.grant.teamName,
+            poll.grant.meta,
+          );
           forgetUserModels(sub, providerId);
           return Response.json({
             status: "connected",

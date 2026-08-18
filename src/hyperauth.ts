@@ -55,6 +55,17 @@ export interface DeviceGrant {
   teamName?: string;
   teamId?: string;
   userId?: string;
+  /**
+   * The finished pair, for a flow whose poll already did the exchange.
+   *
+   * Hyper hands back a one-time refresh token and expects the caller to trade
+   * it; OpenAI's device flow hands back an authorization code that only makes
+   * sense with the verifier its own server generated, so that trade happens
+   * inside the poll. When this is set the caller stores it and trades nothing.
+   */
+  tokens?: TokenPair;
+  /** Non-secret bits the provider needs later, e.g. an account id. */
+  meta?: Record<string, string>;
 }
 
 /** Where a device authorization has got to. `pending` is the normal case. */

@@ -73,7 +73,7 @@ export function oauthFlow(service: Service, providerId: string): Connector["oaut
 
 /** Everything a user could connect an account to, for the settings page. */
 export function connectableProviders(): Connector[] {
-  return listConnectors().filter((c) => c.byok || c.oauth || c.paste);
+  return listConnectors().filter((c) => c.byok || c.oauth);
 }
 
 export function saveApiKey(
@@ -97,26 +97,6 @@ export function saveApiKey(
     label: hint(apiKey),
     meta: null,
   });
-}
-
-/**
- * Store a credential a user pasted from a tool on their own machine.
- *
- * The flow parses it, so what counts as valid — and what to say when it isn't —
- * belongs to whoever knows that provider, not here.
- */
-export function saveTokenBundle(
-  store: Store,
-  sub: string,
-  service: Service,
-  providerId: string,
-  pasted: string,
-): void {
-  const connector = findConnector(service, providerId);
-  const flow = connector?.paste && flowFor(connector.paste.flow);
-  if (!flow?.parse) throw new Error(`"${providerId}" is not connected by pasting a credential`);
-  const parsed = flow.parse(pasted);
-  saveOAuthGrant(store, sub, service, providerId, parsed.pair, parsed.label, parsed.meta);
 }
 
 /** Store a fresh OAuth grant. Called with the pair an exchange just produced. */
@@ -233,8 +213,7 @@ async function refresh(
   fetchImpl: typeof fetch,
 ): Promise<string | undefined> {
   const connector = findConnector(cred.service, cred.providerId);
-  const named = connector?.oauth?.flow ?? connector?.paste?.flow;
-  const flow = named ? flowFor(named) : undefined;
+  const flow = connector?.oauth ? flowFor(connector.oauth.flow) : undefined;
   const baseUrl = connector?.oauth?.baseUrl ?? "";
   if (!flow || !cred.refreshToken) return undefined;
 
