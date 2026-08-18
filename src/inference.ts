@@ -5,7 +5,7 @@ import type { BlobStore } from "./blobs";
 import { type Catalog, type LoadCatalogOptions, loadCatalog } from "./catalog";
 import { credentialFor } from "./credentials";
 import type { TokenUsage } from "./events";
-import { contextToText, getContext, lardConnected, lardEnabled } from "./lard";
+import { contextToText, getContext, LOCAL_SUB, lardConnected, lardEnabled } from "./lard";
 import { buildSystemPrompt } from "./prompt";
 import { isEchoModel, ProviderRegistry } from "./providers";
 import { RateLimiter } from "./ratelimit";
@@ -227,7 +227,7 @@ function modelInfo(modelRef: string) {
  * instance's starting selection stands in.
  */
 function candidateModels(store: Store, sub?: string) {
-  const chosen = sub ? store.enabledModels(sub) : new Set(store.startingModels());
+  const chosen = new Set(store.listUserModels(sub ?? LOCAL_SUB).map((m) => m.ref));
   return getRegistry()
     .listModels()
     .filter((m) => chosen.has(m.ref));

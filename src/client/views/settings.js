@@ -35,22 +35,17 @@ var TEMPLATE =
   "</header>" +
   '<div class="chatscroll"><div class="setpage">' +
   '<div class="settabs" id="settabs" role="tablist">' +
-  '<button class="settab active" type="button" data-tab="mine" role="tab">Your models</button>' +
+  '<button class="settab active" type="button" data-tab="models" role="tab">Models</button>' +
   '<button class="settab" type="button" data-tab="connections" role="tab">Connections</button>' +
-  '<button class="settab" type="button" data-tab="models" role="tab" hidden>Curation</button>' +
   '<button class="settab" type="button" data-tab="research" role="tab" hidden>Research</button>' +
   '<button class="settab" type="button" data-tab="memory" role="tab" hidden>Memory</button>' +
   '<button class="settab" type="button" data-tab="people" role="tab" hidden>People</button>' +
   "</div>" +
-  '<section class="settabpanel" data-panel="mine">' +
-  '<p class="lede">Everything you can use, and whether it shows in your picker. Models this instance offers your role are here, along with anything your own connected accounts reach.</p>' +
-  '<div id="myModels">Loading…</div>' +
-  "</section>" +
   '<section class="settabpanel" data-panel="connections" hidden>' +
   '<div id="connectionsHost"></div>' +
   "</section>" +
-  '<section class="settabpanel" data-panel="models" hidden>' +
-  '<p class="lede">The starting selection: what someone gets in their picker before they curate their own. Turn models on, drag them to set the order everyone sees (⌘-click to move several at once), and give them display names. Which models a role may pick from at all is set in <code>kloe.json</code>.</p>' +
+  '<section class="settabpanel" data-panel="models">' +
+  '<p class="lede">Your picker. Turn models on, drag them into the order you want (⌘-click to move several at once), and rename any of them. Which models you can choose from is set in <code>kloe.json</code>; what you do with them is yours.</p>' +
   '<div id="content">Loading…</div>' +
   "</section>" +
   '<section class="settabpanel" data-panel="research" hidden>' +
@@ -153,7 +148,7 @@ export function mount(root, _params, ctx) {
     var body = { ref: ref };
     body[field] = value;
     try {
-      var res = await fetch("/api/models", {
+      var res = await fetch("/api/models/mine", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -169,7 +164,7 @@ export function mount(root, _params, ctx) {
 
   function modelCard(m, draggable) {
     var row = document.createElement("div");
-    row.className = "modelrow" + (m.startsOn ? "" : " off");
+    row.className = "modelrow" + (m.enabled ? "" : " off");
     row.dataset.ref = m.ref;
 
     if (draggable) {
@@ -188,9 +183,8 @@ export function mount(root, _params, ctx) {
     var toggle = document.createElement("input");
     toggle.type = "checkbox";
     toggle.className = "toggle";
-    toggle.checked = !!m.startsOn;
-    toggle.title = "Starts on for anyone who has not curated their own list";
-    toggle.setAttribute("aria-label", "In the starting selection");
+    toggle.checked = !!m.enabled;
+    toggle.setAttribute("aria-label", "Show in my picker");
 
     var main = document.createElement("div");
     main.className = "modelmain";
@@ -199,7 +193,8 @@ export function mount(root, _params, ctx) {
     nm.textContent = m.displayName || m.name;
     var meta = document.createElement("div");
     meta.className = "mmeta";
-    meta.textContent = m.ref + (cap(m) ? "  ·  " + cap(m) : "");
+    meta.textContent =
+      m.ref + (cap(m) ? "  ·  " + cap(m) : "") + (m.yours ? "  ·  your account" : "");
     main.appendChild(nm);
     main.appendChild(meta);
 
@@ -226,10 +221,10 @@ export function mount(root, _params, ctx) {
     if (!box) return;
     box.innerHTML = "";
     var enabled = allModels.filter(function (m) {
-      return m.startsOn;
+      return m.enabled;
     });
     if (!enabled.length) {
-      box.innerHTML = '<p class="lede">Put some models in the starting selection first.</p>';
+      box.innerHTML = '<p class="lede">Turn some models on first.</p>';
       return;
     }
     [
@@ -330,7 +325,7 @@ export function mount(root, _params, ctx) {
     // Enabled models: one ordered, draggable list (this order IS the picker order).
     var enabled = allModels
       .filter(function (m) {
-        return m.startsOn;
+        return m.enabled;
       })
       .sort(function (a, b) {
         return (a.sortOrder || 0) - (b.sortOrder || 0) || a.name.localeCompare(b.name);
@@ -345,7 +340,7 @@ export function mount(root, _params, ctx) {
     } else {
       var empty = document.createElement("div");
       empty.className = "modelempty";
-      empty.textContent = "Nothing starts on yet. Turn some on below.";
+      empty.textContent = "No models in your picker yet. Turn some on below.";
       list.appendChild(empty);
     }
     content.appendChild(list);
@@ -355,7 +350,7 @@ export function mount(root, _params, ctx) {
     var groups = Object.create(null);
     allModels
       .filter(function (m) {
-        return !m.startsOn;
+        return !m.enabled;
       })
       .forEach(function (m) {
         var p = providerOf(m.ref);
@@ -710,7 +705,7 @@ export function mount(root, _params, ctx) {
       people = j.users || [];
       if (j.provider) providerName = j.provider;
       // Reaching this endpoint at all is what proves the caller is an admin.
-      ["people", "models", "research"].forEach(function (name) {
+      ["people", "research"].forEach(function (name) {
         var t = root.querySelector('.settab[data-tab="' + name + '"]');
         if (t) t.hidden = false;
       });
@@ -718,88 +713,6 @@ export function mount(root, _params, ctx) {
     } catch (_) {
       if (tabBtn) tabBtn.hidden = true;
     }
-  }
-
-  // ---- your own models ----
-  // The second of two layers: the operator decides what this instance offers
-  // your role, and this decides which of those you want to look at. A row you
-  // switch off is stored as an exception, so a model added later just appears.
-  function myModelRow(m) {
-    var row = document.createElement("div");
-    row.className = "modelrow" + (m.enabled ? "" : " off");
-
-    var toggle = document.createElement("input");
-    toggle.type = "checkbox";
-    toggle.className = "toggle";
-    toggle.checked = !!m.enabled;
-    toggle.setAttribute("aria-label", "Show in my picker");
-
-    var main = document.createElement("div");
-    main.className = "modelmain";
-    var nm = document.createElement("div");
-    nm.className = "mname";
-    nm.textContent = m.name || m.ref;
-    var meta = document.createElement("div");
-    meta.className = "mmeta";
-    meta.textContent = m.ref + (cap(m) ? "  ·  " + cap(m) : "");
-    main.appendChild(nm);
-    main.appendChild(meta);
-
-    var saved = document.createElement("span");
-    saved.className = "saved";
-    saved.textContent = "saved";
-
-    if (m.yours) {
-      var tag = document.createElement("span");
-      tag.className = "conntag";
-      tag.textContent = "your account";
-      tag.title = "Reached with an account you connected, and billed to it";
-      main.appendChild(tag);
-    }
-
-    toggle.addEventListener("change", async function () {
-      var res = await fetch("/api/models/mine", {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ref: m.ref, enabled: toggle.checked }),
-      }).catch(function () {
-        return { ok: false };
-      });
-      if (res.ok) {
-        m.enabled = toggle.checked;
-        row.classList.toggle("off", !m.enabled);
-        flash(saved, true);
-      } else {
-        toggle.checked = !toggle.checked;
-        flash(saved, false);
-      }
-    });
-
-    row.appendChild(toggle);
-    row.appendChild(main);
-    row.appendChild(saved);
-    return row;
-  }
-
-  async function loadMyModels() {
-    var host = byId("myModels");
-    if (!host) return;
-    var models = [];
-    try {
-      models = ((await (await fetch("/api/models/mine")).json()) || {}).models || [];
-    } catch (_) {}
-    host.innerHTML = "";
-    if (!models.length) {
-      host.innerHTML =
-        '<p class="lede">No models available to you yet. Connect an account, or ask whoever runs this instance.</p>';
-      return;
-    }
-    var list = document.createElement("div");
-    list.className = "modellist";
-    models.forEach(function (m) {
-      list.appendChild(myModelRow(m));
-    });
-    host.appendChild(list);
   }
 
   // ---- lard (memory) ----
@@ -1090,7 +1003,6 @@ export function mount(root, _params, ctx) {
 
   // ---- boot the view (auth + sidebar are already up in the shell) ----
   setupTabs();
-  loadMyModels();
 
   // Connections are the same list the standalone page shows, mounted here so
   // one page holds everything a person adjusts about themselves.
@@ -1105,12 +1017,13 @@ export function mount(root, _params, ctx) {
   loadRoles();
   if (location.hash === "#memory") selectTab("memory");
   if (location.hash === "#connections") selectTab("connections");
+  if (location.hash === "#mine") selectTab("models");
   if (location.hash === "#people") selectTab("people");
   loadLard();
   // Models and preferences together: a role picker lists enabled models, so
   // rendering it needs both and rendering it twice would flicker.
   Promise.all([
-    fetch("/api/models").then(function (r) {
+    fetch("/api/models/mine").then(function (r) {
       return r.json();
     }),
     fetch("/api/prefs")

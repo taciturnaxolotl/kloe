@@ -94,21 +94,18 @@ export const SignOutBody = v.object({
 });
 export type SignOutBody = v.InferOutput<typeof SignOutBody>;
 
-/** PATCH /api/models/mine — show or hide one model in your own picker. */
+/**
+ * PATCH /api/models/mine — arrange your own picker: put a model in it or take
+ * it out, rename it, move it. Partial, so the drag handler can send an order
+ * without restating everything else.
+ */
 export const MyModelBody = v.object({
   ref: v.pipe(v.string(), v.minLength(1)),
-  enabled: v.boolean(),
-});
-export type MyModelBody = v.InferOutput<typeof MyModelBody>;
-
-export const ModelPatchBody = v.object({
-  ref: v.pipe(v.string(), v.minLength(1)),
-  /** Part of the starting selection a user inherits before curating their own. */
-  startsOn: v.optional(v.boolean()),
+  enabled: v.optional(v.boolean()),
   displayName: v.optional(v.nullable(v.string())),
   sortOrder: v.optional(v.number()),
 });
-export type ModelPatchBody = v.InferOutput<typeof ModelPatchBody>;
+export type MyModelBody = v.InferOutput<typeof MyModelBody>;
 
 /**
  * POST /api/conversations/:id/publications — put a document behind a public

@@ -257,32 +257,11 @@ function snippetAround(text: string, query: string): string {
  * `visible: false`) is hidden from the chat picker. `displayName` overrides the
  * catalog name; `sortOrder` controls ordering in the picker.
  */
+/** One model in somebody's picker: what they call it and where it sits. */
 export interface ModelSetting {
   ref: string;
-  /**
-   * Part of the instance's starting selection, inherited by a user who has
-   * curated nothing of their own. Not a gate: what a role may reach is
-   * `auth.roles[].models`, and what a person sees is their own list.
-   */
-  startsOn: boolean;
   displayName: string | null;
   sortOrder: number;
-}
-
-interface ModelSettingRow {
-  model_ref: string;
-  visible: number;
-  display_name: string | null;
-  sort_order: number;
-}
-
-function rowToSetting(r: ModelSettingRow): ModelSetting {
-  return {
-    ref: r.model_ref,
-    startsOn: r.visible === 1,
-    displayName: r.display_name,
-    sortOrder: r.sort_order,
-  };
 }
 
 const SCHEMA = `
@@ -440,15 +419,17 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions (expires_at);
 
--- Which models each person keeps in their own picker. Curation is personal:
--- an operator decides what a role may pick FROM (auth.roles[].models), and this
--- is what each person picked. Opt-in, like the instance-wide list it replaced,
--- because "every model this instance can reach" is a hundred rows nobody wants
--- in a dropdown.
+-- Each person's own picker: which models are in it, what they call them, and
+-- what order they sit in. Curation is personal — an operator says what a role
+-- may pick FROM (auth.roles[].models in kloe.json), and everything after that
+-- is the person's. Opt-in, because "every model this instance can reach" is a
+-- hundred rows nobody wants in a dropdown.
 CREATE TABLE IF NOT EXISTS user_models (
-  sub        TEXT NOT NULL,
-  model_ref  TEXT NOT NULL,
-  updated_at INTEGER NOT NULL,
+  sub          TEXT NOT NULL,
+  model_ref    TEXT NOT NULL,
+  display_name TEXT,
+  sort_order   INTEGER NOT NULL DEFAULT 0,
+  updated_at   INTEGER NOT NULL,
   PRIMARY KEY (sub, model_ref)
 );
 
@@ -598,9 +579,6 @@ export class Store {
   private requeueStmt: ReturnType<Database["prepare"]>;
   private finishStmt: ReturnType<Database["prepare"]>;
   private searchConversationsStmt: ReturnType<Database["prepare"]>;
-  private listSettingsStmt: ReturnType<Database["prepare"]>;
-  private getSettingStmt: ReturnType<Database["prepare"]>;
-  private upsertSettingStmt: ReturnType<Database["prepare"]>;
   private pendingQueueStmt: ReturnType<Database["prepare"]>;
   private hasPendingFlushStmt: ReturnType<Database["prepare"]>;
   private insertBlobStmt: ReturnType<Database["prepare"]>;
@@ -789,22 +767,6 @@ export class Store {
        )
        ORDER BY last_activity DESC
        LIMIT 100`,
-    );
-
-    this.listSettingsStmt = this.db.prepare(
-      `SELECT model_ref, visible, display_name, sort_order FROM model_settings`,
-    );
-    this.getSettingStmt = this.db.prepare(
-      `SELECT model_ref, visible, display_name, sort_order
-       FROM model_settings WHERE model_ref = ?`,
-    );
-    this.upsertSettingStmt = this.db.prepare(
-      `INSERT INTO model_settings (model_ref, visible, display_name, sort_order)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT(model_ref) DO UPDATE SET
-         visible = excluded.visible,
-         display_name = excluded.display_name,
-         sort_order = excluded.sort_order`,
     );
 
     // The steer queue, derived from the log: `queued-message` events that no
@@ -1321,20 +1283,6 @@ export class Store {
     return Object.fromEntries(rows.map((r) => [r.key, r.value]));
   }
 
-  /** All curation rows (models with no row are hidden by default). */
-  listModelSettings(): ModelSetting[] {
-    return (this.listSettingsStmt.all() as ModelSettingRow[]).map(rowToSetting);
-  }
-
-  getModelSetting(ref: string): ModelSetting | undefined {
-    const row = this.getSettingStmt.get(ref) as ModelSettingRow | null;
-    return row ? rowToSetting(row) : undefined;
-  }
-
-  setModelSetting(s: ModelSetting): void {
-    this.upsertSettingStmt.run(s.ref, s.startsOn ? 1 : 0, s.displayName, s.sortOrder);
-  }
-
   /**
    * Records blob metadata (mime/size) for a stored sha256. Idempotent: a
    * re-upload of the same content keeps the original row. The bytes are written
@@ -1402,58 +1350,90 @@ export class Store {
   // ---- per-user model choices ---------------------------------------------
 
   /**
-   * Refs this user keeps in their picker.
+   * One person's picker, in their order.
    *
-   * A user with no rows at all inherits the instance's starting selection —
-   * what `model_settings.visible` holds, which is what a single-user instance
-   * curated before curation was personal. Nobody's picker empties out because
-   * the concept moved.
+   * A person with no rows inherits what the instance curated back when curation
+   * was instance-wide (`model_settings`), so an upgrade doesn't empty anybody's
+   * picker. That legacy table has no UI any more and is read nowhere else.
    */
-  enabledModels(sub: string): Set<string> {
+  listUserModels(sub: string): ModelSetting[] {
     const rows = this.db
-      .query("SELECT model_ref FROM user_models WHERE sub = ?")
-      .all(sub) as Array<{ model_ref: string }>;
-    if (rows.length > 0) return new Set(rows.map((r) => r.model_ref));
-    return new Set(this.startingModels());
+      .query(
+        `SELECT model_ref, display_name, sort_order FROM user_models
+         WHERE sub = ? ORDER BY sort_order, model_ref`,
+      )
+      .all(sub) as Array<{ model_ref: string; display_name: string | null; sort_order: number }>;
+    if (rows.length === 0) return this.legacyCuration();
+    return rows.map((r) => ({
+      ref: r.model_ref,
+      displayName: r.display_name,
+      sortOrder: r.sort_order,
+    }));
   }
 
-  /** The instance's starting selection, inherited by a user who has chosen nothing. */
-  startingModels(): string[] {
+  /** What the instance curated before curation was personal. Seed only. */
+  private legacyCuration(): ModelSetting[] {
     const rows = this.db
-      .query("SELECT model_ref FROM model_settings WHERE visible = 1")
-      .all() as Array<{ model_ref: string }>;
-    return rows.map((r) => r.model_ref);
+      .query(
+        `SELECT model_ref, display_name, sort_order FROM model_settings
+         WHERE visible = 1 ORDER BY sort_order, model_ref`,
+      )
+      .all() as Array<{ model_ref: string; display_name: string | null; sort_order: number }>;
+    return rows.map((r) => ({
+      ref: r.model_ref,
+      displayName: r.display_name,
+      sortOrder: r.sort_order,
+    }));
   }
 
   /**
-   * Add or remove one model from one person's picker.
+   * Put a model in someone's picker, or take it out; also renames and reorders.
    *
-   * The first write materializes whatever they had inherited, so turning one
-   * model off does not read as "chose exactly nothing" and hand them back the
-   * starting selection on the next read.
+   * The first write materializes whatever they inherited, so removing one model
+   * does not read as "chose exactly nothing" and hand the legacy list back on
+   * the next read.
    */
-  setModelEnabled(sub: string, ref: string, enabled: boolean): void {
-    const existing = this.db
-      .query("SELECT COUNT(*) AS n FROM user_models WHERE sub = ?")
-      .get(sub) as { n: number };
-    if (existing.n === 0) {
-      const now = Date.now();
-      for (const inherited of this.startingModels()) {
+  setUserModel(
+    sub: string,
+    ref: string,
+    patch: { enabled?: boolean; displayName?: string | null; sortOrder?: number },
+  ): void {
+    const count = this.db.query("SELECT COUNT(*) AS n FROM user_models WHERE sub = ?").get(sub) as {
+      n: number;
+    };
+    if (count.n === 0) {
+      for (const seed of this.legacyCuration()) {
         this.db
-          .query("INSERT OR IGNORE INTO user_models (sub, model_ref, updated_at) VALUES (?, ?, ?)")
-          .run(sub, inherited, now);
+          .query(
+            `INSERT OR IGNORE INTO user_models (sub, model_ref, display_name, sort_order, updated_at)
+             VALUES (?, ?, ?, ?, ?)`,
+          )
+          .run(sub, seed.ref, seed.displayName, seed.sortOrder, Date.now());
       }
     }
-    if (enabled) {
-      this.db
-        .query(
-          `INSERT INTO user_models (sub, model_ref, updated_at) VALUES (?, ?, ?)
-           ON CONFLICT(sub, model_ref) DO UPDATE SET updated_at = excluded.updated_at`,
-        )
-        .run(sub, ref, Date.now());
+    if (patch.enabled === false) {
+      this.db.query("DELETE FROM user_models WHERE sub = ? AND model_ref = ?").run(sub, ref);
       return;
     }
-    this.db.query("DELETE FROM user_models WHERE sub = ? AND model_ref = ?").run(sub, ref);
+    const prev = this.db
+      .query("SELECT display_name, sort_order FROM user_models WHERE sub = ? AND model_ref = ?")
+      .get(sub, ref) as { display_name: string | null; sort_order: number } | null;
+    this.db
+      .query(
+        `INSERT INTO user_models (sub, model_ref, display_name, sort_order, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(sub, model_ref) DO UPDATE SET
+           display_name = excluded.display_name,
+           sort_order = excluded.sort_order,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        sub,
+        ref,
+        patch.displayName !== undefined ? patch.displayName : (prev?.display_name ?? null),
+        patch.sortOrder ?? prev?.sort_order ?? 0,
+        Date.now(),
+      );
   }
 
   /** Everyone kloe has seen sign in, for the admin view that hands roles out. */

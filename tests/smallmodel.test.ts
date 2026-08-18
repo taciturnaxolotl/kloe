@@ -71,8 +71,8 @@ function registry(): ProviderRegistry {
 
 function storeWith(...visible: string[]): Store {
   const store = new Store(":memory:");
-  for (const ref of visible)
-    store.setModelSetting({ ref, startsOn: true, sortOrder: 0, displayName: null });
+  // The utility models come from the run owner's own picker.
+  for (const ref of visible) store.setUserModel("local", ref, { enabled: true });
   return store;
 }
 

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ModelPatchBody, PromptBody } from "../src/schemas";
+import { MyModelBody, PromptBody } from "../src/schemas";
 import { validate, withBody } from "../src/validate";
 
 test("validate accepts a well-formed prompt body and infers the type", async () => {
@@ -26,16 +26,16 @@ test("validate rejects an empty model string (minLength)", async () => {
 });
 
 test("validate rejects a wrong-typed field", async () => {
-  const r = await validate(ModelPatchBody, { ref: "echo", startsOn: "yes" });
+  const r = await validate(MyModelBody, { ref: "echo", enabled: "yes" });
   expect(r.ok).toBe(false);
 });
 
-test("ModelPatchBody allows partial fields and an explicit null displayName", async () => {
-  const r = await validate(ModelPatchBody, { ref: "echo", displayName: null });
+test("MyModelBody allows partial fields and an explicit null displayName", async () => {
+  const r = await validate(MyModelBody, { ref: "echo", displayName: null });
   expect(r.ok).toBe(true);
   if (r.ok) {
     expect(r.value.displayName).toBeNull();
-    expect(r.value.startsOn).toBeUndefined();
+    expect(r.value.enabled).toBeUndefined();
   }
 });
 

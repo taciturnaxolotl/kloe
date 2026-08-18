@@ -165,7 +165,7 @@ test("the picker shows a role only what its bound allows", async () => {
   expect(await refs(OWNER)).toEqual([]);
 
   for (const ref of ["acme/cheap", "acme/spendy"]) {
-    store.setModelSetting({ ref, startsOn: true, displayName: null, sortOrder: 0 });
+    for (const who of [OWNER, GUEST]) store.setUserModel(who, ref, { enabled: true });
   }
   expect(await refs(OWNER)).toEqual(["acme/cheap", "acme/spendy"]);
   expect(await refs(GUEST)).toEqual(["acme/cheap"]);
@@ -174,12 +174,8 @@ test("the picker shows a role only what its bound allows", async () => {
 test("a guest naming a model the picker never offered is refused", async () => {
   configure([OWNER]);
   const { base, store } = freshApp();
-  store.setModelSetting({
-    ref: "acme/spendy",
-    startsOn: true,
-    displayName: null,
-    sortOrder: 0,
-  });
+  for (const who of [OWNER, GUEST])
+    store.setUserModel(who, "acme/spendy", { enabled: true, sortOrder: 0 });
 
   const prompt = (sub: string) =>
     fetch(`${base}/api/conversations/c1/prompt`, {
@@ -193,44 +189,29 @@ test("a guest naming a model the picker never offered is refused", async () => {
   expect((await prompt(OWNER)).status).toBe(202);
 });
 
-test("a guest cannot read or change curation", async () => {
+test("a guest cannot arrange a model their role may not reach", async () => {
   configure([OWNER]);
   const { base, store } = freshApp();
 
-  expect((await fetch(`${base}/api/models`, { headers: as(store, GUEST) })).status).toBe(403);
-
-  const patch = (sub: string) =>
-    fetch(`${base}/api/models`, {
+  const put = (sub: string, ref: string) =>
+    fetch(`${base}/api/models/mine`, {
       method: "PATCH",
       headers: { "content-type": "application/json", ...as(store, sub) },
-      body: JSON.stringify({ ref: "acme/cheap", startsOn: true }),
+      body: JSON.stringify({ ref, enabled: true }),
     });
-  expect((await patch(GUEST)).status).toBe(403);
-  expect(store.getModelSetting("acme/cheap")).toBeUndefined();
 
-  expect((await patch(OWNER)).status).toBe(200);
-  expect(store.getModelSetting("acme/cheap")?.startsOn).toBe(true);
+  // The fixture bounds guests to acme/cheap.
+  expect((await put(GUEST, "acme/spendy")).status).toBe(403);
+  expect((await put(GUEST, "acme/cheap")).status).toBe(200);
+  // The owner's bound is "*", so the same model is theirs to add.
+  expect((await put(OWNER, "acme/spendy")).status).toBe(200);
 });
 
-test("curation keeps a model's name and order, which are the instance's to set", async () => {
+test("a guest still cannot see the admin views", async () => {
   configure([OWNER]);
   const { base, store } = freshApp();
-  const patch = (body: unknown) =>
-    fetch(`${base}/api/models`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json", ...as(store, OWNER) },
-      body: JSON.stringify(body),
-    });
-
-  await patch({ ref: "acme/cheap", startsOn: true });
-  await patch({ ref: "acme/cheap", displayName: "Cheap One" });
-  // A patch that says nothing about the starting selection leaves it alone.
-  expect(store.getModelSetting("acme/cheap")).toEqual({
-    ref: "acme/cheap",
-    startsOn: true,
-    displayName: "Cheap One",
-    sortOrder: 0,
-  });
+  expect((await fetch(`${base}/api/roles`, { headers: as(store, GUEST) })).status).toBe(403);
+  expect((await fetch(`${base}/api/roles`, { headers: as(store, OWNER) })).status).toBe(200);
 });
 
 // ---- roles from the identity provider --------------------------------------
@@ -265,12 +246,8 @@ test("a named subject outranks whatever the provider says", () => {
 test("a session carries the role it was signed in with", async () => {
   configure([], "operator");
   const { base, store } = freshApp();
-  store.setModelSetting({
-    ref: "acme/spendy",
-    startsOn: true,
-    displayName: null,
-    sortOrder: 0,
-  });
+  for (const who of [OWNER, GUEST])
+    store.setUserModel(who, "acme/spendy", { enabled: true, sortOrder: 0 });
 
   const me = await (
     await fetch(`${base}/api/me`, { headers: as(store, GUEST, "operator") })
@@ -456,12 +433,7 @@ test("what you keep in your picker is yours alone", async () => {
   configure([OWNER]);
   const { base, store } = freshApp();
   for (const ref of ["acme/cheap", "acme/spendy"]) {
-    store.setModelSetting({
-      ref,
-      startsOn: true,
-      displayName: null,
-      sortOrder: 0,
-    });
+    for (const who of [OWNER, GUEST]) store.setUserModel(who, ref, { enabled: true });
   }
   const owner = as(store, OWNER);
   const guest = as(store, GUEST);
@@ -493,24 +465,16 @@ test("what you keep in your picker is yours alone", async () => {
     headers: { "content-type": "application/json", ...owner },
     body: JSON.stringify({ ref: "acme/spendy", enabled: true }),
   });
-  expect(store.enabledModels(OWNER).has("acme/spendy")).toBe(true);
+  expect(store.listUserModels(OWNER).map((m) => m.ref)).toContain("acme/spendy");
 });
 
 test("your list is what your role may reach, and you cannot curate past it", async () => {
   configure([OWNER]);
   const { base, store } = freshApp();
-  store.setModelSetting({
-    ref: "acme/cheap",
-    startsOn: true,
-    displayName: null,
-    sortOrder: 0,
-  });
-  store.setModelSetting({
-    ref: "acme/spendy",
-    startsOn: true,
-    displayName: null,
-    sortOrder: 1,
-  });
+  for (const who of [OWNER, GUEST])
+    store.setUserModel(who, "acme/cheap", { enabled: true, sortOrder: 0 });
+  for (const who of [OWNER, GUEST])
+    store.setUserModel(who, "acme/spendy", { enabled: true, sortOrder: 1 });
   const guest = as(store, GUEST);
   const guestPicker = async () =>
     ((await (await fetch(`${base}/api/models/chat`, { headers: guest })).json()) as any).models.map(

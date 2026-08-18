@@ -46,7 +46,6 @@ import {
 import { flowFor } from "./oauthflows";
 import {
   CredentialBody,
-  ModelPatchBody,
   MyModelBody,
   PrefsPatchBody,
   ProjectAssignBody,
@@ -332,67 +331,43 @@ function require(req: Request, store: Store, capability: Capability): Response |
 const requireOwner = (req: Request, store: Store): Response | null => require(req, store, "admin");
 
 /**
- * Every available model joined to its curation state, for the settings UI.
- * Models with no curation row default to hidden with their catalog name.
+ * Everything this person could put in their picker: the instance's models their
+ * role may pick from, plus whatever their own connected accounts reach.
  */
-function adminModels(store: Store) {
-  const settings = new Map(store.listModelSettings().map((s) => [s.ref, s]));
-  return getRegistry()
+async function availableModels(store: Store, role: Role, sub: string) {
+  const instance = getRegistry()
     .listModels()
-    .map((m) => {
-      const s = settings.get(m.ref);
-      return {
-        ...m,
-        startsOn: s?.startsOn ?? false,
-        displayName: s?.displayName ?? null,
-        sortOrder: s?.sortOrder ?? 0,
-      };
-    });
+    .filter((m) => roleMayUse(role, m.ref));
+  const mine = new Set(await userModelRefs(store, sub));
+  const seen = new Set(instance.map((m) => m.ref));
+  const extra = [...mine].filter((ref) => !seen.has(ref)).map((ref) => describeRef(ref));
+  return [
+    ...instance.map((m) => ({ ...m, yours: mine.has(m.ref) })),
+    ...extra.map((m) => ({ ...m, yours: true })),
+  ];
 }
 
 /**
- * The curated subset shown in the chat picker: opt-in (visible only), with
- * displayName applied and ordered by sortOrder then name.
+ * One person's picker: what they chose, named and ordered as they set it, and
+ * narrowed to what they may still reach — a role's bound can change, and a
+ * model they can no longer use should not sit in the list waiting to 403.
  */
-/**
- * Everything this person could use: what curation offers their role, plus
- * whatever their own connected accounts reach.
- */
-async function availableModels(store: Store, role: Role, sub: string | undefined) {
-  const curated = chatModels(store, role);
-  const mine = await userModelRefs(store, sub);
-  if (mine.length === 0) return curated;
-  const seen = new Set(curated.map((m) => m.ref));
-  // `yours` is what the UI needs to say who pays; a model that is both curated
-  // and reachable on the user's own account stays in its curated position.
-  const extra = mine
-    .filter((ref) => !seen.has(ref))
-    .map((ref) => ({ ...describeRef(ref), sortOrder: Number.MAX_SAFE_INTEGER, yours: true }));
-  return [...curated, ...extra.sort((a, b) => a.name.localeCompare(b.name))];
-}
-
-/** The picker: what they could use, minus what they switched off for themselves. */
 async function chatModelsFor(store: Store, role: Role, sub: string) {
-  const available = await availableModels(store, role, sub);
-  const enabled = store.enabledModels(sub);
-  return available.filter((m) => enabled.has(m.ref));
-}
-
-function chatModels(store: Store, role: Role) {
-  const settings = new Map(store.listModelSettings().map((s) => [s.ref, s]));
-  return getRegistry()
-    .listModels()
-    .flatMap((m) => {
-      if (!roleMayUse(role, m.ref)) return [];
-      const s = settings.get(m.ref);
+  const available = new Map((await availableModels(store, role, sub)).map((m) => [m.ref, m]));
+  return store
+    .listUserModels(sub)
+    .flatMap((chosen) => {
+      const m = available.get(chosen.ref);
+      if (!m) return [];
       return [
         {
           ref: m.ref,
-          name: s?.displayName ?? m.name,
+          name: chosen.displayName ?? m.name,
           contextWindow: m.contextWindow,
           reasoningLevels: m.reasoningLevels,
           supportsImages: m.supportsImages,
-          sortOrder: s?.sortOrder ?? 0,
+          sortOrder: chosen.sortOrder,
+          yours: m.yours,
         },
       ];
     })
@@ -685,21 +660,6 @@ const ACTIVE_MIME =
 /** A filename reduced to one safe segment: no path separators, quotes, or control bytes. */
 function sanitizeFilename(name: string): string {
   return name.replace(/[^\w.\- ]+/g, "_").slice(0, 128);
-}
-
-/** Partial curation update; `displayName: null` clears an override. */
-function patchModel(data: ModelPatchBody, store: Store): Response {
-  const rejected = requireKnownModel(data.ref);
-  if (rejected) return rejected;
-  const prev = store.getModelSetting(data.ref);
-  const merged = {
-    ref: data.ref,
-    startsOn: data.startsOn ?? prev?.startsOn ?? false,
-    displayName: data.displayName !== undefined ? data.displayName : (prev?.displayName ?? null),
-    sortOrder: data.sortOrder ?? prev?.sortOrder ?? 0,
-  };
-  store.setModelSetting(merged);
-  return Response.json(merged);
 }
 
 /**
@@ -1125,51 +1085,44 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       }),
     },
 
-    // Curation is the instance's shape, so it is the owner's to see and change.
-    "/api/models": {
-      GET: (req: Bun.BunRequest<"/api/models">) =>
-        requireOwner(req, store) ?? Response.json({ models: adminModels(store) }),
-      PATCH: withBody(
-        ModelPatchBody,
-        (data, req: Bun.BunRequest<"/api/models">) =>
-          requireOwner(req, store) ?? patchModel(data, store),
-      ),
-    },
-
     /**
-     * Your own model list: everything available to you, and whether it shows in
-     * your picker. Two layers meet here — the operator decides what this
-     * instance offers your role, you decide which of those you want to see —
-     * and the second is nobody else's business, which is why it needs no role.
+     * Your picker: everything you could put in it, and what you have.
+     *
+     * There is no instance-wide equivalent any more. What a role may pick from
+     * is `auth.roles[].models` in kloe.json, where it is reviewable; everything
+     * downstream of that is a person's own arrangement of their own list.
      */
     "/api/models/mine": {
       GET: async (req: Bun.BunRequest<"/api/models/mine">) => {
         const sub = whoami(req, store);
         const available = await availableModels(store, requestRole(req, store), sub);
-        const enabled = store.enabledModels(sub);
+        const chosen = new Map(store.listUserModels(sub).map((m) => [m.ref, m]));
         return Response.json({
-          models: available.map((m) => ({ ...m, enabled: enabled.has(m.ref) })),
+          models: available.map((m) => ({
+            ...m,
+            enabled: chosen.has(m.ref),
+            displayName: chosen.get(m.ref)?.displayName ?? null,
+            sortOrder: chosen.get(m.ref)?.sortOrder ?? 0,
+          })),
         });
       },
       PATCH: withBody(MyModelBody, async (data, req: Bun.BunRequest<"/api/models/mine">) => {
         const sub = whoami(req, store);
-        // You may only hide what you could otherwise use: an exception for a
-        // model you cannot reach is a row that means nothing.
+        // You may only arrange what you could otherwise use: a row for a model
+        // out of your reach is a row that means nothing.
         const available = await availableModels(store, requestRole(req, store), sub);
         if (!available.some((m) => m.ref === data.ref)) {
           return Response.json(
             { error: `model "${data.ref}" is not available to you` },
-            {
-              status: 403,
-            },
+            { status: 403 },
           );
         }
-        store.setModelEnabled(sub, data.ref, data.enabled);
+        store.setUserModel(sub, data.ref, data);
         return Response.json({ ok: true });
       }),
     },
 
-    // Chat view: the curated, opt-in subset, ordered for the picker.
+    // Chat view: this person's picker, in their order.
     "/api/models/chat": {
       GET: async (req: Bun.BunRequest<"/api/models/chat">) =>
         Response.json({
