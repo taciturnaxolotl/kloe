@@ -59,16 +59,16 @@ beforeEach(() => {
   setRegistry(fixtureRegistry());
 });
 
-test("GET /api/models returns all models hidden by default (opt-in)", async () => {
+test("GET /api/models lists every model, none in the starting selection", async () => {
   const { base } = freshApp();
   const body = await json(await fetch(`${base}/api/models`));
   const refs = body.models.map((m: any) => m.ref);
   expect(refs).toContain("acme/acme-1");
   expect(refs).toContain("echo");
-  expect(body.models.every((m: any) => m.visible === false)).toBe(true);
+  expect(body.models.every((m: any) => m.startsOn === false)).toBe(true);
 });
 
-test("GET /api/models/chat is empty until a model is made visible", async () => {
+test("GET /api/models/chat is empty until something is in the starting selection", async () => {
   const { base } = freshApp();
   const body = await json(await fetch(`${base}/api/models/chat`));
   expect(body.models).toEqual([]);
@@ -80,15 +80,13 @@ test("PATCH /api/models makes a model visible and renames it; chat reflects it",
   const patched = await json(
     await patchModels(base, {
       ref: "acme/acme-1",
-      visible: true,
-      allowedRoles: [],
+      startsOn: true,
       displayName: "Acme (fast)",
     }),
   );
   expect(patched).toMatchObject({
     ref: "acme/acme-1",
-    visible: true,
-    allowedRoles: [],
+    startsOn: true,
     displayName: "Acme (fast)",
   });
 
@@ -105,20 +103,18 @@ test("PATCH is partial: a second patch keeps prior fields", async () => {
   const { base } = freshApp();
   await patchModels(base, {
     ref: "acme/acme-1",
-    visible: true,
-    allowedRoles: [],
+    startsOn: true,
     displayName: "Kept",
   });
   const result = await json(await patchModels(base, { ref: "acme/acme-1", sortOrder: 5 }));
-  expect(result).toMatchObject({ visible: true, displayName: "Kept", sortOrder: 5 });
+  expect(result).toMatchObject({ startsOn: true, displayName: "Kept", sortOrder: 5 });
 });
 
 test("PATCH displayName:null clears the override", async () => {
   const { base } = freshApp();
   await patchModels(base, {
     ref: "acme/acme-1",
-    visible: true,
-    allowedRoles: [],
+    startsOn: true,
     displayName: "Temp",
   });
   const cleared = await json(await patchModels(base, { ref: "acme/acme-1", displayName: null }));
@@ -132,11 +128,10 @@ test("chat models are ordered by sortOrder then name", async () => {
   const { base } = freshApp();
   await patchModels(base, {
     ref: "acme/acme-1",
-    visible: true,
-    allowedRoles: [],
+    startsOn: true,
     sortOrder: 10,
   });
-  await patchModels(base, { ref: "acme/acme-2", visible: true, allowedRoles: [], sortOrder: 1 });
+  await patchModels(base, { ref: "acme/acme-2", startsOn: true, sortOrder: 1 });
   const chat = await json(await fetch(`${base}/api/models/chat`));
   expect(chat.models.map((m: any) => m.ref)).toEqual(["acme/acme-2", "acme/acme-1"]);
 });
@@ -154,8 +149,7 @@ test("curation persists across Store re-open", async () => {
   const store1 = new Store(dbPath);
   store1.setModelSetting({
     ref: "acme/acme-1",
-    visible: true,
-    allowedRoles: [],
+    startsOn: true,
     displayName: "Persisted",
     sortOrder: 3,
   });
@@ -165,8 +159,7 @@ test("curation persists across Store re-open", async () => {
   const got = store2.getModelSetting("acme/acme-1");
   expect(got).toEqual({
     ref: "acme/acme-1",
-    visible: true,
-    allowedRoles: [],
+    startsOn: true,
     displayName: "Persisted",
     sortOrder: 3,
   });

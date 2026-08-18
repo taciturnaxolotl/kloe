@@ -342,8 +342,22 @@ export const GUEST: Role = "guest";
 export type Capability = "admin" | "sandbox" | "publish";
 
 const BUILT_IN: Record<string, RolePolicy> = {
-  owner: { admin: true, sandbox: true, publish: true, subs: [], providerRoles: [] },
-  guest: { admin: false, sandbox: false, publish: false, subs: [], providerRoles: [] },
+  owner: {
+    admin: true,
+    sandbox: true,
+    publish: true,
+    models: ["*"],
+    subs: [],
+    providerRoles: [],
+  },
+  guest: {
+    admin: false,
+    sandbox: false,
+    publish: false,
+    models: [],
+    subs: [],
+    providerRoles: [],
+  },
 };
 
 /**
@@ -392,6 +406,22 @@ export function policyFor(role: Role): RolePolicy {
 
 export function roleCan(role: Role, capability: Capability): boolean {
   return policyFor(role)[capability] === true;
+}
+
+/**
+ * May this role pick this model from the ones the INSTANCE pays for?
+ *
+ * Patterns are `provider/model`, with `*` standing for a whole segment:
+ * `"*"` is everything, `"hyper/*"` is one provider's, and anything else is an
+ * exact ref. Deliberately not a general glob — a half-understood wildcard in a
+ * spending rule is worse than no wildcard.
+ */
+export function roleMayUse(role: Role, ref: string): boolean {
+  return policyFor(role).models.some((pattern) => {
+    if (pattern === "*") return true;
+    if (pattern === ref) return true;
+    return pattern.endsWith("/*") && ref.startsWith(pattern.slice(0, -1));
+  });
 }
 
 /** Roles this deployment knows about, for the UI that hands things out. */

@@ -396,6 +396,15 @@ const RolePolicySchema = v.object({
   sandbox: v.optional(v.boolean(), false),
   /** May mint public share links on this instance's domain. */
   publish: v.optional(v.boolean(), false),
+  /**
+   * Which of this instance's models the role may pick from, as `provider/model`
+   * patterns — `"*"` for all, `"hyper/*"` for one provider's, or an exact ref.
+   *
+   * The menu, not the picker: what someone actually sees is the subset they
+   * turned on for themselves. Empty means none of the instance's models, which
+   * is the right default for a role that is expected to bring its own account.
+   */
+  models: v.optional(v.array(v.string()), []),
   /** Subject URLs holding this role outright. Checked before anything else. */
   subs: v.optional(v.array(v.string()), []),
   /** Provider role strings that map to this one (indiko's per-app RBAC). */

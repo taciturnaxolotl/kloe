@@ -50,10 +50,20 @@ function configure(owners: string[], ownerRole?: string): void {
             admin: true,
             sandbox: true,
             publish: true,
+            models: ["*"],
             subs: owners,
             providerRoles: ownerRole ? [ownerRole] : [],
           },
-          guest: { admin: false, sandbox: false, publish: false, subs: [], providerRoles: [] },
+          // Guests may pick from one provider's models here; what they see is
+          // whichever of those they turned on.
+          guest: {
+            admin: false,
+            sandbox: false,
+            publish: false,
+            models: ["acme/cheap"],
+            subs: [],
+            providerRoles: [],
+          },
         }
       : {};
   setConfig({ ...base, auth: { ...base.auth, enabled: true, roles } });
@@ -120,7 +130,14 @@ test("auth off means there is nobody to be a guest to", () => {
       ...base.auth,
       enabled: false,
       roles: {
-        owner: { admin: true, sandbox: true, publish: true, subs: [OWNER], providerRoles: [] },
+        owner: {
+          admin: true,
+          sandbox: true,
+          publish: true,
+          models: ["*"],
+          subs: [OWNER],
+          providerRoles: [],
+        },
       },
     },
   });
@@ -134,32 +151,24 @@ test("with owners named, everyone else is a guest", () => {
   expect(roleFor(GUEST)).toBe("guest");
 });
 
-test("the chat picker shows a guest only the models marked for guests", async () => {
+test("the picker shows a role only what its bound allows", async () => {
   configure([OWNER]);
   const { base, store } = freshApp();
-  store.setModelSetting({
-    ref: "acme/cheap",
-    visible: true,
-    allowedRoles: ["*"],
-    displayName: null,
-    sortOrder: 0,
-  });
-  store.setModelSetting({
-    ref: "acme/spendy",
-    visible: true,
-    allowedRoles: [],
-    displayName: null,
-    sortOrder: 1,
-  });
+  // Guests are bounded to acme/cheap by the fixture; the owner's bound is "*".
+  const refs = async (sub: string) =>
+    (
+      (await (await fetch(`${base}/api/models/chat`, { headers: as(store, sub) })).json()) as any
+    ).models.map((m: any) => m.ref);
 
-  const forOwner = await fetch(`${base}/api/models/chat`, { headers: as(store, OWNER) });
-  expect(((await forOwner.json()) as any).models.map((m: any) => m.ref)).toEqual([
-    "acme/cheap",
-    "acme/spendy",
-  ]);
+  // Nothing curated by anyone yet: an empty starting selection means an empty
+  // picker, exactly as an uncurated instance behaved before.
+  expect(await refs(OWNER)).toEqual([]);
 
-  const forGuest = await fetch(`${base}/api/models/chat`, { headers: as(store, GUEST) });
-  expect(((await forGuest.json()) as any).models.map((m: any) => m.ref)).toEqual(["acme/cheap"]);
+  for (const ref of ["acme/cheap", "acme/spendy"]) {
+    store.setModelSetting({ ref, startsOn: true, displayName: null, sortOrder: 0 });
+  }
+  expect(await refs(OWNER)).toEqual(["acme/cheap", "acme/spendy"]);
+  expect(await refs(GUEST)).toEqual(["acme/cheap"]);
 });
 
 test("a guest naming a model the picker never offered is refused", async () => {
@@ -167,8 +176,7 @@ test("a guest naming a model the picker never offered is refused", async () => {
   const { base, store } = freshApp();
   store.setModelSetting({
     ref: "acme/spendy",
-    visible: true,
-    allowedRoles: [],
+    startsOn: true,
     displayName: null,
     sortOrder: 0,
   });
@@ -195,33 +203,31 @@ test("a guest cannot read or change curation", async () => {
     fetch(`${base}/api/models`, {
       method: "PATCH",
       headers: { "content-type": "application/json", ...as(store, sub) },
-      body: JSON.stringify({ ref: "acme/cheap", visible: true, allowedRoles: ["*"] }),
+      body: JSON.stringify({ ref: "acme/cheap", startsOn: true }),
     });
   expect((await patch(GUEST)).status).toBe(403);
   expect(store.getModelSetting("acme/cheap")).toBeUndefined();
 
   expect((await patch(OWNER)).status).toBe(200);
-  expect(store.getModelSetting("acme/cheap")?.allowedRoles).toEqual(["*"]);
+  expect(store.getModelSetting("acme/cheap")?.startsOn).toBe(true);
 });
 
-test("guest visibility survives a round trip through the patch endpoint", async () => {
+test("curation keeps a model's name and order, which are the instance's to set", async () => {
   configure([OWNER]);
   const { base, store } = freshApp();
-  await fetch(`${base}/api/models`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json", ...as(store, OWNER) },
-    body: JSON.stringify({ ref: "acme/cheap", visible: true, allowedRoles: ["*"] }),
-  });
-  // A later patch that says nothing about guests leaves them alone.
-  await fetch(`${base}/api/models`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json", ...as(store, OWNER) },
-    body: JSON.stringify({ ref: "acme/cheap", displayName: "Cheap One" }),
-  });
+  const patch = (body: unknown) =>
+    fetch(`${base}/api/models`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", ...as(store, OWNER) },
+      body: JSON.stringify(body),
+    });
+
+  await patch({ ref: "acme/cheap", startsOn: true });
+  await patch({ ref: "acme/cheap", displayName: "Cheap One" });
+  // A patch that says nothing about the starting selection leaves it alone.
   expect(store.getModelSetting("acme/cheap")).toEqual({
     ref: "acme/cheap",
-    visible: true,
-    allowedRoles: ["*"],
+    startsOn: true,
     displayName: "Cheap One",
     sortOrder: 0,
   });
@@ -261,8 +267,7 @@ test("a session carries the role it was signed in with", async () => {
   const { base, store } = freshApp();
   store.setModelSetting({
     ref: "acme/spendy",
-    visible: true,
-    allowedRoles: [],
+    startsOn: true,
     displayName: null,
     sortOrder: 0,
   });
@@ -330,11 +335,19 @@ test("roles declared in config carry their own policy", () => {
       ...base.auth,
       enabled: true,
       roles: {
-        staff: { admin: false, sandbox: true, publish: true, subs: [], providerRoles: ["staff"] },
+        staff: {
+          admin: false,
+          sandbox: true,
+          publish: true,
+          models: [],
+          subs: [],
+          providerRoles: ["staff"],
+        },
         visitor: {
           admin: false,
           sandbox: false,
           publish: false,
+          models: [],
           subs: [],
           providerRoles: ["visitor"],
         },
@@ -371,10 +384,18 @@ test("a later sign-in does not undo an assignment made here", () => {
           admin: true,
           sandbox: true,
           publish: true,
+          models: ["*"],
           subs: [],
           providerRoles: ["operator"],
         },
-        guest: { admin: false, sandbox: false, publish: false, subs: [GUEST], providerRoles: [] },
+        guest: {
+          admin: false,
+          sandbox: false,
+          publish: false,
+          models: [],
+          subs: [GUEST],
+          providerRoles: [],
+        },
       },
     },
   });
@@ -431,14 +452,13 @@ test("signing someone out ends their sessions, and not your own", async () => {
 // Two layers: the operator decides what this instance offers your role, and you
 // decide which of those you want to look at.
 
-test("hiding a model is personal, and stored as an exception", async () => {
+test("what you keep in your picker is yours alone", async () => {
   configure([OWNER]);
   const { base, store } = freshApp();
   for (const ref of ["acme/cheap", "acme/spendy"]) {
     store.setModelSetting({
       ref,
-      visible: true,
-      allowedRoles: ["*"],
+      startsOn: true,
       displayName: null,
       sortOrder: 0,
     });
@@ -451,9 +471,10 @@ test("hiding a model is personal, and stored as an exception", async () => {
       (m: any) => m.ref,
     );
 
-  // Nobody has chosen anything yet, so everybody sees everything: an empty
-  // picker for a new user would be a worse default than a full one.
+  // Nobody has curated anything of their own yet, so both inherit the
+  // instance's starting selection — narrowed, for the guest, by their bound.
   expect(await picker(owner)).toEqual(["acme/cheap", "acme/spendy"]);
+  expect(await picker(guest)).toEqual(["acme/cheap"]);
 
   const res = await fetch(`${base}/api/models/mine`, {
     method: "PATCH",
@@ -463,36 +484,38 @@ test("hiding a model is personal, and stored as an exception", async () => {
   expect(res.status).toBe(200);
 
   expect(await picker(owner)).toEqual(["acme/cheap"]);
-  // …and it is nobody else's business.
-  expect(await picker(guest)).toEqual(["acme/cheap", "acme/spendy"]);
+  // …and it changed nothing for anybody else.
+  expect(await picker(guest)).toEqual(["acme/cheap"]);
 
-  // Turning it back on removes the exception rather than recording a second one.
+  // Turning it back on is a row again, not a second kind of exception.
   await fetch(`${base}/api/models/mine`, {
     method: "PATCH",
     headers: { "content-type": "application/json", ...owner },
     body: JSON.stringify({ ref: "acme/spendy", enabled: true }),
   });
-  expect(store.hiddenModels(OWNER).size).toBe(0);
+  expect(store.enabledModels(OWNER).has("acme/spendy")).toBe(true);
 });
 
-test("your list is what you can reach, and you cannot hide what you cannot", async () => {
+test("your list is what your role may reach, and you cannot curate past it", async () => {
   configure([OWNER]);
   const { base, store } = freshApp();
   store.setModelSetting({
     ref: "acme/cheap",
-    visible: true,
-    allowedRoles: ["*"],
+    startsOn: true,
     displayName: null,
     sortOrder: 0,
   });
   store.setModelSetting({
     ref: "acme/spendy",
-    visible: true,
-    allowedRoles: [],
+    startsOn: true,
     displayName: null,
     sortOrder: 1,
   });
   const guest = as(store, GUEST);
+  const guestPicker = async () =>
+    ((await (await fetch(`${base}/api/models/chat`, { headers: guest })).json()) as any).models.map(
+      (m: any) => m.ref,
+    );
 
   const mine = ((await (await fetch(`${base}/api/models/mine`, { headers: guest })).json()) as any)
     .models;
@@ -506,5 +529,7 @@ test("your list is what you can reach, and you cannot hide what you cannot", asy
     body: JSON.stringify({ ref: "acme/spendy", enabled: false }),
   });
   expect(res.status).toBe(403);
-  expect(store.hiddenModels(GUEST).size).toBe(0);
+  // The refusal changed nothing: a model outside the bound was never theirs to
+  // put in or take out.
+  expect(await guestPicker()).toEqual(["acme/cheap"]);
 });

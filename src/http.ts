@@ -13,6 +13,7 @@ import {
   requestRole,
   roleCan,
   roleFor,
+  roleMayUse,
   sessionUser,
 } from "./auth";
 import type { BlobStore } from "./blobs";
@@ -299,22 +300,18 @@ function requireUsableModel(
   role: Role,
   sub: string | undefined,
 ): Response | null {
-  if (roleCan(role, "admin")) return requireKnownModel(ref);
-  // Paying for it is permission enough. A guest who connected their own account
+  // Paying for it is permission enough. Someone who connected their own account
   // is spending their own credits, and that account decides what it will run —
-  // so the ref need not be one the deployment knows, and the provider's own
+  // so the ref need not be one this deployment knows, and the provider's own
   // error is the right answer for one it doesn't.
   if (sub && store.getCredentialRow(sub, "inference", ref.split("/")[0] ?? "")) return null;
   const unknown = requireKnownModel(ref);
   if (unknown) return unknown;
-  const s = store.getModelSetting(ref);
-  if (s?.visible && offeredTo(s.allowedRoles, role)) return null;
+  // Otherwise it is the instance paying, and the role says which of its models
+  // this person may reach. What they picked for their own picker is their
+  // business, not a permission.
+  if (roleMayUse(role, ref)) return null;
   return Response.json({ error: `model "${ref}" is not available to you` }, { status: 403 });
-}
-
-/** Is this model offered to this role? `["*"]` means every role. */
-function offeredTo(allowedRoles: string[], role: Role): boolean {
-  return allowedRoles.includes("*") || allowedRoles.includes(role);
 }
 
 /**
@@ -346,8 +343,7 @@ function adminModels(store: Store) {
       const s = settings.get(m.ref);
       return {
         ...m,
-        visible: s?.visible ?? false,
-        allowedRoles: s?.allowedRoles ?? [],
+        startsOn: s?.startsOn ?? false,
         displayName: s?.displayName ?? null,
         sortOrder: s?.sortOrder ?? 0,
       };
@@ -378,8 +374,8 @@ async function availableModels(store: Store, role: Role, sub: string | undefined
 /** The picker: what they could use, minus what they switched off for themselves. */
 async function chatModelsFor(store: Store, role: Role, sub: string) {
   const available = await availableModels(store, role, sub);
-  const hidden = store.hiddenModels(sub);
-  return available.filter((m) => !hidden.has(m.ref));
+  const enabled = store.enabledModels(sub);
+  return available.filter((m) => enabled.has(m.ref));
 }
 
 function chatModels(store: Store, role: Role) {
@@ -387,17 +383,16 @@ function chatModels(store: Store, role: Role) {
   return getRegistry()
     .listModels()
     .flatMap((m) => {
+      if (!roleMayUse(role, m.ref)) return [];
       const s = settings.get(m.ref);
-      if (!s?.visible) return [];
-      if (!roleCan(role, "admin") && !offeredTo(s.allowedRoles, role)) return [];
       return [
         {
           ref: m.ref,
-          name: s.displayName ?? m.name,
+          name: s?.displayName ?? m.name,
           contextWindow: m.contextWindow,
           reasoningLevels: m.reasoningLevels,
           supportsImages: m.supportsImages,
-          sortOrder: s.sortOrder,
+          sortOrder: s?.sortOrder ?? 0,
         },
       ];
     })
@@ -699,8 +694,7 @@ function patchModel(data: ModelPatchBody, store: Store): Response {
   const prev = store.getModelSetting(data.ref);
   const merged = {
     ref: data.ref,
-    visible: data.visible ?? prev?.visible ?? false,
-    allowedRoles: data.allowedRoles ?? prev?.allowedRoles ?? [],
+    startsOn: data.startsOn ?? prev?.startsOn ?? false,
     displayName: data.displayName !== undefined ? data.displayName : (prev?.displayName ?? null),
     sortOrder: data.sortOrder ?? prev?.sortOrder ?? 0,
   };
@@ -1152,9 +1146,9 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       GET: async (req: Bun.BunRequest<"/api/models/mine">) => {
         const sub = whoami(req, store);
         const available = await availableModels(store, requestRole(req, store), sub);
-        const hidden = store.hiddenModels(sub);
+        const enabled = store.enabledModels(sub);
         return Response.json({
-          models: available.map((m) => ({ ...m, enabled: !hidden.has(m.ref) })),
+          models: available.map((m) => ({ ...m, enabled: enabled.has(m.ref) })),
         });
       },
       PATCH: withBody(MyModelBody, async (data, req: Bun.BunRequest<"/api/models/mine">) => {
@@ -1170,7 +1164,7 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
             },
           );
         }
-        store.setModelHidden(sub, data.ref, !data.enabled);
+        store.setModelEnabled(sub, data.ref, data.enabled);
         return Response.json({ ok: true });
       }),
     },

@@ -200,14 +200,10 @@ export class JobDriver {
     try {
       const id = actor.conversationId;
       if (this.store.hasCustomTitle(id)) return; // already titled or user-renamed
-      const modelRef = resolveSmallModel(this.store);
+      const owner = this.store.getConversationOwner(id) ?? undefined;
+      const modelRef = resolveSmallModel(this.store, owner);
       if (!modelRef) return;
-      const title = await generateTitle(
-        this.store,
-        id,
-        modelRef,
-        this.store.getConversationOwner(id) ?? undefined,
-      );
+      const title = await generateTitle(this.store, id, modelRef, owner);
       if (title && this.store.setTitleIfEmpty(id, title)) actor.titled(title);
     } catch (e) {
       console.warn("[title]", (e as Error).message);

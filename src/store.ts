@@ -259,14 +259,12 @@ function snippetAround(text: string, query: string): string {
  */
 export interface ModelSetting {
   ref: string;
-  visible: boolean;
   /**
-   * Which roles are offered this model, narrowing `visible` rather than
-   * standing beside it: a model a role may use is necessarily one the instance
-   * offers. `["*"]` means every role. Empty means admins only, who are never
-   * filtered by this list.
+   * Part of the instance's starting selection, inherited by a user who has
+   * curated nothing of their own. Not a gate: what a role may reach is
+   * `auth.roles[].models`, and what a person sees is their own list.
    */
-  allowedRoles: string[];
+  startsOn: boolean;
   displayName: string | null;
   sortOrder: number;
 }
@@ -274,27 +272,14 @@ export interface ModelSetting {
 interface ModelSettingRow {
   model_ref: string;
   visible: number;
-  allowed_roles: string | null;
   display_name: string | null;
   sort_order: number;
-}
-
-/** Tolerant of anything that isn't the array we wrote: a bad row hides a model rather than exposing it. */
-function parseRoles(raw: string | null): string[] {
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((r): r is string => typeof r === "string") : [];
-  } catch {
-    return [];
-  }
 }
 
 function rowToSetting(r: ModelSettingRow): ModelSetting {
   return {
     ref: r.model_ref,
-    visible: r.visible === 1,
-    allowedRoles: parseRoles(r.allowed_roles),
+    startsOn: r.visible === 1,
     displayName: r.display_name,
     sortOrder: r.sort_order,
   };
@@ -455,10 +440,11 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions (expires_at);
 
--- Models a user has switched OFF for themselves. Exceptions, not a whitelist:
--- absence means shown, so a model the operator adds (or one that arrives with
--- an account the user connects) turns up without anybody opting in to it, and
--- nobody's picker starts empty.
+-- Which models each person keeps in their own picker. Curation is personal:
+-- an operator decides what a role may pick FROM (auth.roles[].models), and this
+-- is what each person picked. Opt-in, like the instance-wide list it replaced,
+-- because "every model this instance can reach" is a hundred rows nobody wants
+-- in a dropdown.
 CREATE TABLE IF NOT EXISTS user_models (
   sub        TEXT NOT NULL,
   model_ref  TEXT NOT NULL,
@@ -679,22 +665,15 @@ export class Store {
     } catch {
       // already migrated
     }
-    // Migration: curation gained a role dimension. It began as a single
-    // guest_visible flag, which is a column per role and does not survive a
-    // third one; the flag's meaning carries over as the wildcard.
-    try {
-      this.db.exec("ALTER TABLE model_settings ADD COLUMN allowed_roles TEXT");
-    } catch {
-      // column already exists
-    }
-    try {
-      this.db.exec(
-        `UPDATE model_settings SET allowed_roles = '["*"]'
-         WHERE allowed_roles IS NULL AND guest_visible = 1`,
-      );
-      this.db.exec("ALTER TABLE model_settings DROP COLUMN guest_visible");
-    } catch {
-      // already migrated (the column is gone)
+    // Migration: curation is per person now, so the per-role columns are gone.
+    // `visible` stays as the instance's starting selection — the list a user
+    // who has chosen nothing inherits.
+    for (const dead of ["guest_visible", "allowed_roles"]) {
+      try {
+        this.db.exec(`ALTER TABLE model_settings DROP COLUMN ${dead}`);
+      } catch {
+        // already gone
+      }
     }
     // Migration: which project a conversation belongs to (NULL = unfiled).
     try {
@@ -813,18 +792,17 @@ export class Store {
     );
 
     this.listSettingsStmt = this.db.prepare(
-      `SELECT model_ref, visible, allowed_roles, display_name, sort_order FROM model_settings`,
+      `SELECT model_ref, visible, display_name, sort_order FROM model_settings`,
     );
     this.getSettingStmt = this.db.prepare(
-      `SELECT model_ref, visible, allowed_roles, display_name, sort_order
+      `SELECT model_ref, visible, display_name, sort_order
        FROM model_settings WHERE model_ref = ?`,
     );
     this.upsertSettingStmt = this.db.prepare(
-      `INSERT INTO model_settings (model_ref, visible, allowed_roles, display_name, sort_order)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO model_settings (model_ref, visible, display_name, sort_order)
+       VALUES (?, ?, ?, ?)
        ON CONFLICT(model_ref) DO UPDATE SET
          visible = excluded.visible,
-         allowed_roles = excluded.allowed_roles,
          display_name = excluded.display_name,
          sort_order = excluded.sort_order`,
     );
@@ -1354,13 +1332,7 @@ export class Store {
   }
 
   setModelSetting(s: ModelSetting): void {
-    this.upsertSettingStmt.run(
-      s.ref,
-      s.visible ? 1 : 0,
-      JSON.stringify(s.allowedRoles),
-      s.displayName,
-      s.sortOrder,
-    );
+    this.upsertSettingStmt.run(s.ref, s.startsOn ? 1 : 0, s.displayName, s.sortOrder);
   }
 
   /**
@@ -1429,17 +1401,50 @@ export class Store {
 
   // ---- per-user model choices ---------------------------------------------
 
-  /** Refs this user has hidden from their own picker. */
-  hiddenModels(sub: string): Set<string> {
+  /**
+   * Refs this user keeps in their picker.
+   *
+   * A user with no rows at all inherits the instance's starting selection —
+   * what `model_settings.visible` holds, which is what a single-user instance
+   * curated before curation was personal. Nobody's picker empties out because
+   * the concept moved.
+   */
+  enabledModels(sub: string): Set<string> {
     const rows = this.db
       .query("SELECT model_ref FROM user_models WHERE sub = ?")
       .all(sub) as Array<{ model_ref: string }>;
-    return new Set(rows.map((r) => r.model_ref));
+    if (rows.length > 0) return new Set(rows.map((r) => r.model_ref));
+    return new Set(this.startingModels());
   }
 
-  /** Show or hide one model for one user. Showing deletes the exception. */
-  setModelHidden(sub: string, ref: string, hidden: boolean): void {
-    if (hidden) {
+  /** The instance's starting selection, inherited by a user who has chosen nothing. */
+  startingModels(): string[] {
+    const rows = this.db
+      .query("SELECT model_ref FROM model_settings WHERE visible = 1")
+      .all() as Array<{ model_ref: string }>;
+    return rows.map((r) => r.model_ref);
+  }
+
+  /**
+   * Add or remove one model from one person's picker.
+   *
+   * The first write materializes whatever they had inherited, so turning one
+   * model off does not read as "chose exactly nothing" and hand them back the
+   * starting selection on the next read.
+   */
+  setModelEnabled(sub: string, ref: string, enabled: boolean): void {
+    const existing = this.db
+      .query("SELECT COUNT(*) AS n FROM user_models WHERE sub = ?")
+      .get(sub) as { n: number };
+    if (existing.n === 0) {
+      const now = Date.now();
+      for (const inherited of this.startingModels()) {
+        this.db
+          .query("INSERT OR IGNORE INTO user_models (sub, model_ref, updated_at) VALUES (?, ?, ?)")
+          .run(sub, inherited, now);
+      }
+    }
+    if (enabled) {
       this.db
         .query(
           `INSERT INTO user_models (sub, model_ref, updated_at) VALUES (?, ?, ?)

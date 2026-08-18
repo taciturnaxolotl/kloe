@@ -103,9 +103,8 @@ export type MyModelBody = v.InferOutput<typeof MyModelBody>;
 
 export const ModelPatchBody = v.object({
   ref: v.pipe(v.string(), v.minLength(1)),
-  visible: v.optional(v.boolean()),
-  /** Roles offered this model; `["*"]` is every role. Admins are never filtered. */
-  allowedRoles: v.optional(v.array(v.string())),
+  /** Part of the starting selection a user inherits before curating their own. */
+  startsOn: v.optional(v.boolean()),
   displayName: v.optional(v.nullable(v.string())),
   sortOrder: v.optional(v.number()),
 });

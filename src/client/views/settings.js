@@ -50,7 +50,7 @@ var TEMPLATE =
   '<div id="connectionsHost"></div>' +
   "</section>" +
   '<section class="settabpanel" data-panel="models" hidden>' +
-  '<p class="lede">What this instance offers, for everyone. Turn models on to add them to the picker, drag the enabled ones to set their order (⌘-click to move several at once), and give them display names.</p>' +
+  '<p class="lede">The starting selection: what someone gets in their picker before they curate their own. Turn models on, drag them to set the order everyone sees (⌘-click to move several at once), and give them display names. Which models a role may pick from at all is set in <code>kloe.json</code>.</p>' +
   '<div id="content">Loading…</div>' +
   "</section>" +
   '<section class="settabpanel" data-panel="research" hidden>' +
@@ -122,7 +122,6 @@ export function mount(root, _params, ctx) {
   }
   var dragActive = false;
   /** Non-admin roles this deployment declares; the model rows hand access to these. */
-  var guestRoles = [];
   var lardSubjects = []; // full listing, for search filtering
   var activeSubjectPath = null;
 
@@ -170,7 +169,7 @@ export function mount(root, _params, ctx) {
 
   function modelCard(m, draggable) {
     var row = document.createElement("div");
-    row.className = "modelrow" + (m.visible ? "" : " off");
+    row.className = "modelrow" + (m.startsOn ? "" : " off");
     row.dataset.ref = m.ref;
 
     if (draggable) {
@@ -189,8 +188,9 @@ export function mount(root, _params, ctx) {
     var toggle = document.createElement("input");
     toggle.type = "checkbox";
     toggle.className = "toggle";
-    toggle.checked = !!m.visible;
-    toggle.setAttribute("aria-label", "Show in chat picker");
+    toggle.checked = !!m.startsOn;
+    toggle.title = "Starts on for anyone who has not curated their own list";
+    toggle.setAttribute("aria-label", "In the starting selection");
 
     var main = document.createElement("div");
     main.className = "modelmain";
@@ -213,50 +213,9 @@ export function mount(root, _params, ctx) {
     saved.className = "saved";
     saved.textContent = "saved";
 
-    // Who else is offered this model. One checkbox per non-admin role the
-    // deployment declares, shown only where it can mean anything: a model
-    // nobody can see is not a model anyone can be given.
-    var guest = document.createElement("div");
-    guest.className = "rolegrants";
-    guestRoles.forEach(function (roleName) {
-      var label = document.createElement("label");
-      label.className = "guesttoggle";
-      label.title = "Also offer this model to " + roleName;
-      var box = document.createElement("input");
-      box.type = "checkbox";
-      box.checked =
-        (m.allowedRoles || []).indexOf(roleName) >= 0 || (m.allowedRoles || []).indexOf("*") >= 0;
-      box.setAttribute("aria-label", "Offer to " + roleName);
-      box.addEventListener("change", async function () {
-        var next = (m.allowedRoles || []).filter(function (r) {
-          return r !== roleName && r !== "*";
-        });
-        // A wildcard is expanded on the way out, so unticking one role leaves
-        // the others exactly as they were.
-        if ((m.allowedRoles || []).indexOf("*") >= 0) {
-          guestRoles.forEach(function (r) {
-            if (r !== roleName && next.indexOf(r) < 0) next.push(r);
-          });
-        }
-        if (box.checked) next.push(roleName);
-        if (await patchRaw(m.ref, "allowedRoles", next)) {
-          m.allowedRoles = next;
-          flash(saved, true);
-        } else {
-          box.checked = !box.checked;
-          flash(saved, false);
-        }
-      });
-      label.appendChild(box);
-      label.appendChild(document.createTextNode(roleName));
-      guest.appendChild(label);
-    });
-    if (!m.visible || guestRoles.length === 0) guest.hidden = true;
-
     row.appendChild(toggle);
     row.appendChild(main);
     row.appendChild(rename);
-    row.appendChild(guest);
     row.appendChild(saved);
     return row;
   }
@@ -267,10 +226,10 @@ export function mount(root, _params, ctx) {
     if (!box) return;
     box.innerHTML = "";
     var enabled = allModels.filter(function (m) {
-      return m.visible;
+      return m.startsOn;
     });
     if (!enabled.length) {
-      box.innerHTML = '<p class="lede">Enable some models first.</p>';
+      box.innerHTML = '<p class="lede">Put some models in the starting selection first.</p>';
       return;
     }
     [
@@ -371,7 +330,7 @@ export function mount(root, _params, ctx) {
     // Enabled models: one ordered, draggable list (this order IS the picker order).
     var enabled = allModels
       .filter(function (m) {
-        return m.visible;
+        return m.startsOn;
       })
       .sort(function (a, b) {
         return (a.sortOrder || 0) - (b.sortOrder || 0) || a.name.localeCompare(b.name);
@@ -386,7 +345,7 @@ export function mount(root, _params, ctx) {
     } else {
       var empty = document.createElement("div");
       empty.className = "modelempty";
-      empty.textContent = "No models enabled yet — turn some on below.";
+      empty.textContent = "Nothing starts on yet. Turn some on below.";
       list.appendChild(empty);
     }
     content.appendChild(list);
@@ -396,7 +355,7 @@ export function mount(root, _params, ctx) {
     var groups = Object.create(null);
     allModels
       .filter(function (m) {
-        return !m.visible;
+        return !m.startsOn;
       })
       .forEach(function (m) {
         var p = providerOf(m.ref);
@@ -750,13 +709,6 @@ export function mount(root, _params, ctx) {
       roleList = j.roles || [];
       people = j.users || [];
       if (j.provider) providerName = j.provider;
-      guestRoles = roleList
-        .filter(function (r) {
-          return !r.admin;
-        })
-        .map(function (r) {
-          return r.name;
-        });
       // Reaching this endpoint at all is what proves the caller is an admin.
       ["people", "models", "research"].forEach(function (name) {
         var t = root.querySelector('.settab[data-tab="' + name + '"]');

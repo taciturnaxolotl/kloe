@@ -26,7 +26,7 @@ test("validate rejects an empty model string (minLength)", async () => {
 });
 
 test("validate rejects a wrong-typed field", async () => {
-  const r = await validate(ModelPatchBody, { ref: "echo", visible: "yes" });
+  const r = await validate(ModelPatchBody, { ref: "echo", startsOn: "yes" });
   expect(r.ok).toBe(false);
 });
 
@@ -35,7 +35,7 @@ test("ModelPatchBody allows partial fields and an explicit null displayName", as
   expect(r.ok).toBe(true);
   if (r.ok) {
     expect(r.value.displayName).toBeNull();
-    expect(r.value.visible).toBeUndefined();
+    expect(r.value.startsOn).toBeUndefined();
   }
 });
 

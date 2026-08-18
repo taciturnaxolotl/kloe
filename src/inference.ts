@@ -217,12 +217,20 @@ function modelInfo(modelRef: string) {
   }
 }
 
-/** Models the deployment has enabled (visible in the picker). */
-function enabledModels(store: Store) {
-  const settings = new Map(store.listModelSettings().map((s) => [s.ref, s]));
+/**
+ * Candidates for the utility jobs nobody picks a model for — titling, reading
+ * an image, a research role.
+ *
+ * The set the person owning the run keeps in their own picker, because that is
+ * the list they have vouched for: a title written by a model they turned off is
+ * a small surprise on their bill. Without a person (a script, a test), the
+ * instance's starting selection stands in.
+ */
+function candidateModels(store: Store, sub?: string) {
+  const chosen = sub ? store.enabledModels(sub) : new Set(store.startingModels());
   return getRegistry()
     .listModels()
-    .filter((m) => settings.get(m.ref)?.visible);
+    .filter((m) => chosen.has(m.ref));
 }
 
 /**
@@ -240,8 +248,8 @@ function enabledModels(store: Store) {
  * An explicitly configured `agent.smallModel` skips both checks: naming it is a
  * choice, inheriting it isn't.
  */
-export function resolveSmallModel(store: Store): string | null {
-  const enabled = enabledModels(store);
+export function resolveSmallModel(store: Store, sub?: string): string | null {
+  const enabled = candidateModels(store, sub);
   if (!enabled.length) return null;
   const configured = getConfig().agent.smallModel;
   if (configured && enabled.some((m) => m.ref === configured)) return configured;
@@ -265,8 +273,8 @@ export function resolveSmallModel(store: Store): string | null {
  * rewards missing metadata, and a model nothing is known about is not a model to
  * hand a picture to. A configured ref skips them, because naming it is a choice.
  */
-export function resolveVisionModel(store: Store): string | null {
-  const enabled = enabledModels(store);
+export function resolveVisionModel(store: Store, sub?: string): string | null {
+  const enabled = candidateModels(store, sub);
   if (!enabled.length) return null;
   const configured = getConfig().agent.visionModel;
   if (configured && enabled.some((m) => m.ref === configured)) return configured;
@@ -288,8 +296,12 @@ export function resolveVisionModel(store: Store): string | null {
  * everywhere else: a model that has been turned off should not keep running
  * because a stale row names it.
  */
-export function resolveRoleModel(store: Store, role: "lead" | "worker"): string | null {
-  const enabled = new Set(enabledModels(store).map((m) => m.ref));
+export function resolveRoleModel(
+  store: Store,
+  role: "lead" | "worker",
+  sub?: string,
+): string | null {
+  const enabled = new Set(candidateModels(store, sub).map((m) => m.ref));
   const pref = store.getPref(`research.${role}Model`);
   if (pref && enabled.has(pref)) return pref;
   const cfg = role === "lead" ? getConfig().research.leadModel : getConfig().research.workerModel;
@@ -395,11 +407,12 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
   // tool). Resolved here rather than in tools.ts because picking a model needs
   // the registry, which lives in this module.
   const modelReadsImages = modelSupportsImages(opts.model);
-  const visionRef = !modelReadsImages && opts.store ? resolveVisionModel(opts.store) : null;
+  const visionRef =
+    !modelReadsImages && opts.store ? resolveVisionModel(opts.store, opts.owner) : null;
   // Research can run its lead and its workers on different models; unset, both
   // are the conversation's own model.
-  const leadRef = opts.store ? resolveRoleModel(opts.store, "lead") : null;
-  const workerRef = opts.store ? resolveRoleModel(opts.store, "worker") : null;
+  const leadRef = opts.store ? resolveRoleModel(opts.store, "lead", opts.owner) : null;
+  const workerRef = opts.store ? resolveRoleModel(opts.store, "worker", opts.owner) : null;
   // Whose search this run spends, on the same rule as the model: their own
   // engines when they connected any.
   const search = opts.store ? await searchProviderFor(opts.store, opts.owner) : null;

@@ -436,6 +436,13 @@
                 "type": "boolean",
                 "default": false
               },
+              "models": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
               "subs": {
                 "type": "array",
                 "items": {

@@ -3567,7 +3567,8 @@ import { mountSidebar } from "./sidebar.js";
     if (models.length === 0) {
       var none = document.createElement("div");
       none.className = "none";
-      none.innerHTML = 'No models enabled. Turn some on in <a href="/settings">Settings</a>.';
+      none.innerHTML =
+        'No models in your picker. Choose some under <a href="/settings">Your models</a>.';
       picker.appendChild(none);
       return;
     }
