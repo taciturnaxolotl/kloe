@@ -24,11 +24,28 @@
 const TIMEOUT_MS = 15_000;
 const trimSlash = (s: string): string => s.replace(/\/+$/, "");
 
+/** The verification page with the code in its query, or undefined if the URL won't parse. */
+function withUserCode(verificationUrl: string, userCode: string): string | undefined {
+  try {
+    const url = new URL(verificationUrl);
+    url.searchParams.set("user_code", userCode);
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
 export interface DeviceStart {
   deviceCode: string;
   /** What the user types on the verification page, formatted for reading aloud. */
   userCode: string;
   verificationUrl: string;
+  /**
+   * The same page with the code already in the box (RFC 8628 calls this
+   * `verification_uri_complete`). Where it exists, approving is two clicks and
+   * no typing; the code stays on screen anyway, for approving on a phone.
+   */
+  verificationUrlComplete?: string;
   /** Epoch ms after which the code is dead. */
   expiresAt: number;
 }
@@ -82,10 +99,15 @@ export async function startDeviceAuth(
     expires_in?: number;
   };
   if (!data.device_code || !data.user_code) throw new Error("hyper: device auth returned no code");
+  const verificationUrl = data.verification_url ?? `${trimSlash(baseUrl)}/device/authed/verify`;
   return {
     deviceCode: data.device_code,
     userCode: data.user_code,
-    verificationUrl: data.verification_url ?? `${trimSlash(baseUrl)}/device/authed/verify`,
+    verificationUrl,
+    // hyper's verify page reads ?user_code and renders it into the field, so
+    // the link can carry it. It does not advertise a complete URL of its own,
+    // which is why this is built rather than read.
+    verificationUrlComplete: withUserCode(verificationUrl, data.user_code),
     expiresAt: Date.now() + (data.expires_in ?? 900) * 1000,
   };
 }

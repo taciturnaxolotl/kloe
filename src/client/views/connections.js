@@ -236,12 +236,16 @@ async function runDeviceFlow(basePath, ctx) {
   code.textContent = start.userCode;
   var hint = document.createElement("div");
   hint.className = "connhint";
-  hint.textContent = "Type this code to approve, then come back. This page is watching for it.";
+  hint.textContent = start.verificationUrlComplete
+    ? "Approve it in the tab that opens, then come back. This page is watching for it."
+    : "Type this code to approve, then come back. This page is watching for it.";
   var open = document.createElement("a");
   open.className = "btn primary";
   open.target = "_blank";
   open.rel = "noopener";
-  open.href = start.verificationUrl;
+  // The complete link carries the code, so approving is a click rather than a
+  // transcription. The code stays visible for approving on another device.
+  open.href = start.verificationUrlComplete || start.verificationUrl;
   open.textContent = "Open approval page";
   var cancel = document.createElement("button");
   cancel.type = "button";

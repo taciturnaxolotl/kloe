@@ -236,6 +236,11 @@ test("the device flow reads hyper's shapes, including its in-body errors", async
   expect(s.deviceCode).toBe("dc-1");
   expect(s.userCode).toBe("ABCD-EFGH");
   expect(s.expiresAt).toBeGreaterThan(Date.now());
+  // hyper's verify page reads ?user_code into the field, so the link carries
+  // it and approving costs no typing.
+  expect(s.verificationUrlComplete).toBe(
+    "https://hyper.test/device/authed/verify?user_code=ABCD-EFGH",
+  );
 
   const body = (b: unknown) =>
     (async () => new Response(JSON.stringify(b), { status: 200 })) as unknown as typeof fetch;
