@@ -283,20 +283,6 @@ a.icon {
 .conv[aria-current="true"] svg {
   color: var(--ink);
 }
-/* The footer holds two destinations now: connections (yours) and settings
-   (the instance's). The plug shrinks to its icon so the avatar keeps the room. */
-.railfoots {
-  display: flex;
-  align-items: stretch;
-}
-.railfoots .railfoot {
-  flex: 1;
-  min-width: 0;
-}
-.railfoots .railplug {
-  flex: none;
-  border-right: 1px solid var(--rule);
-}
 .railfoot {
   display: flex;
   align-items: center;
