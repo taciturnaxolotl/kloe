@@ -93,12 +93,18 @@ var providerAccounts = {
         })
         .forEach(function (p) {
           var conn = byKey[p.service + "/" + p.id];
-          var row = providerRow(p, conn);
-          (conn || !p.userOnly ? mine : rest).push(row);
+          // Up top: what you have connected, what this instance runs, and
+          // anything you can sign into. A one-click connection is not something
+          // to make people go looking for.
+          var prominent = conn || !p.userOnly || p.oauth;
+          (prominent ? mine : rest).push(providerRow(p, conn));
         });
-      // Connected first within the group; the rest keep their alphabet.
+      // Connected first, then anything you can sign into, then the rest.
       mine.sort(function (a, b) {
-        return (b.connected ? 1 : 0) - (a.connected ? 1 : 0);
+        var rank = function (r) {
+          return r.connected ? 0 : r.canOAuth ? 1 : 2;
+        };
+        return rank(a) - rank(b);
       });
       if (mine.length) out.push({ title: g.title, rows: mine });
       if (rest.length) out.push({ title: g.more, rows: rest, collapsed: true });
@@ -114,13 +120,16 @@ function providerRow(p, conn) {
     name: p.id,
     service: p.service,
     connected: !!conn,
+    canOAuth: !!p.oauth,
     tag: !conn && p.userOnly ? "bring your own" : "",
     status: conn
       ? conn.kind === "oauth"
         ? "Connected" + (conn.label ? " as " + conn.label : "") + ". Billed to you."
         : "Your key " + (conn.label || "") + ". Billed to you."
       : p.userOnly
-        ? "Not set up here. Connect an account to use it."
+        ? p.oauth
+          ? "Sign in and it’s yours to use, on your credits."
+          : "Not set up here. Connect an account to use it."
         : "Using this instance’s key.",
     actions: [],
   };

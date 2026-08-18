@@ -981,6 +981,14 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       },
       POST: withBody(CredentialBody, (data, req: Bun.BunRequest<"/api/credentials">) => {
         const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
+        if (!credentialsReady()) {
+          // Storing it would throw on the encryption; say what is missing
+          // rather than returning a stack trace's worth of nothing.
+          return Response.json(
+            { error: "this instance has no security.credentialKey, so it cannot store a key" },
+            { status: 503 },
+          );
+        }
         if (!isService(data.service) || !byokAllowed(data.service, data.providerId)) {
           return Response.json(
             { error: `"${data.providerId}" does not take a user key here` },

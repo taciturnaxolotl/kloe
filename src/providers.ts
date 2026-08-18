@@ -6,6 +6,7 @@ import type { Catalog, CatalogModel, ProviderType } from "./catalog";
 import { parseModel } from "./catalog";
 import { discoverModels, enrichModels } from "./discover";
 import { resolveRef } from "./settings";
+import { wellKnownProvider } from "./wellknown";
 
 /**
  * Ops config for one *enabled* provider — the deployment-specific layer. An
@@ -306,11 +307,16 @@ export class ProviderRegistry {
    */
   private borrowedConfig(providerId: string, apiKeyOverride?: string): ProviderConfig | undefined {
     if (!apiKeyOverride) return undefined;
-    const p = this.catalog.getProvider(providerId);
-    if (!p?.apiEndpoint) return undefined;
+    // The catalog first, then the services kloe knows how to connect to on its
+    // own — a user's hyper account has to resolve on an instance that never
+    // configured hyper, which is the whole point of offering it there.
+    const apiEndpoint =
+      this.catalog.getProvider(providerId)?.apiEndpoint ??
+      wellKnownProvider(providerId)?.apiEndpoint;
+    if (!apiEndpoint) return undefined;
     return {
       id: providerId,
-      apiEndpoint: p.apiEndpoint,
+      apiEndpoint,
       maxConcurrency: DEFAULTS.maxConcurrency,
       minIntervalMs: DEFAULTS.minIntervalMs,
     };

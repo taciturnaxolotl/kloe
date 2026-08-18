@@ -71,7 +71,11 @@ test("without a configured key, nothing is stored in the clear", () => {
   const base = loadConfig({ path: "does-not-exist.json", env: {} });
   setConfig({ ...base, security: { credentialKey: "" } } as never);
   expect(() => encryptSecret("sk-x")).toThrow(/credentialKey/);
-  expect(byokAllowed("inference", "hyper")).toBe(false);
+  // The provider is still OFFERED — hiding it reads as "nothing to connect" —
+  // and readiness is the separate thing that says why it won't work yet.
+  expect(byokAllowed("inference", "hyper")).toBe(true);
+  expect(credentialsReady()).toBe(false);
+  expect(() => saveApiKey(memStore(), SUB, "inference", "hyper", "sk-x")).toThrow(/credentialKey/);
 });
 
 test("the hint identifies a key without handing it back", () => {
@@ -360,4 +364,21 @@ test("with no key to encrypt with, providers are still listed and marked not rea
   expect(connectableProviders().some((c) => c.id === "hyper")).toBe(true);
   // …and saving still refuses, so the promise the list makes is kept elsewhere.
   expect(() => saveApiKey(memStore(), SUB, "inference", "hyper", "sk-x")).toThrow(/credentialKey/);
+});
+
+test("a service with a device flow is offered even where the instance runs none", () => {
+  const base = loadConfig({ path: "does-not-exist.json", env: {} });
+  // A deployment with one unrelated provider and no hyper anywhere.
+  setConfig({
+    ...base,
+    security: { credentialKey: "k" },
+    providers: [{ id: "llmsolutions", apiEndpoint: "https://llmsolutions.top/v1" }],
+  } as never);
+
+  const hyper = connectableProviders().find((c) => c.id === "hyper");
+  // Signing in costs the operator nothing and spends the user's own credits,
+  // so it needs no opt-in from them.
+  expect(hyper?.oauth).toEqual({ flow: "hyper-device", baseUrl: "https://hyper.charm.land" });
+  expect(hyper?.userOnly).toBe(true);
+  expect(oauthFlow("inference", "hyper")).toBeTruthy();
 });

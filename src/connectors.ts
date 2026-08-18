@@ -2,6 +2,7 @@ import { getCatalog } from "./inference";
 import { flowFor } from "./oauthflows";
 import { encryptionConfigured } from "./secrets";
 import { getConfig, resolveRef } from "./settings";
+import { WELL_KNOWN } from "./wellknown";
 
 /**
  * Everything a user can connect an account to, in one vocabulary.
@@ -83,6 +84,23 @@ function inferenceConnectors(): Connector[] {
       oauth: oauth && flowFor(oauth.flow) ? oauth : undefined,
       endpoint,
       type: p.type,
+    });
+  }
+
+  // Services with a device flow, offered whether or not this instance runs
+  // them: the flow carries its own address and the credits are the user's, so
+  // there is nothing here for an operator to have configured.
+  for (const p of WELL_KNOWN) {
+    if (enabled.has(p.id)) continue;
+    enabled.add(p.id);
+    out.push({
+      service: p.service,
+      id: p.id,
+      byok: true,
+      oauth: flowFor(p.oauth.flow) ? p.oauth : undefined,
+      endpoint: p.apiEndpoint,
+      type: p.type,
+      userOnly: true,
     });
   }
 
