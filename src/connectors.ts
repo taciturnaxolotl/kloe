@@ -49,6 +49,24 @@ export interface Connector {
 /** Search engines that take an API key. DuckDuckGo is keyless and so not one. */
 const SEARCH_PROVIDERS = ["ceramic", "hackclub", "llmsolutions", "exa"];
 
+/**
+ * The device flow a provider speaks, without being told.
+ *
+ * A provider's `type` already selects its adapter and its discovery enricher,
+ * so it can select its OAuth flow too: everything of type "hyper" is a hyper,
+ * and hyper's device endpoints live at the root of the same host its API does.
+ * An explicit `oauth` block still wins, for a deployment that puts them
+ * somewhere else.
+ */
+function inferredOAuth(type: string | undefined, endpoint: string | undefined) {
+  if (type !== "hyper" || !endpoint) return undefined;
+  try {
+    return { flow: "hyper-device", baseUrl: new URL(endpoint).origin };
+  } catch {
+    return undefined;
+  }
+}
+
 function inferenceConnectors(): Connector[] {
   const cfg = getConfig();
   const out: Connector[] = [];
@@ -56,12 +74,14 @@ function inferenceConnectors(): Connector[] {
 
   for (const p of cfg.providers) {
     enabled.add(p.id);
+    const endpoint = resolveRef(p.apiEndpoint);
+    const oauth = p.oauth ?? inferredOAuth(p.type, endpoint);
     out.push({
       service: "inference",
       id: p.id,
       byok: p.byok !== false,
-      oauth: p.oauth && flowFor(p.oauth.flow) ? p.oauth : undefined,
-      endpoint: resolveRef(p.apiEndpoint),
+      oauth: oauth && flowFor(oauth.flow) ? oauth : undefined,
+      endpoint,
       type: p.type,
     });
   }
@@ -110,10 +130,21 @@ function searchConnectors(): Connector[] {
   }));
 }
 
-/** Every connector, or an empty list when credentials cannot be stored at all. */
+/**
+ * Every connector this instance knows about.
+ *
+ * Deliberately not gated on whether credentials can be stored yet: a page that
+ * lists nothing because a key is missing looks like a deployment with nothing
+ * to offer. `credentialsReady` is what says otherwise, and the UI shows the
+ * reason rather than an empty room.
+ */
 export function listConnectors(): Connector[] {
-  if (!encryptionConfigured()) return [];
   return [...inferenceConnectors(), ...searchConnectors()];
+}
+
+/** Whether a credential can be stored at all (see secrets.ts). */
+export function credentialsReady(): boolean {
+  return encryptionConfigured();
 }
 
 export function findConnector(service: Service, id: string): Connector | undefined {

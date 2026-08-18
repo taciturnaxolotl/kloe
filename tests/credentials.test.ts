@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { credentialsReady } from "../src/connectors";
 import {
   byokAllowed,
   connectableProviders,
@@ -328,4 +329,35 @@ test("an unimplemented oauth flow is not offered, however the config names it", 
   // fail once someone presses it.
   expect(oauthFlow("inference", "whatever")).toBeUndefined();
   expect(flowNames()).toContain("hyper-device");
+});
+
+test("a hyper provider offers its device flow without being configured for it", () => {
+  const base = loadConfig({ path: "does-not-exist.json", env: {} });
+  setConfig({
+    ...base,
+    security: { credentialKey: "k" },
+    // No `oauth` block: the type is enough, and the device endpoints sit at the
+    // root of the host the API is on.
+    providers: [{ id: "hyper", apiEndpoint: "https://hyper.charm.land/v1", type: "hyper" }],
+  } as never);
+  expect(oauthFlow("inference", "hyper")).toEqual({
+    flow: "hyper-device",
+    baseUrl: "https://hyper.charm.land",
+  });
+});
+
+test("with no key to encrypt with, providers are still listed and marked not ready", () => {
+  const base = loadConfig({ path: "does-not-exist.json", env: {} });
+  setConfig({
+    ...base,
+    security: { credentialKey: "" },
+    providers: [{ id: "hyper", apiEndpoint: "https://hyper.charm.land/v1", type: "hyper" }],
+  } as never);
+
+  // An empty list would read as "this deployment has nothing to offer", which
+  // is a different problem with a different fix.
+  expect(credentialsReady()).toBe(false);
+  expect(connectableProviders().some((c) => c.id === "hyper")).toBe(true);
+  // …and saving still refuses, so the promise the list makes is kept elsewhere.
+  expect(() => saveApiKey(memStore(), SUB, "inference", "hyper", "sk-x")).toThrow(/credentialKey/);
 });

@@ -56,6 +56,19 @@ var providerAccounts = {
   id: "providers",
   async load() {
     var data = await getJSON("/api/credentials");
+    // Nothing here can be saved without a key to encrypt it with. Say so once,
+    // at the top, instead of letting every button fail on being pressed.
+    if (!data.ready) {
+      return [
+        {
+          title: "Not ready",
+          note:
+            "This instance has nowhere safe to keep a credential yet. Set " +
+            "security.credentialKey in kloe.json and restart, and these come back.",
+          rows: [],
+        },
+      ];
+    }
     var byKey = {};
     (data.connections || []).forEach(function (c) {
       byKey[c.service + "/" + c.providerId] = c;
@@ -375,6 +388,13 @@ export function mount(root, _params, ctx) {
       return;
     }
     groups.forEach(function (group) {
+      if (group.note) {
+        var note = document.createElement("p");
+        note.className = "lede";
+        note.textContent = group.note;
+        host.appendChild(note);
+        return;
+      }
       if (group.collapsed) {
         var fold = document.createElement("details");
         fold.className = "connfold";

@@ -17,7 +17,7 @@ import {
 } from "./auth";
 import type { BlobStore } from "./blobs";
 import { ACTOR_IDLE_TTL_MS, SSE_RETRY_MS, SUBSCRIBER_HEARTBEAT_MS } from "./config";
-import { isService } from "./connectors";
+import { credentialsReady, isService } from "./connectors";
 import {
   byokAllowed,
   connectableProviders,
@@ -971,6 +971,10 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
       GET: (req: Bun.BunRequest<"/api/credentials">) => {
         const sub = getSession(req, store)?.sub ?? LOCAL_SUB;
         return Response.json({
+          // Not ready means the deployment has no key to encrypt with, so
+          // every Connect button here would fail. The page says so rather than
+          // offering them.
+          ready: credentialsReady(),
           providers: connectableProviders(),
           connections: listConnections(store, sub),
         });
