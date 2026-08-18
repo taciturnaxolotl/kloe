@@ -239,7 +239,7 @@ async function runDeviceFlow(basePath, ctx) {
   open.textContent = "Open approval page";
   var cancel = document.createElement("button");
   cancel.type = "button";
-  cancel.className = "btn quiet";
+  cancel.className = "btn";
   cancel.textContent = "Cancel";
   cancel.onclick = ctx.closePanel;
   panel.appendChild(code);
