@@ -967,10 +967,10 @@ export function mount(root, _params, ctx) {
 
   // ---- lard (memory) ----
   function renderLard(el, connected) {
+    // No status dot: there is one card here, and its own text already says
+    // whether it is connected.
     el.className = "connrow" + (connected ? " on" : "");
     el.innerHTML = "";
-    var dot = document.createElement("span");
-    dot.className = "conndot";
     var text = document.createElement("div");
     text.className = "conntext";
     var title = document.createElement("div");
@@ -999,7 +999,6 @@ export function mount(root, _params, ctx) {
       btn.href = "/lard/connect";
       btn.textContent = "Connect";
     }
-    el.appendChild(dot);
     el.appendChild(text);
     el.appendChild(btn);
   }
