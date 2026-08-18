@@ -243,9 +243,15 @@ async function runDeviceFlow(basePath, ctx) {
   open.rel = "noopener";
   open.href = start.verificationUrl;
   open.textContent = "Open approval page";
+  var cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "btn quiet";
+  cancel.textContent = "Cancel";
+  cancel.onclick = ctx.closePanel;
   panel.appendChild(code);
   panel.appendChild(hint);
   panel.appendChild(open);
+  panel.appendChild(cancel);
 
   var url = basePath + "/device/" + encodeURIComponent(start.deviceCode);
   var tick = async function () {
@@ -313,13 +319,22 @@ function renderRow(row, ctx) {
   var rowCtx = {
     reload: ctx.reload,
     setTimer: ctx.setTimer,
+    stopTimers: ctx.stopTimers,
     panel: function () {
       if (!panelEl) {
         panelEl = document.createElement("div");
         panelEl.className = "conndevice";
         el.appendChild(panelEl);
+        // While a code is on screen, the row's other way in is noise.
+        el.classList.add("connecting");
       }
       return panelEl;
+    },
+    closePanel: function () {
+      ctx.stopTimers();
+      if (panelEl) panelEl.remove();
+      panelEl = null;
+      el.classList.remove("connecting");
     },
   };
 
@@ -377,6 +392,7 @@ export function mount(root, _params, ctx) {
     setTimer: function (t) {
       timers.push(t);
     },
+    stopTimers: clearTimers,
   };
 
   async function load() {

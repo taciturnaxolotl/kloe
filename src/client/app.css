@@ -3502,6 +3502,10 @@ body.lb-open {
 .connrow {
   display: flex;
   align-items: center;
+  /* Wrapping is what lets the device panel take a line of its own. Without it
+     the panel is just another item competing for width, and it wins: it asks
+     for 100% and the text column collapses to one word per line. */
+  flex-wrap: wrap;
   gap: 12px;
   padding: 13px 14px;
   border: 1px solid var(--rule);
@@ -3522,7 +3526,10 @@ body.lb-open {
   background: var(--accent);
 }
 .conntext {
-  flex: 1;
+  /* Grows into the space the controls leave, and may shrink below its content
+     rather than pushing them off the row. A basis wide enough to hold a
+     sentence keeps it from being squeezed to a column of single words. */
+  flex: 1 1 15rem;
   min-width: 0;
 }
 .conntitle {
@@ -3540,6 +3547,7 @@ body.lb-open {
 }
 .connkey {
   width: 200px;
+  max-width: 100%;
   padding: 6px 10px;
   border: 1px solid var(--rule-strong);
   border-radius: var(--radius-md);
@@ -3599,6 +3607,7 @@ body.lb-open {
    brings an account. */
 .conntag {
   margin-left: 7px;
+  white-space: nowrap;
   padding: 1px 6px;
   border: 1px solid var(--rule-strong);
   border-radius: 999px;
@@ -3608,11 +3617,28 @@ body.lb-open {
   vertical-align: middle;
 }
 
+/* While a device code is on screen, the row's other way in would only compete
+   with it. */
+.connrow.connecting .connkey,
+.connrow.connecting > .btn.primary {
+  display: none;
+}
+.btn.quiet {
+  background: none;
+  border-color: transparent;
+  color: var(--ink-muted);
+}
+.btn.quiet:hover {
+  color: var(--ink);
+  background: var(--bg-sunk);
+}
+
 /* The device code, while a user is approving it elsewhere. The code itself is
    the point: big, monospace, and selectable, because it gets read off a screen
    and typed into another one. */
 .conndevice {
   flex-basis: 100%;
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 12px;
