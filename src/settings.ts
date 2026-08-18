@@ -405,6 +405,15 @@ const RolePolicySchema = v.object({
    * is the right default for a role that is expected to bring its own account.
    */
   models: v.optional(v.array(v.string()), []),
+  /**
+   * Which of this instance's search engines the role may spend — by id
+   * (`"exa"`), or `"*"` for all of them. Empty means none, and a role with
+   * none can still search on an engine it connects itself.
+   *
+   * `"duckduckgo"` works whether or not this deployment configured it: it
+   * takes no key and costs nobody anything, so there is nothing to opt into.
+   */
+  search: v.optional(v.array(v.string()), []),
   /** Subject URLs holding this role outright. Checked before anything else. */
   subs: v.optional(v.array(v.string()), []),
   /** Provider role strings that map to this one (indiko's per-app RBAC). */

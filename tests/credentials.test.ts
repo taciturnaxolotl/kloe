@@ -14,6 +14,7 @@ import { exchangeToken, pollDeviceAuth, startDeviceAuth } from "../src/hyperauth
 import { flowNames } from "../src/oauthflows";
 import {
   BlendSearchProvider,
+  CeramicSearchProvider,
   DuckDuckGoSearchProvider,
   ExaSearchProvider,
   searchProviderFor,
@@ -386,4 +387,59 @@ test("a service with a device flow is offered even where the instance runs none"
   expect(hyper?.oauth).toEqual({ flow: "hyper-device", baseUrl: "https://hyper.charm.land" });
   expect(hyper?.userOnly).toBe(true);
   expect(oauthFlow("inference", "hyper")).toBeTruthy();
+});
+
+// ---- which engines a role may spend ---------------------------------------
+
+function withRole(role: string, search: string[], backends: string[]): void {
+  const base = loadConfig({ path: "does-not-exist.json", env: {} });
+  setConfig({
+    ...base,
+    security: { credentialKey: "k" },
+    auth: {
+      ...base.auth,
+      enabled: true,
+      roles: {
+        [role]: { models: ["*"], search, providerRoles: [role] },
+      },
+    },
+    search: {
+      ...base.search,
+      provider: "none",
+      backends: backends.map((provider) => ({ provider, apiKey: "instance-key" })),
+    },
+  } as never);
+}
+
+test("a role searches only on the engines it is allowed", async () => {
+  const store = memStore();
+  withRole("guest", ["ceramic"], ["exa", "ceramic"]);
+  // Two configured, one allowed: they get that one, not the blend.
+  expect(await searchProviderFor(store, SUB, "guest")).toBeInstanceOf(CeramicSearchProvider);
+
+  withRole("guest", ["*"], ["exa", "ceramic"]);
+  expect(await searchProviderFor(store, SUB, "guest")).toBeInstanceOf(BlendSearchProvider);
+});
+
+test("a role allowed nothing gets no search at all", async () => {
+  const store = memStore();
+  withRole("guest", [], ["exa", "ceramic"]);
+  // Null means the web_search tool is never offered, rather than offered and
+  // spending somebody else's credits.
+  expect(await searchProviderFor(store, SUB, "guest")).toBeNull();
+});
+
+test("the keyless engine needs no configuring, only naming", async () => {
+  const store = memStore();
+  withRole("guest", ["duckduckgo"], ["exa"]);
+  // Nothing to bound: it takes no key and costs nobody anything.
+  expect(await searchProviderFor(store, SUB, "guest")).toBeInstanceOf(DuckDuckGoSearchProvider);
+});
+
+test("an engine you connected yourself is yours to use, whatever the role allows", async () => {
+  const store = memStore();
+  withRole("guest", [], ["exa"]);
+  saveApiKey(store, SUB, "search", "exa", "sk-my-own-exa");
+  // Their key, their money: the role bounds the instance's engines, not theirs.
+  expect(await searchProviderFor(store, SUB, "guest")).toBeInstanceOf(ExaSearchProvider);
 });

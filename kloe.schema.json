@@ -443,6 +443,13 @@
                 },
                 "default": []
               },
+              "search": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
               "subs": {
                 "type": "array",
                 "items": {

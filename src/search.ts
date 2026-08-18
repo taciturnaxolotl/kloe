@@ -1,4 +1,5 @@
 import { parseHTML } from "linkedom";
+import { type Role, roleMaySearch } from "./auth";
 import { connectedProviders, credentialFor } from "./credentials";
 import { type Config, getConfig } from "./settings";
 import type { Store } from "./store";
@@ -623,19 +624,56 @@ export function dedupeKey(raw: string): string {
 export async function searchProviderFor(
   store: Store,
   sub: string | undefined,
+  role?: Role,
 ): Promise<SearchProvider | null> {
-  const mine = connectedProviders(store, sub, "search");
-  if (mine.length === 0) return createSearchProvider();
-
   const cfg = getConfig().search;
-  const built: SearchProvider[] = [];
-  for (const id of mine) {
-    const key = await credentialFor(store, sub, "search", id);
-    const p = key ? backend(id, key, undefined, cfg.maxResults) : null;
-    if (p) built.push(p);
+  const mine = connectedProviders(store, sub, "search");
+  if (mine.length > 0) {
+    const built: SearchProvider[] = [];
+    for (const id of mine) {
+      const key = await credentialFor(store, sub, "search", id);
+      const p = key ? backend(id, key, undefined, cfg.maxResults) : null;
+      if (p) built.push(p);
+    }
+    if (built.length === 1) return built[0]!;
+    if (built.length > 1) return new BlendSearchProvider(built, cfg.maxResults);
+    // Every one of theirs failed to resolve; fall through to the instance's.
   }
-  if (built.length === 0) return createSearchProvider(); // every one of theirs failed to resolve
-  return built.length === 1 ? built[0]! : new BlendSearchProvider(built, cfg.maxResults);
+  return instanceSearchFor(role, cfg);
+}
+
+/**
+ * The instance's own search, narrowed to the engines this role may spend.
+ *
+ * DuckDuckGo is allowed by name even where the deployment never configured it:
+ * it takes no key, so there is no cost to bound and nothing for an operator to
+ * have opted into. Everything else has to be both configured here and named by
+ * the role.
+ */
+function instanceSearchFor(role: Role | undefined, cfg: Config["search"]): SearchProvider | null {
+  if (!role) return createSearchProvider(cfg);
+  const named = (id: string) => roleMaySearch(role, id);
+
+  const configured = cfg.backends?.length
+    ? cfg.backends.filter((b) => named(b.provider))
+    : cfg.provider !== "none" && cfg.provider !== "default" && named(cfg.provider)
+      ? [
+          {
+            provider: cfg.provider,
+            apiKey: cfg.apiKey,
+            endpoint: cfg.endpoint,
+            searchType: cfg.searchType,
+          },
+        ]
+      : [];
+
+  if (configured.length > 0) {
+    return createSearchProvider({ ...cfg, provider: "none", backends: configured });
+  }
+  // Nothing of the instance's is open to them; the keyless engine still is, if
+  // the role names it.
+  if (named("duckduckgo")) return new DuckDuckGoSearchProvider({ maxResults: cfg.maxResults });
+  return null;
 }
 
 export function createSearchProvider(

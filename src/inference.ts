@@ -415,7 +415,7 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
   const workerRef = opts.store ? resolveRoleModel(opts.store, "worker", opts.owner) : null;
   // Whose search this run spends, on the same rule as the model: their own
   // engines when they connected any.
-  const search = opts.store ? await searchProviderFor(opts.store, opts.owner) : null;
+  const search = opts.store ? await searchProviderFor(opts.store, opts.owner, opts.role) : null;
   const tools = toolSet({
     store: opts.store,
     owner: opts.owner,

@@ -347,6 +347,7 @@ const BUILT_IN: Record<string, RolePolicy> = {
     sandbox: true,
     publish: true,
     models: ["*"],
+    search: ["*"],
     subs: [],
     providerRoles: [],
   },
@@ -355,6 +356,7 @@ const BUILT_IN: Record<string, RolePolicy> = {
     sandbox: false,
     publish: false,
     models: [],
+    search: [],
     subs: [],
     providerRoles: [],
   },
@@ -409,19 +411,27 @@ export function roleCan(role: Role, capability: Capability): boolean {
 }
 
 /**
- * May this role pick this model from the ones the INSTANCE pays for?
+ * Does one of these patterns cover this name?
  *
- * Patterns are `provider/model`, with `*` standing for a whole segment:
  * `"*"` is everything, `"hyper/*"` is one provider's, and anything else is an
- * exact ref. Deliberately not a general glob — a half-understood wildcard in a
- * spending rule is worse than no wildcard.
+ * exact match. Deliberately not a general glob — a half-understood wildcard in
+ * a spending rule is worse than no wildcard.
  */
-export function roleMayUse(role: Role, ref: string): boolean {
-  return policyFor(role).models.some((pattern) => {
-    if (pattern === "*") return true;
-    if (pattern === ref) return true;
-    return pattern.endsWith("/*") && ref.startsWith(pattern.slice(0, -1));
+function allows(patterns: string[], value: string): boolean {
+  return patterns.some((pattern) => {
+    if (pattern === "*" || pattern === value) return true;
+    return pattern.endsWith("/*") && value.startsWith(pattern.slice(0, -1));
   });
+}
+
+/** May this role run this model on the INSTANCE's credentials? */
+export function roleMayUse(role: Role, ref: string): boolean {
+  return allows(policyFor(role).models, ref);
+}
+
+/** May this role search on the INSTANCE's key for this engine? */
+export function roleMaySearch(role: Role, providerId: string): boolean {
+  return allows(policyFor(role).search, providerId);
 }
 
 /** Roles this deployment knows about, for the UI that hands things out. */
