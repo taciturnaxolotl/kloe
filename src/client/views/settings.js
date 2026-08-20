@@ -155,9 +155,8 @@ export function mount(root, _params, ctx) {
       ok ? 900 : 2200,
     );
   }
-  async function patchRaw(ref, field, value) {
-    var body = { ref: ref };
-    body[field] = value;
+  /** A partial write to one model's row. Every edit on this page is one of these. */
+  async function patchModel(body) {
     try {
       var res = await fetch("/api/models/mine", {
         method: "PATCH",
@@ -169,8 +168,19 @@ export function mount(root, _params, ctx) {
       return false;
     }
   }
+  async function patchRaw(ref, field, value) {
+    var body = { ref: ref };
+    body[field] = value;
+    return patchModel(body);
+  }
   async function patch(ref, field, value, savedEl) {
     flash(savedEl, await patchRaw(ref, field, value));
+  }
+  /** Where a newly enabled model lands: the end of the picker, not the top. */
+  function nextSortOrder() {
+    return allModels.reduce(function (n, m) {
+      return m.enabled ? Math.max(n, (m.sortOrder || 0) + 1) : n;
+    }, 0);
   }
 
   function modelCard(m, draggable) {
@@ -214,10 +224,43 @@ export function mount(root, _params, ctx) {
     rename.className = "mrename";
     rename.placeholder = m.name;
     rename.value = m.displayName || "";
+    // You name what is in your picker. A name on a model that isn't in it would
+    // have to create the row to store it, which is a rename that silently turns
+    // the model on.
+    rename.disabled = !m.enabled;
 
     var saved = document.createElement("span");
     saved.className = "saved";
     saved.textContent = "saved";
+
+    toggle.addEventListener("change", async function () {
+      var on = toggle.checked;
+      var body = { ref: m.ref, enabled: on };
+      if (on) body.sortOrder = nextSortOrder();
+      toggle.disabled = true;
+      var ok = await patchModel(body);
+      toggle.disabled = false;
+      flash(saved, ok);
+      if (!ok) {
+        toggle.checked = !on; // the server said no; the row still says what it holds
+        return;
+      }
+      m.enabled = on;
+      if (on) m.sortOrder = body.sortOrder;
+      else m.displayName = null; // turning it off drops the row, name and all
+      // The card belongs in a different section now, so redraw rather than
+      // leave it sitting under a heading it no longer answers to.
+      render();
+    });
+
+    rename.addEventListener("change", async function () {
+      var name = rename.value.trim();
+      var ok = await patchModel({ ref: m.ref, displayName: name || null });
+      flash(saved, ok);
+      if (!ok) return;
+      m.displayName = name || null;
+      nm.textContent = m.displayName || m.name;
+    });
 
     row.appendChild(toggle);
     row.appendChild(main);
