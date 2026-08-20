@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import type { LanguageModel } from "ai";
 import { Catalog } from "../src/catalog";
-import { setRegistry } from "../src/inference";
+import { run, setRegistry } from "../src/inference";
 import { ProviderRegistry } from "../src/providers";
 import { loadConfig, rolePolicy, setConfig } from "../src/settings";
 import { Store } from "../src/store";
@@ -37,6 +37,14 @@ function registry(): void {
           context_window: 8000,
           cost_per_1m_in: 2,
           cost_per_1m_out: 10,
+          cost_per_1m_in_cached: 1,
+        },
+        {
+          id: "uncached",
+          name: "Uncached",
+          context_window: 8000,
+          cost_per_1m_in: 5,
+          cost_per_1m_out: 10,
         },
         { id: "free", name: "Free", context_window: 8000 },
       ],
@@ -55,9 +63,18 @@ function configure(policies: Record<string, ReturnType<typeof rolePolicy>>): voi
   });
 }
 
-/** A model that reports the usage it was told to, over both call shapes. */
-function stubModel(inputTokens: number, outputTokens: number): LanguageModel {
-  const usage = { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
+/**
+ * A model that reports the usage it was told to, over both call shapes.
+ *
+ * The counts are objects, which is how the SDK's current spec reports them and
+ * what every real adapter sends. A stub that reported plain numbers is how this
+ * shipped recording nothing: the tests passed and dev logged an empty ledger.
+ */
+function stubModel(inputTokens: number, outputTokens: number, cacheRead = 0): LanguageModel {
+  const usage = {
+    inputTokens: { total: inputTokens + cacheRead, noCache: inputTokens, cacheRead },
+    outputTokens: { total: outputTokens, text: outputTokens, reasoning: 0 },
+  };
   return {
     specificationVersion: "v4",
     provider: "acme",
@@ -119,6 +136,101 @@ test("a generated call lands in the ledger too", async () => {
   await (model as unknown as { doGenerate(o: unknown): Promise<unknown> }).doGenerate({});
   expect(store.usageTotals({ since: 0, groupBy: "model", payer: "user" })).toHaveLength(1);
   expect(store.usageTotals({ since: 0, groupBy: "model", payer: "instance" })).toHaveLength(0);
+});
+
+/**
+ * The whole path, on a real adapter: resolve a model, stream a completion from
+ * an endpoint that answers like OpenAI, and find the row.
+ *
+ * A stub can be wrong in the same direction as the code under test. This one
+ * cannot: the usage it reads is whatever `@ai-sdk/openai-compatible` builds
+ * from a wire response, which is what dev and production both see.
+ */
+test("a run against a real adapter lands in the ledger", async () => {
+  const sse = (o: unknown) => `data: ${JSON.stringify(o)}\n\n`;
+  const endpoint = Bun.serve({
+    port: 0,
+    fetch: () =>
+      new Response(
+        sse({ id: "1", choices: [{ index: 0, delta: { role: "assistant", content: "hi" } }] }) +
+          sse({
+            id: "1",
+            choices: [{ index: 0, delta: { content: " there" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 1234, completion_tokens: 56, total_tokens: 1290 },
+          }) +
+          "data: [DONE]\n\n",
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+  });
+  try {
+    setConfig(loadConfig({ path: "does-not-exist.json", env: {} }));
+    setRegistry(
+      new ProviderRegistry(
+        Catalog.fromRaw([
+          {
+            id: "acme",
+            name: "Acme",
+            type: "openai-compat",
+            api_endpoint: `${endpoint.url.origin}/v1`,
+            models: [
+              {
+                id: "cheap",
+                name: "Cheap",
+                context_window: 8000,
+                cost_per_1m_in: 2,
+                cost_per_1m_out: 10,
+              },
+            ],
+          },
+        ]),
+        { config: { providers: [{ id: "acme", apiKey: "sk-test" }] } },
+      ),
+    );
+    const store = new Store(":memory:");
+    for await (const _ of run([{ role: "user", content: "hi" }], {
+      model: "acme/cheap",
+      runId: "r1",
+      store,
+      owner: SUB,
+      conversationId: "c1",
+    })) {
+      // drain: the row is written as the run's stream ends
+    }
+    const totals = store.usageTotals({ since: 0, groupBy: "model" });
+    expect(totals).toHaveLength(1);
+    expect(totals[0]?.inputTokens).toBe(1234);
+    expect(totals[0]?.outputTokens).toBe(56);
+    expect(totals[0]?.costUsd).toBeCloseTo(0.003028, 10);
+  } finally {
+    endpoint.stop(true);
+  }
+});
+
+test("a cache read is charged at the cached rate, and at the full one without", async () => {
+  registry();
+  const store = new Store(":memory:");
+  // 400k fresh + 600k cached, at $2/$1 per 1M in and $10 out.
+  await drain(
+    metered(stubModel(400_000, 0, 600_000), "acme/cheap", { store, sub: SUB, payer: "instance" }),
+  );
+  var totals = store.usageTotals({ since: 0, groupBy: "model" });
+  // The whole prompt is what the row reports…
+  expect(totals[0]?.inputTokens).toBe(1_000_000);
+  // …and the two halves are priced apart: 0.4 × $2 + 0.6 × $1.
+  expect(totals[0]?.costUsd).toBeCloseTo(1.4, 10);
+
+  // A model the catalog gives no cached price: cache reads cost full freight
+  // rather than nothing, because understating a budget is the worse mistake.
+  const plain = new Store(":memory:");
+  await drain(
+    metered(stubModel(400_000, 0, 600_000), "acme/uncached", {
+      store: plain,
+      sub: SUB,
+      payer: "instance",
+    }),
+  );
+  // 1M input at $5, none of it discounted.
+  expect(plain.usageTotals({ since: 0, groupBy: "model" })[0]?.costUsd).toBeCloseTo(5, 10);
 });
 
 test("a budget counts the instance's spending and ignores the user's own", () => {
