@@ -594,30 +594,50 @@ test("a guest paying for themselves is not bounded by the instance's budget", as
   expect(res.status).toBe(202);
 });
 
-test("the ledger is yours to read, and everyone's only for an admin", async () => {
+test("the ledger is yours to read, split by who paid, and everyone's only for an admin", async () => {
   configureBudget({ tokensPerDay: 10_000 });
   const { base, store } = freshApp();
   charge(store, GUEST, 0.25, 4000);
   charge(store, OWNER, 1, 9000);
+  // The same guest, on an account they connected themselves.
+  store.recordUsage({
+    ts: Date.now(),
+    sub: GUEST,
+    payer: "user",
+    service: "inference",
+    providerId: "acme",
+    modelRef: "acme/spendy",
+    inputTokens: 80_000,
+    outputTokens: 20_000,
+    costUsd: 7,
+  });
 
   const mine = (await (await fetch(`${base}/api/usage`, { headers: as(store, GUEST) })).json()) as {
-    ok: boolean;
     spentUsd: number;
     spentTokens: number;
-    byModel: Array<{ key: string; costUsd: number }>;
+    instance: { costUsd: number; tokens: number; byModel: Array<{ key: string }> };
+    connected: { costUsd: number; tokens: number; byModel: Array<{ key: string }> };
     byUser?: unknown;
   };
+  // What the instance paid, and what the budget is measured against.
   expect(mine.spentUsd).toBeCloseTo(0.25, 10);
   expect(mine.spentTokens).toBe(4000);
-  expect(mine.byModel[0]?.key).toBe("acme/cheap");
+  expect(mine.instance.byModel.map((m) => m.key)).toEqual(["acme/cheap"]);
+  // Their own account, tracked beside it and counted against nothing.
+  expect(mine.connected.costUsd).toBeCloseTo(7, 10);
+  expect(mine.connected.tokens).toBe(100_000);
+  expect(mine.connected.byModel.map((m) => m.key)).toEqual(["acme/spendy"]);
   expect(mine.byUser).toBeUndefined(); // nobody else's spending, not even in passing
 
   expect(
-    (await fetch(`${base}/api/usage?scope=instance`, { headers: as(store, GUEST) })).status,
+    (await fetch(`${base}/api/usage?scope=everyone`, { headers: as(store, GUEST) })).status,
   ).toBe(403);
 
   const all = (await (
-    await fetch(`${base}/api/usage?scope=instance`, { headers: as(store, OWNER) })
+    await fetch(`${base}/api/usage?scope=everyone`, { headers: as(store, OWNER) })
   ).json()) as { byUser: Array<{ key: string; costUsd: number }> };
+  // Everyone, but only what this instance paid for — a guest's own account is
+  // between them and their provider.
   expect(all.byUser.map((u) => u.key).sort()).toEqual([GUEST, OWNER].sort());
+  expect(all.byUser.reduce((n, u) => n + u.costUsd, 0)).toBeCloseTo(1.25, 10);
 });

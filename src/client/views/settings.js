@@ -52,9 +52,11 @@ var TEMPLATE =
   '<section class="settabpanel" data-panel="usage" hidden>' +
   '<p class="lede">What your chats have cost, at each model\'s published rates. Runs on an account you connected yourself are listed too, and never count against a limit here.</p>' +
   '<div id="usageToday"></div>' +
-  '<div class="seclabel" id="usageModelsLabel">By model</div>' +
-  '<div id="usageByModel"></div>' +
-  '<div class="seclabel" id="usageEveryoneLabel" hidden>Everyone</div>' +
+  '<div class="seclabel" id="usageInstanceLabel">On this instance</div>' +
+  '<div id="usageInstance"></div>' +
+  '<div class="seclabel" id="usageConnectedLabel" hidden>On your own accounts</div>' +
+  '<div id="usageConnected"></div>' +
+  '<div class="seclabel" id="usageEveryoneLabel" hidden>Everyone, on this instance</div>' +
   '<div id="usageByUser"></div>' +
   "</section>" +
   '<section class="settabpanel" data-panel="research" hidden>' +
@@ -819,23 +821,52 @@ export function mount(root, _params, ctx) {
     if (label) label.hidden = false;
   }
 
+  /** A section's own line: what it adds up to, before the models under it. */
+  function sideSummary(side, days) {
+    return (
+      count(side.calls) +
+      (side.calls === 1 ? " call \u00b7 " : " calls \u00b7 ") +
+      count(side.tokens) +
+      " tokens \u00b7 last " +
+      days +
+      " days"
+    );
+  }
+
   async function loadUsage() {
-    var host = byId("usageByModel");
+    var host = byId("usageInstance");
     if (!host) return;
+    var u;
     try {
-      var u = await (await fetch("/api/usage?days=30")).json();
-      renderToday(u);
-      var label = byId("usageModelsLabel");
-      if (label) label.textContent = "By model, last " + u.days + " days";
-      renderTotals(host, u.byModel || []);
+      u = await (await fetch("/api/usage?days=30")).json();
     } catch (_) {
       host.innerHTML = '<p class="lede">Could not read the ledger.</p>';
       return;
     }
+    renderToday(u);
+
+    var instance = u.instance || { byModel: [], calls: 0, tokens: 0, costUsd: 0 };
+    var connected = u.connected || { byModel: [], calls: 0, tokens: 0, costUsd: 0 };
+    byId("usageInstanceLabel").textContent =
+      "On this instance \u00b7 " + money(instance.costUsd) + ", last " + u.days + " days";
+    renderTotals(host, instance.byModel || []);
+
+    // The connected side only appears once there is one. An instance where
+    // nobody has connected anything should not carry an empty room around.
+    if (connected.calls > 0) {
+      var label = byId("usageConnectedLabel");
+      label.hidden = false;
+      // Their provider bills them, not us: the dollars here are what the same
+      // tokens would list at, and a subscription (a ChatGPT account, say) has
+      // no list price at all. The token count is the honest number.
+      label.textContent = "On your own accounts \u00b7 " + sideSummary(connected, u.days);
+      renderTotals(byId("usageConnected"), connected.byModel || []);
+    }
+
     // Everyone's spending is an admin's business; a 403 here simply means the
     // section stays away.
     try {
-      var res = await fetch("/api/usage?days=30&scope=instance");
+      var res = await fetch("/api/usage?days=30&scope=everyone");
       if (!res.ok) return;
       var all = await res.json();
       renderTotals(byId("usageByUser"), all.byUser || [], byId("usageEveryoneLabel"));

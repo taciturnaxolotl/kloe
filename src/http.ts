@@ -1179,30 +1179,49 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
     /**
      * What has been spent, and what is left to spend.
      *
-     * Yours by default; `?scope=instance` is everyone's, and needs admin. The
-     * ledger records both payers, so this is also where someone sees that the
-     * account they connected is the one paying.
+     * Split by who paid, because the two numbers answer different questions.
+     * The instance's side is what the operator is buying and what a budget
+     * bounds; the connected side is what someone's own account covered, which
+     * nobody rations and which is the whole reward for connecting one.
+     *
+     * Yours by default. `?scope=everyone` is the instance's ledger across
+     * people, and needs admin.
      */
     "/api/usage": {
       GET: (req: Bun.BunRequest<"/api/usage">) => {
         const url = new URL(req.url);
         const sub = whoami(req, store);
         const role = requestRole(req, store);
-        const instance = url.searchParams.get("scope") === "instance";
-        if (instance) {
+        const everyone = url.searchParams.get("scope") === "everyone";
+        if (everyone) {
           const denied = requireOwner(req, store);
           if (denied) return denied;
         }
         const days = Math.min(Math.max(Number(url.searchParams.get("days")) || 30, 1), 365);
         const since = Date.now() - days * DAY_MS;
-        const scope = instance ? {} : { sub };
+        const whose = everyone ? {} : { sub };
+        const side = (payer: "instance" | "user") => {
+          const byModel = store.usageTotals({ since, groupBy: "model", payer, ...whose });
+          return {
+            byModel,
+            calls: byModel.reduce((n, r) => n + r.calls, 0),
+            tokens: byModel.reduce((n, r) => n + r.inputTokens + r.outputTokens, 0),
+            costUsd: byModel.reduce((n, r) => n + r.costUsd, 0),
+          };
+        };
         return Response.json({
           days,
           role,
           ...budgetStatus(store, sub, role),
-          byModel: store.usageTotals({ since, groupBy: "model", ...scope }),
-          byDay: store.usageTotals({ since, groupBy: "day", ...scope }),
-          ...(instance ? { byUser: store.usageTotals({ since, groupBy: "sub" }) } : {}),
+          instance: side("instance"),
+          connected: side("user"),
+          byDay: store.usageTotals({ since, groupBy: "day", ...whose }),
+          // Only what the instance paid for. What someone's own account covered
+          // is between them and their provider, and an admin reading this is
+          // asking about the bill they get.
+          ...(everyone
+            ? { byUser: store.usageTotals({ since, groupBy: "sub", payer: "instance" }) }
+            : {}),
         });
       },
     },
