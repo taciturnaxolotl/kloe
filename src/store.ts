@@ -500,7 +500,56 @@ CREATE TABLE IF NOT EXISTS user_credentials (
   updated_at    INTEGER NOT NULL,
   PRIMARY KEY (sub, service, provider_id)
 );
+
+-- What each model call cost, and who it was spent on behalf of. One row per
+-- provider call: a turn with three tool steps is three rows, and a research
+-- run's workers land here beside the conversation that asked for them.
+--
+-- payer is the whole reason this table is not just a log. 'instance' is the
+-- operator's credits and is what a budget bounds; 'user' is someone spending
+-- their own connected account, which nobody needs to ration. cost_usd is
+-- computed at write time from the catalog's prices, because a price that
+-- changes next month must not silently restate what last month cost.
+CREATE TABLE IF NOT EXISTS usage_log (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts              INTEGER NOT NULL,
+  sub             TEXT NOT NULL,
+  payer           TEXT NOT NULL,
+  service         TEXT NOT NULL,
+  provider_id     TEXT NOT NULL,
+  model_ref       TEXT NOT NULL,
+  conversation_id TEXT,
+  input_tokens    INTEGER NOT NULL DEFAULT 0,
+  output_tokens   INTEGER NOT NULL DEFAULT 0,
+  cost_usd        REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_usage_sub_ts ON usage_log (sub, ts);
+CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_log (ts);
 `;
+
+/** One provider call, as the ledger records it. */
+export interface UsageEntry {
+  ts: number;
+  sub: string;
+  /** Whose credits: the deployment's, or the user's own connected account. */
+  payer: "instance" | "user";
+  service: "inference" | "search";
+  providerId: string;
+  modelRef: string;
+  conversationId?: string;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+}
+
+/** A ledger total, by whatever the query grouped on. */
+export interface UsageTotal {
+  key: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+}
 
 /** The stored row, ciphertext and all. Decrypted into a UserCredential by credentials.ts. */
 export interface CredentialRow {
@@ -1621,6 +1670,97 @@ export class Store {
         )
         .run(until, sub, service, providerId, now).changes > 0
     );
+  }
+
+  // ---- the spend ledger ---------------------------------------------------
+
+  /** Record one provider call. Never throws — a lost row must not fail a run. */
+  recordUsage(e: UsageEntry): void {
+    try {
+      this.db
+        .query(
+          `INSERT INTO usage_log
+             (ts, sub, payer, service, provider_id, model_ref, conversation_id,
+              input_tokens, output_tokens, cost_usd)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          e.ts,
+          e.sub,
+          e.payer,
+          e.service,
+          e.providerId,
+          e.modelRef,
+          e.conversationId ?? null,
+          e.inputTokens,
+          e.outputTokens,
+          e.costUsd,
+        );
+    } catch (err) {
+      console.warn("[usage] could not record:", (err as Error).message);
+    }
+  }
+
+  /**
+   * What one person has spent of the INSTANCE's credits since `since`.
+   *
+   * Their own connected accounts are excluded on purpose: a budget bounds what
+   * the operator pays for, and someone paying their own way is not spending it.
+   */
+  spentSince(sub: string, since: number): { costUsd: number; tokens: number } {
+    const row = this.db
+      .query(
+        `SELECT COALESCE(SUM(cost_usd), 0) AS cost,
+                COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens
+         FROM usage_log WHERE sub = ? AND payer = 'instance' AND ts >= ?`,
+      )
+      .get(sub, since) as { cost: number; tokens: number };
+    return { costUsd: row.cost, tokens: row.tokens };
+  }
+
+  /**
+   * Ledger totals since `since`, grouped by model, by person, or by day.
+   *
+   * `sub` narrows it to one person — the difference between "what have I spent"
+   * and the admin's "what has this instance spent".
+   */
+  usageTotals(opts: {
+    since: number;
+    groupBy: "model" | "sub" | "day";
+    sub?: string;
+    payer?: "instance" | "user";
+  }): UsageTotal[] {
+    const column =
+      opts.groupBy === "model"
+        ? "model_ref"
+        : opts.groupBy === "sub"
+          ? "sub"
+          : "date(ts / 1000, 'unixepoch')";
+    const where = ["ts >= ?"];
+    const args: Array<string | number> = [opts.since];
+    if (opts.sub) {
+      where.push("sub = ?");
+      args.push(opts.sub);
+    }
+    if (opts.payer) {
+      where.push("payer = ?");
+      args.push(opts.payer);
+    }
+    return this.db
+      .query(
+        `SELECT ${column} AS key, COUNT(*) AS calls,
+                COALESCE(SUM(input_tokens), 0) AS inputTokens,
+                COALESCE(SUM(output_tokens), 0) AS outputTokens,
+                COALESCE(SUM(cost_usd), 0) AS costUsd
+         FROM usage_log WHERE ${where.join(" AND ")}
+         GROUP BY key ORDER BY ${opts.groupBy === "day" ? "key ASC" : "costUsd DESC, calls DESC"}`,
+      )
+      .all(...args) as UsageTotal[];
+  }
+
+  /** Drop ledger rows older than `before` — for whoever prunes. */
+  pruneUsage(before: number): number {
+    return this.db.query("DELETE FROM usage_log WHERE ts < ?").run(before).changes;
   }
 
   // ---- conversation ownership --------------------------------------------

@@ -414,12 +414,37 @@ const RolePolicySchema = v.object({
    * takes no key and costs nobody anything, so there is nothing to opt into.
    */
   search: v.optional(v.array(v.string()), []),
+  /**
+   * Dollars of the INSTANCE's credits this role may spend in a rolling 24
+   * hours. 0 is no bound, which is what an owner wants and a guest does not.
+   *
+   * Their own connected accounts never count toward it: a budget bounds what
+   * the operator pays for, and someone paying their own way is not spending it.
+   */
+  usdPerDay: v.optional(v.number(), 0),
+  /**
+   * The same bound in tokens, for the models a price is not known for — a free
+   * tier, a router that bills elsewhere, anything the catalog prices at zero.
+   * Whichever limit is reached first stops the next run.
+   */
+  tokensPerDay: v.optional(v.number(), 0),
   /** Subject URLs holding this role outright. Checked before anything else. */
   subs: v.optional(v.array(v.string()), []),
   /** Provider role strings that map to this one (indiko's per-app RBAC). */
   providerRoles: v.optional(v.array(v.string()), []),
 });
 export type RolePolicy = v.InferOutput<typeof RolePolicySchema>;
+
+/**
+ * A policy from a partial one, defaults filled in.
+ *
+ * The schema already knows what an unstated field means, so nothing that builds
+ * a policy by hand — a test, a caller assembling one — has to restate every
+ * field, and a field added later does not break them.
+ */
+export function rolePolicy(partial: Partial<RolePolicy> = {}): RolePolicy {
+  return v.parse(RolePolicySchema, partial);
+}
 
 const AuthSchema = v.object({
   enabled: v.optional(v.boolean(), false),

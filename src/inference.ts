@@ -13,6 +13,7 @@ import { searchProviderFor } from "./search";
 import { getConfig } from "./settings";
 import type { Store } from "./store";
 import { type ToolContext, toolSet } from "./tools";
+import { metered } from "./usage";
 
 /**
  * True when provider reasoning metadata carries a signature — the marker of a
@@ -346,12 +347,20 @@ export function resolveModel(modelRef: string, credential?: Credential): Languag
  */
 export async function resolveModelFor(
   modelRef: string,
-  who: { store?: Store; sub?: string },
+  who: { store?: Store; sub?: string; conversationId?: string },
 ): Promise<LanguageModel> {
   if (!who.store || !who.sub || isEchoModel(modelRef)) return resolveModel(modelRef);
   const providerName = modelRef.split("/")[0]!;
   const credential = await credentialFor(who.store, who.sub, "inference", providerName);
-  return resolveModel(modelRef, credential);
+  // Metered here rather than at the turn, because this is where every model a
+  // run touches comes from — the utility ones included. Whose credential
+  // answered is also what says who pays, so the ledger learns it for free.
+  return metered(resolveModel(modelRef, credential), modelRef, {
+    store: who.store,
+    sub: who.sub,
+    payer: credential ? "user" : "instance",
+    conversationId: who.conversationId,
+  });
 }
 
 /** Project-scoped context to fold into a run: the pinned lard project (whose
@@ -393,7 +402,7 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
   // connected something of their own. Resolved once, here, and reused for every
   // model this run touches — the utility models included, since a research
   // worker on the deployment's key would quietly undo the whole arrangement.
-  const who = { store: opts.store, sub: opts.owner };
+  const who = { store: opts.store, sub: opts.owner, conversationId: opts.conversationId };
   const model = await resolveModelFor(opts.model, who);
   // Per-provider knobs from ops config: an output-token cap, and raw
   // provider-specific options (e.g. a reasoning/thinking toggle) sent under the

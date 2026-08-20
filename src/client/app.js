@@ -817,7 +817,10 @@ import { mountSidebar } from "./sidebar.js";
     delete queued[runId];
     renderQueue();
   }
-  function failUser(runId) {
+  // `reason` is the server's own words when it had any (a budget, a model a
+  // role may not reach). Silence there reads as a bug in kloe rather than a
+  // rule the person could do something about.
+  function failUser(runId, reason) {
     var p = pending[runId];
     if (!p) return;
     p.turn.classList.remove("pending");
@@ -825,7 +828,7 @@ import { mountSidebar } from "./sidebar.js";
     if (p.turn.querySelector(".failbar")) return;
     var fb = document.createElement("div");
     fb.className = "failbar";
-    fb.textContent = "not sent — ";
+    fb.textContent = reason ? reason + " " : "not sent — ";
     var btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = "Retry";
@@ -3103,7 +3106,7 @@ import { mountSidebar } from "./sidebar.js";
         var err = await res.json().catch(function () {
           return {};
         });
-        failUser(runId);
+        failUser(runId, err.error);
         if (err.error) console.warn("prompt rejected:", err.error);
         return;
       }

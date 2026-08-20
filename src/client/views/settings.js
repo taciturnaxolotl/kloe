@@ -37,6 +37,7 @@ var TEMPLATE =
   '<div class="settabs" id="settabs" role="tablist">' +
   '<button class="settab active" type="button" data-tab="models" role="tab">Models</button>' +
   '<button class="settab" type="button" data-tab="connections" role="tab">Connections</button>' +
+  '<button class="settab" type="button" data-tab="usage" role="tab">Usage</button>' +
   '<button class="settab" type="button" data-tab="research" role="tab" hidden>Research</button>' +
   '<button class="settab" type="button" data-tab="memory" role="tab" hidden>Memory</button>' +
   '<button class="settab" type="button" data-tab="people" role="tab" hidden>People</button>' +
@@ -47,6 +48,14 @@ var TEMPLATE =
   '<section class="settabpanel" data-panel="models">' +
   '<p class="lede">Your picker. Turn models on, drag them into the order you want (⌘-click to move several at once), and rename any of them. Which models you can choose from is set in <code>kloe.json</code>; what you do with them is yours.</p>' +
   '<div id="content">Loading…</div>' +
+  "</section>" +
+  '<section class="settabpanel" data-panel="usage" hidden>' +
+  '<p class="lede">What your chats have cost, at each model\'s published rates. Runs on an account you connected yourself are listed too, and never count against a limit here.</p>' +
+  '<div id="usageToday"></div>' +
+  '<div class="seclabel" id="usageModelsLabel">By model</div>' +
+  '<div id="usageByModel"></div>' +
+  '<div class="seclabel" id="usageEveryoneLabel" hidden>Everyone</div>' +
+  '<div id="usageByUser"></div>' +
   "</section>" +
   '<section class="settabpanel" data-panel="research" hidden>' +
   '<p class="lede">Deep research runs two jobs. The <strong>lead</strong> plans the angles, reads each round of notes to decide what to chase next, and writes the report. The <strong>workers</strong> search and read pages — far more tokens, on a much narrower job. Running a strong lead over cheaper workers is usually better than running one model for both.</p>' +
@@ -715,6 +724,124 @@ export function mount(root, _params, ctx) {
     }
   }
 
+  // ---- usage ----
+  // A statement, not a control. What a run costs is decided by the model's
+  // price and what the role may spend, both of which live in kloe.json — this
+  // panel exists so nobody has to guess where the month went.
+
+  /** Dollars, with enough digits to be worth reading at kloe's amounts. */
+  function money(v) {
+    if (!v) return "$0";
+    if (v < 0.01) return "$" + v.toFixed(4);
+    if (v < 1) return "$" + v.toFixed(3);
+    return "$" + v.toFixed(2);
+  }
+  function count(n) {
+    return (n || 0).toLocaleString("en-US");
+  }
+  /** A row in the connections vocabulary: name on the left, figure on the right. */
+  function usageRow(title, detail, figure) {
+    var row = document.createElement("div");
+    row.className = "connrow";
+    var text = document.createElement("div");
+    text.className = "conntext";
+    var t = document.createElement("div");
+    t.className = "conntitle";
+    t.textContent = title;
+    var d = document.createElement("div");
+    d.className = "connsub";
+    d.textContent = detail;
+    text.appendChild(t);
+    text.appendChild(d);
+    row.appendChild(text);
+    if (figure) {
+      var f = document.createElement("span");
+      f.className = "usagefig";
+      f.textContent = figure;
+      row.appendChild(f);
+    }
+    return row;
+  }
+
+  function renderToday(u) {
+    var host = byId("usageToday");
+    if (!host) return;
+    host.innerHTML = "";
+    var budget = u.budget || {};
+    var caps = [];
+    if (budget.usdPerDay > 0) caps.push(money(u.spentUsd) + " of " + money(budget.usdPerDay));
+    if (budget.tokensPerDay > 0)
+      caps.push(count(u.spentTokens) + " of " + count(budget.tokensPerDay) + " tokens");
+    var row = usageRow(
+      "Today",
+      caps.length
+        ? caps.join(" \u00b7 ") + (u.ok ? "" : " \u00b7 " + u.reason)
+        : count(u.spentTokens) + " tokens on this instance, with no daily limit",
+      caps.length ? "" : money(u.spentUsd),
+    );
+    if (!u.ok) row.classList.add("on");
+    host.appendChild(row);
+
+    // The bar only means something when there is a limit to be a fraction of.
+    var of = budget.usdPerDay > 0 ? u.spentUsd / budget.usdPerDay : 0;
+    var ofTokens = budget.tokensPerDay > 0 ? u.spentTokens / budget.tokensPerDay : 0;
+    var filled = Math.max(of, ofTokens);
+    if (filled > 0) {
+      var bar = document.createElement("div");
+      bar.className = "rsrchbar usagebar";
+      var fill = document.createElement("span");
+      fill.style.width = Math.min(100, Math.round(filled * 100)) + "%";
+      bar.appendChild(fill);
+      host.appendChild(bar);
+    }
+  }
+
+  function renderTotals(host, rows, label) {
+    host.innerHTML = "";
+    if (!rows.length) {
+      host.innerHTML = '<p class="lede">Nothing yet.</p>';
+      return;
+    }
+    rows.forEach(function (r) {
+      host.appendChild(
+        usageRow(
+          r.key,
+          count(r.calls) +
+            (r.calls === 1 ? " call \u00b7 " : " calls \u00b7 ") +
+            count(r.inputTokens) +
+            " in \u00b7 " +
+            count(r.outputTokens) +
+            " out",
+          money(r.costUsd),
+        ),
+      );
+    });
+    if (label) label.hidden = false;
+  }
+
+  async function loadUsage() {
+    var host = byId("usageByModel");
+    if (!host) return;
+    try {
+      var u = await (await fetch("/api/usage?days=30")).json();
+      renderToday(u);
+      var label = byId("usageModelsLabel");
+      if (label) label.textContent = "By model, last " + u.days + " days";
+      renderTotals(host, u.byModel || []);
+    } catch (_) {
+      host.innerHTML = '<p class="lede">Could not read the ledger.</p>';
+      return;
+    }
+    // Everyone's spending is an admin's business; a 403 here simply means the
+    // section stays away.
+    try {
+      var res = await fetch("/api/usage?days=30&scope=instance");
+      if (!res.ok) return;
+      var all = await res.json();
+      renderTotals(byId("usageByUser"), all.byUser || [], byId("usageEveryoneLabel"));
+    } catch (_) {}
+  }
+
   // ---- lard (memory) ----
   async function loadLard() {
     var tabBtn = root.querySelector('.settab[data-tab="memory"]');
@@ -1015,10 +1142,12 @@ export function mount(root, _params, ctx) {
   // Roles first: the model rows draw a checkbox per role, so they need the list
   // before they render.
   loadRoles();
+  loadUsage();
   if (location.hash === "#memory") selectTab("memory");
   if (location.hash === "#connections") selectTab("connections");
   if (location.hash === "#mine") selectTab("models");
   if (location.hash === "#people") selectTab("people");
+  if (location.hash === "#usage") selectTab("usage");
   loadLard();
   // Models and preferences together: a role picker lists enabled models, so
   // rendering it needs both and rendering it twice would flicker.

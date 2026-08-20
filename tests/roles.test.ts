@@ -8,7 +8,7 @@ import { Catalog } from "../src/catalog";
 import { apiRoutes } from "../src/http";
 import { setRegistry } from "../src/inference";
 import { ProviderRegistry } from "../src/providers";
-import { loadConfig, type RolePolicy, setConfig } from "../src/settings";
+import { loadConfig, type RolePolicy, rolePolicy, setConfig } from "../src/settings";
 import { Store } from "../src/store";
 import { toolSet } from "../src/tools";
 
@@ -46,7 +46,7 @@ function configure(owners: string[], ownerRole?: string): void {
   const roles: Record<string, RolePolicy> =
     owners.length || ownerRole
       ? {
-          owner: {
+          owner: rolePolicy({
             admin: true,
             sandbox: true,
             publish: true,
@@ -54,10 +54,10 @@ function configure(owners: string[], ownerRole?: string): void {
             search: ["*"],
             subs: owners,
             providerRoles: ownerRole ? [ownerRole] : [],
-          },
+          }),
           // Guests may pick from one provider's models here; what they see is
           // whichever of those they turned on.
-          guest: {
+          guest: rolePolicy({
             admin: false,
             sandbox: false,
             publish: false,
@@ -65,7 +65,7 @@ function configure(owners: string[], ownerRole?: string): void {
             search: [],
             subs: [],
             providerRoles: [],
-          },
+          }),
         }
       : {};
   setConfig({ ...base, auth: { ...base.auth, enabled: true, roles } });
@@ -132,7 +132,7 @@ test("auth off means there is nobody to be a guest to", () => {
       ...base.auth,
       enabled: false,
       roles: {
-        owner: {
+        owner: rolePolicy({
           admin: true,
           sandbox: true,
           publish: true,
@@ -140,7 +140,7 @@ test("auth off means there is nobody to be a guest to", () => {
           search: ["*"],
           subs: [OWNER],
           providerRoles: [],
-        },
+        }),
       },
     },
   });
@@ -315,7 +315,7 @@ test("roles declared in config carry their own policy", () => {
       ...base.auth,
       enabled: true,
       roles: {
-        staff: {
+        staff: rolePolicy({
           admin: false,
           sandbox: true,
           publish: true,
@@ -323,8 +323,8 @@ test("roles declared in config carry their own policy", () => {
           search: [],
           subs: [],
           providerRoles: ["staff"],
-        },
-        visitor: {
+        }),
+        visitor: rolePolicy({
           admin: false,
           sandbox: false,
           publish: false,
@@ -332,7 +332,7 @@ test("roles declared in config carry their own policy", () => {
           search: [],
           subs: [],
           providerRoles: ["visitor"],
-        },
+        }),
       },
     },
   });
@@ -362,7 +362,7 @@ test("a later sign-in does not undo an assignment made here", () => {
       ...base.auth,
       enabled: true,
       roles: {
-        owner: {
+        owner: rolePolicy({
           admin: true,
           sandbox: true,
           publish: true,
@@ -370,8 +370,8 @@ test("a later sign-in does not undo an assignment made here", () => {
           search: ["*"],
           subs: [],
           providerRoles: ["operator"],
-        },
-        guest: {
+        }),
+        guest: rolePolicy({
           admin: false,
           sandbox: false,
           publish: false,
@@ -379,7 +379,7 @@ test("a later sign-in does not undo an assignment made here", () => {
           search: [],
           subs: [GUEST],
           providerRoles: [],
-        },
+        }),
       },
     },
   });
@@ -503,4 +503,121 @@ test("your list is what your role may reach, and you cannot curate past it", asy
   // The refusal changed nothing: a model outside the bound was never theirs to
   // put in or take out.
   expect(await guestPicker()).toEqual(["acme/cheap"]);
+});
+
+/** The same instance, with a spending bound on the guest role. */
+function configureBudget(over: { usdPerDay?: number; tokensPerDay?: number }): void {
+  const base = loadConfig({ path: "does-not-exist.json", env: {} });
+  setConfig({
+    ...base,
+    auth: {
+      ...base.auth,
+      enabled: true,
+      roles: {
+        owner: rolePolicy({ admin: true, models: ["*"], search: ["*"], subs: [OWNER] }),
+        guest: rolePolicy({ models: ["acme/*"], ...over }),
+      },
+    },
+  });
+  resetAuthCache();
+}
+
+/** Charge `costUsd` to `sub` on the instance's credits, as a run would. */
+function charge(store: Store, sub: string, costUsd: number, tokens = 1000): void {
+  store.recordUsage({
+    ts: Date.now(),
+    sub,
+    payer: "instance",
+    service: "inference",
+    providerId: "acme",
+    modelRef: "acme/cheap",
+    inputTokens: tokens,
+    outputTokens: 0,
+    costUsd,
+  });
+}
+
+test("a guest who has spent their day is refused, and told why", async () => {
+  configureBudget({ usdPerDay: 0.5 });
+  const { base, store } = freshApp();
+  const prompt = (sub: string, conversation = "b1") =>
+    fetch(`${base}/api/conversations/${conversation}/prompt`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...as(store, sub) },
+      body: JSON.stringify({ content: "hi", model: "acme/cheap" }),
+    });
+
+  expect((await prompt(GUEST)).status).toBe(202);
+  charge(store, GUEST, 0.6);
+
+  const refused = await prompt(GUEST);
+  expect(refused.status).toBe(429);
+  expect(((await refused.json()) as { error: string }).error).toContain("$0.50");
+  // One person's spending is their own: the owner is unaffected, and so would
+  // another guest be.
+  expect((await prompt(OWNER, "b1-owner")).status).toBe(202);
+});
+
+test("a guest paying for themselves is not bounded by the instance's budget", async () => {
+  configureBudget({ usdPerDay: 0.5 });
+  const { base, store } = freshApp();
+  charge(store, GUEST, 5);
+  // Their own connected account, recorded but never counted.
+  store.recordUsage({
+    ts: Date.now(),
+    sub: GUEST,
+    payer: "user",
+    service: "inference",
+    providerId: "acme",
+    modelRef: "acme/cheap",
+    inputTokens: 10,
+    outputTokens: 10,
+    costUsd: 99,
+  });
+  store.setCredentialRow({
+    sub: GUEST,
+    service: "inference",
+    provider_id: "acme",
+    kind: "key",
+    secret: "ciphertext",
+    refresh_token: null,
+    expires_at: null,
+    label: null,
+    meta: null,
+  });
+
+  const res = await fetch(`${base}/api/conversations/b2/prompt`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...as(store, GUEST) },
+    body: JSON.stringify({ content: "hi", model: "acme/cheap" }),
+  });
+  expect(res.status).toBe(202);
+});
+
+test("the ledger is yours to read, and everyone's only for an admin", async () => {
+  configureBudget({ tokensPerDay: 10_000 });
+  const { base, store } = freshApp();
+  charge(store, GUEST, 0.25, 4000);
+  charge(store, OWNER, 1, 9000);
+
+  const mine = (await (await fetch(`${base}/api/usage`, { headers: as(store, GUEST) })).json()) as {
+    ok: boolean;
+    spentUsd: number;
+    spentTokens: number;
+    byModel: Array<{ key: string; costUsd: number }>;
+    byUser?: unknown;
+  };
+  expect(mine.spentUsd).toBeCloseTo(0.25, 10);
+  expect(mine.spentTokens).toBe(4000);
+  expect(mine.byModel[0]?.key).toBe("acme/cheap");
+  expect(mine.byUser).toBeUndefined(); // nobody else's spending, not even in passing
+
+  expect(
+    (await fetch(`${base}/api/usage?scope=instance`, { headers: as(store, GUEST) })).status,
+  ).toBe(403);
+
+  const all = (await (
+    await fetch(`${base}/api/usage?scope=instance`, { headers: as(store, OWNER) })
+  ).json()) as { byUser: Array<{ key: string; costUsd: number }> };
+  expect(all.byUser.map((u) => u.key).sort()).toEqual([GUEST, OWNER].sort());
 });

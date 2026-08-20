@@ -41,7 +41,23 @@
     "baseUrl": "https://kloe.dunkirk.sh",
     "allowedSubs": [],
     "sessionTtlDays": 30,
-    "appName": "kloe"
+    "appName": "kloe",
+    "roles": {
+      "owner": {
+        "admin": true,
+        "sandbox": true,
+        "publish": true,
+        "models": ["*"],
+        "search": ["*"],
+        "subs": ["https://you.example/"]
+      },
+      "guest": {
+        "models": ["hyper/*"],
+        "search": ["duckduckgo"],
+        "usdPerDay": 0.5,
+        "tokensPerDay": 0
+      }
+    }
   },
   "prompt": {
     "name": "Kloe",

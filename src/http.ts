@@ -61,6 +61,7 @@ import {
 import { getConfig } from "./settings";
 import { sseBlock } from "./sse";
 import type { Store } from "./store";
+import { budgetStatus, DAY_MS } from "./usage";
 import { describeRef, forgetUserModels, userModelRefs } from "./usermodels";
 import { withBody } from "./validate";
 
@@ -310,8 +311,23 @@ function requireUsableModel(
   // Otherwise it is the instance paying, and the role says which of its models
   // this person may reach. What they picked for their own picker is their
   // business, not a permission.
-  if (roleMayUse(role, ref)) return null;
-  return Response.json({ error: `model "${ref}" is not available to you` }, { status: 403 });
+  if (!roleMayUse(role, ref)) {
+    return Response.json({ error: `model "${ref}" is not available to you` }, { status: 403 });
+  }
+  // And how much of it they may spend. Checked as a run starts, so a turn
+  // already in flight is never cut off part-way — the budget bounds what gets
+  // started, not what finishes.
+  const budget = budgetStatus(store, sub ?? LOCAL_SUB, role);
+  if (!budget.ok) {
+    return Response.json(
+      {
+        error: `${budget.reason}. Connect your own account to keep going.`,
+        resetsAt: budget.resetsAt,
+      },
+      { status: 429 },
+    );
+  }
+  return null;
 }
 
 /**
@@ -1158,6 +1174,37 @@ export function apiRoutes(deps: { store: Store; blobs: BlobStore; kick?: () => v
         Response.json({
           models: await chatModelsFor(store, requestRole(req, store), whoami(req, store)),
         }),
+    },
+
+    /**
+     * What has been spent, and what is left to spend.
+     *
+     * Yours by default; `?scope=instance` is everyone's, and needs admin. The
+     * ledger records both payers, so this is also where someone sees that the
+     * account they connected is the one paying.
+     */
+    "/api/usage": {
+      GET: (req: Bun.BunRequest<"/api/usage">) => {
+        const url = new URL(req.url);
+        const sub = whoami(req, store);
+        const role = requestRole(req, store);
+        const instance = url.searchParams.get("scope") === "instance";
+        if (instance) {
+          const denied = requireOwner(req, store);
+          if (denied) return denied;
+        }
+        const days = Math.min(Math.max(Number(url.searchParams.get("days")) || 30, 1), 365);
+        const since = Date.now() - days * DAY_MS;
+        const scope = instance ? {} : { sub };
+        return Response.json({
+          days,
+          role,
+          ...budgetStatus(store, sub, role),
+          byModel: store.usageTotals({ since, groupBy: "model", ...scope }),
+          byDay: store.usageTotals({ since, groupBy: "day", ...scope }),
+          ...(instance ? { byUser: store.usageTotals({ since, groupBy: "sub" }) } : {}),
+        });
+      },
     },
 
     "/api/conversations/:id/stream": {

@@ -450,6 +450,14 @@
                 },
                 "default": []
               },
+              "usdPerDay": {
+                "type": "number",
+                "default": 0
+              },
+              "tokensPerDay": {
+                "type": "number",
+                "default": 0
+              },
               "subs": {
                 "type": "array",
                 "items": {

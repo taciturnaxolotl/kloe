@@ -3527,6 +3527,18 @@ body.lb-open {
   color: var(--ink-muted);
   margin-top: 2px;
 }
+/* The figure at the end of a usage row. Tabular so a column of amounts lines
+   up on the decimal instead of shimmering as it updates. */
+.usagefig {
+  flex: none;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+}
+.usagebar {
+  margin: 8px 2px 0;
+}
+
 .connrow .btn,
 .connrow .connkey {
   flex: none;
