@@ -365,6 +365,13 @@ export class ConversationActor {
       toolName: string;
       output: unknown;
     }> = [];
+    // The ids of the current step's tool calls, in the order the assistant
+    // issued them. Results arrive in completion order — four parallel searches
+    // come back in whatever order they finish — and some endpoints resolve a
+    // tool message to its call BY POSITION rather than by id (Kimi K3 through
+    // hyper says so in as many words). Replaying results in arrival order hands
+    // those the wrong name, or none.
+    let callOrder: string[] = [];
 
     const flushUser = (): void => {
       const parts = userParts;
@@ -414,8 +421,16 @@ export class ConversationActor {
     };
     const flushTools = (): void => {
       if (toolResults.length === 0) return;
+      // Back into call order. A result whose call isn't in this step (it can't
+      // be, but the sort must be total) sorts after the ones that are.
+      const rank = (id: string) => {
+        const i = callOrder.indexOf(id);
+        return i === -1 ? callOrder.length : i;
+      };
+      toolResults.sort((a, b) => rank(a.toolCallId) - rank(b.toolCallId));
       out.push({ role: "tool", content: toolResults } as ModelMessage);
       toolResults = [];
+      callOrder = [];
     };
 
     for (const e of this.store.replay(this.conversationId, 0)) {
@@ -449,7 +464,9 @@ export class ConversationActor {
         flushUser();
         const d = e.data as ToolCallData;
         if (paired.has(d.toolCallId)) {
+          if (toolResults.length > 0) flushTools(); // a call after a result: new step
           pushAsstText();
+          callOrder.push(d.toolCallId);
           asstParts.push({
             type: "tool-call",
             toolCallId: d.toolCallId,

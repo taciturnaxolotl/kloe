@@ -644,3 +644,46 @@ test("reclaim: completed tools stay paired in history; an in-flight one is dropp
   // the ONLY thing that re-runs on reclaim; every completed tool is preserved.
   expect(flat).not.toContain('"toolCallId":"B"');
 });
+
+test("parallel tool results replay in call order, not completion order", async () => {
+  // Four searches fire together and come back in whatever order they finish.
+  // Some endpoints resolve a tool message to its call by POSITION (Kimi K3
+  // through hyper answers the mismatch with a 400 that says only "Invalid
+  // input"), so arrival order is not an order we may keep.
+  const a = new ConversationActor("t-tool-order", store);
+  a.appendUser("search four things");
+  await a.runText("r", "m", async function* (_signal) {
+    for (const id of ["c1", "c2", "c3", "c4"])
+      yield { kind: "tool-call", toolCallId: id, toolName: "web_search", input: { q: id } };
+    for (const id of ["c3", "c1", "c4", "c2"])
+      yield { kind: "tool-result", toolCallId: id, toolName: "web_search", output: id };
+  });
+  const h = await a.history();
+  const asst = h.find((m) => m.role === "assistant")!;
+  const tool = h.find((m) => m.role === "tool")!;
+  const calls = (asst.content as Array<{ toolCallId: string }>).map((p) => p.toolCallId);
+  const results = (tool.content as Array<{ toolCallId: string }>).map((p) => p.toolCallId);
+  expect(calls).toEqual(["c1", "c2", "c3", "c4"]);
+  expect(results).toEqual(calls);
+});
+
+test("a tool call with no text before it closes the previous step's results", async () => {
+  // Text or reasoning between steps flushes the pending tool message; a model
+  // that goes straight from a result to its next call has neither, and the
+  // turn used to fold into assistant, assistant, tool, tool.
+  const a = new ConversationActor("t-tool-step", store);
+  a.appendUser("go");
+  await a.runText("r", "m", async function* (_signal) {
+    yield { kind: "tool-call", toolCallId: "c1", toolName: "web_search", input: {} };
+    yield { kind: "tool-result", toolCallId: "c1", toolName: "web_search", output: "a" };
+    yield { kind: "tool-call", toolCallId: "c2", toolName: "web_search", input: {} };
+    yield { kind: "tool-result", toolCallId: "c2", toolName: "web_search", output: "b" };
+  });
+  expect((await a.history()).map((m) => m.role)).toEqual([
+    "user",
+    "assistant",
+    "tool",
+    "assistant",
+    "tool",
+  ]);
+});
