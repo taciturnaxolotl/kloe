@@ -7,6 +7,7 @@ import {
   BATCH_MAX_DELTAS,
   TOOL_OUTPUT_MAX,
 } from "./config";
+import { providerErrorDetail, requestShape } from "./errors";
 import {
   type ArtifactRef,
   type AttachmentRef,
@@ -728,11 +729,21 @@ export class ConversationActor {
         errored = true;
         // Also log server-side: the RunErr event reaches the client, but the
         // terminal is where you're watching, and a stack is more diagnostic.
-        console.error(`[run ${runId}] provider error:`, err);
+        // A provider's own words beat the SDK's summary: a 400 whose message is
+        // just "Invalid input" says exactly what it disliked in the response
+        // body, and the request's shape says which turn carried it.
+        const detail = providerErrorDetail(err);
+        const shape = requestShape(err);
+        console.error(
+          `[run ${runId}] provider error:`,
+          err,
+          ...(detail ? [`\n  response: ${detail}`] : []),
+          ...(shape ? [`\n  request:  ${shape}`] : []),
+        );
         this.persist(Event.RunErr, {
           runId,
           threadId: this.conversationId,
-          error: String(err),
+          error: detail ? `${err} (${providerErrorDetail(err, 300)})` : String(err),
         });
       }
     } finally {

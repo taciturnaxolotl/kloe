@@ -1,4 +1,5 @@
 import { type JSONValue, streamText } from "ai";
+import { providerErrorDetail } from "./errors";
 import { getRegistry, resolveModelFor, resolveSmallModel } from "./inference";
 import type { Store } from "./store";
 
@@ -79,7 +80,9 @@ export async function generateTitle(
     console.warn(`[title] ${modelRef} produced no title (finish: ${await result.finishReason})`);
     return null;
   } catch (e) {
-    console.warn("[title] generation failed:", (e as Error).message);
+    // The provider's own words, not just the SDK's summary — a 400 here is
+    // otherwise a one-liner that names nothing.
+    console.warn("[title] generation failed:", providerErrorDetail(e) ?? (e as Error).message);
     return null;
   }
 }
