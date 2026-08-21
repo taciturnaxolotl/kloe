@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test";
 import type { ModelMessage } from "ai";
 import { Catalog } from "../src/catalog";
-import { effortFor, promptChars, setRegistry, usageFor } from "../src/inference";
+import {
+  dropForeignReasoning,
+  effortFor,
+  promptChars,
+  setRegistry,
+  usageFor,
+} from "../src/inference";
 import { ProviderRegistry } from "../src/providers";
 
 test("context occupancy comes from the final step, not the summed steps", () => {
@@ -134,4 +140,37 @@ test("a reasoning level the model doesn't offer is dropped, not sent", () => {
   expect(effortFor("acme/thinker", "xhigh")).toBeNull(); // not a level it offers
   expect(effortFor("acme/plain", "high")).toBeNull(); // offers none at all
   expect(effortFor("acme/thinker", undefined)).toBeNull();
+});
+
+test("a thinking block another provider signed is dropped, not replayed", () => {
+  // Switching a conversation's model mid-thread leaves Anthropic-signed blocks
+  // in the history; sending them to OpenAI is a 400 that names nothing.
+  const messages: ModelMessage[] = [
+    { role: "user", content: "hi" },
+    {
+      role: "assistant",
+      content: [
+        { type: "reasoning", text: "thinking", providerOptions: { anthropic: { signature: "s" } } },
+        { type: "text", text: "hello" },
+      ],
+    },
+  ];
+  const forOpenAI = dropForeignReasoning(messages, "openai");
+  expect(forOpenAI[1]!.content).toEqual([{ type: "text", text: "hello" }]);
+  // Back on the provider that signed it, the block is echoed verbatim.
+  expect(dropForeignReasoning(messages, "anthropic")).toEqual(messages);
+});
+
+test("an assistant turn that was only a foreign thinking block is dropped whole", () => {
+  const messages: ModelMessage[] = [
+    { role: "user", content: "hi" },
+    {
+      role: "assistant",
+      content: [
+        { type: "reasoning", text: "t", providerOptions: { anthropic: { signature: "s" } } },
+      ],
+    },
+  ];
+  // An empty assistant message is itself a 400, so the turn goes with it.
+  expect(dropForeignReasoning(messages, "openai")).toEqual([messages[0]!]);
 });

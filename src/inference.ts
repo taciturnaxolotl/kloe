@@ -46,6 +46,42 @@ interface RawUsage {
   };
 }
 
+/**
+ * The key the SDK namespaces provider options under, from a resolved model:
+ * "anthropic.messages" → "anthropic". It is the adapter family, not the id kloe
+ * knows the provider as, because that is what the adapter reads.
+ */
+export function providerFamily(model: LanguageModel): string {
+  const id = typeof model === "string" ? model : model.provider;
+  return id.split(".")[0]!;
+}
+
+/**
+ * Drops reasoning blocks that a DIFFERENT provider signed. A signed thinking
+ * block is a token from one endpoint to itself: Anthropic verifies the
+ * signature it issued, and anyone else is handed a block it cannot account for.
+ * Switching a conversation's model mid-thread is exactly how history comes to
+ * hold foreign blocks, and the endpoint answers the replay with a 400 whose
+ * message ("Invalid input") names nothing.
+ */
+export function dropForeignReasoning(messages: ModelMessage[], family: string): ModelMessage[] {
+  const out: ModelMessage[] = [];
+  for (const m of messages) {
+    if (m.role !== "assistant" || !Array.isArray(m.content)) {
+      out.push(m);
+      continue;
+    }
+    const kept = m.content.filter(
+      (p) => p.type !== "reasoning" || Object.hasOwn(p.providerOptions ?? {}, family),
+    );
+    if (kept.length === m.content.length) out.push(m);
+    // An assistant turn that was nothing but a foreign thinking block has
+    // nothing left to say; an empty message is itself a 400.
+    else if (kept.length > 0) out.push({ ...m, content: kept } as ModelMessage);
+  }
+  return out;
+}
+
 function finite(n: number | undefined): number {
   return Number.isFinite(n) ? n! : 0;
 }
@@ -477,7 +513,7 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
   const result = streamText({
     model,
     system,
-    messages,
+    messages: dropForeignReasoning(messages, providerFamily(model)),
     temperature: opts.temperature ?? 0.7,
     abortSignal: opts.abortSignal,
     ...(maxOutputTokens ? { maxOutputTokens } : {}),
