@@ -138,6 +138,15 @@ export function isDaemonDown(stderr: string): boolean {
 }
 
 /**
+ * Is this docker saying the container we named is gone? It is the one exec
+ * failure that is nobody's fault and always recoverable: a sweep, a prune, or
+ * someone at a terminal removed it while we still held its name.
+ */
+export function isMissingContainer(stderr: string): boolean {
+  return /No such container/i.test(stderr);
+}
+
+/**
  * What the model is told. Phrased to end the loop rather than describe the
  * plumbing: it cannot fix a stopped daemon, and the useful move is to say so
  * and carry on without the sandbox.
@@ -297,6 +306,16 @@ export class LocalDockerExecutor implements Executor {
   private readonly runtime: string | undefined;
   private readonly env: DockerEnv;
   private readonly sessions = new Map<string, Session>();
+  /**
+   * When this process started watching for abandoned containers.
+   *
+   * A container that outlived a restart has, by definition, been up longer than
+   * the idle TTL by the time anyone comes back to it, so uptime alone would cull
+   * every one of them at boot — the opposite of the restart-costs-nothing
+   * promise below. Abandonment is therefore counted from the moment we could
+   * first have seen it claimed, not from when it started.
+   */
+  private readonly watchingSince = Date.now();
 
   constructor(cfg: SandboxConfig) {
     this.image = cfg.image;
@@ -379,10 +398,16 @@ export class LocalDockerExecutor implements Executor {
       this.env,
     );
     if (!listed || listed.exitCode !== 0) return;
-    const live = new Set([...this.sessions.values()].map((s) => s.name));
+    // Claims are read at the moment of removal, never from a snapshot: this loop
+    // awaits a docker call per container, and a conversation adopted during that
+    // window would otherwise be swept out from under its own turn.
+    const claimed = (name: string): boolean => {
+      for (const s of this.sessions.values()) if (s.name === name) return true;
+      return false;
+    };
     for (const line of listed.stdout.split("\n")) {
       const [name, state] = line.trim().split("\t");
-      if (!name || live.has(name)) continue;
+      if (!name || claimed(name)) continue;
       if (state !== "running") {
         dockerQuiet(["rm", "-f", name], this.env); // a stopped sandbox is dead weight
         continue;
@@ -391,7 +416,8 @@ export class LocalDockerExecutor implements Executor {
         ["inspect", "-f", "{{.State.StartedAt}}", name],
         this.env,
       ).then((r) => (r ? Date.parse(r.stdout.trim()) : Number.NaN));
-      if (Number.isFinite(started) && Date.now() - started > this.idleMs)
+      const idleSince = Math.max(started, this.watchingSince);
+      if (Number.isFinite(started) && Date.now() - idleSince > this.idleMs && !claimed(name))
         dockerQuiet(["rm", "-f", name], this.env);
     }
   }
@@ -496,6 +522,40 @@ export class LocalDockerExecutor implements Executor {
     return s;
   }
 
+  /**
+   * One `docker exec` against a session's container, rebuilt once if the
+   * container turns out to be gone.
+   *
+   * Container names are deterministic and the map holds the name, not a handle,
+   * so a container removed under us (a sweep, a `docker prune`, a person at a
+   * terminal) poisons every later call for that conversation: each one execs a
+   * name that no longer resolves and hands the model "No such container" as if
+   * it were the command's own output. Dropping the entry and trying again costs
+   * one container start. The workspace is gone either way; the turn need not be.
+   */
+  private async sessionExec(
+    session: string,
+    argv: (name: string) => string[],
+    signal?: AbortSignal,
+  ): Promise<ExecResult> {
+    const attempt = async (): Promise<ExecResult> => {
+      const s = this.ensureSession(session);
+      try {
+        await s.ready;
+      } catch (e) {
+        this.sessions.delete(session); // let the next call retry a fresh container
+        throw e;
+      }
+      return dockerRun(argv(s.name), this.env, signal);
+    };
+    const r = await attempt();
+    if (r.exitCode !== 0 && isMissingContainer(r.stderr)) {
+      this.sessions.delete(session);
+      return attempt();
+    }
+    return r;
+  }
+
   private evictIdle(): void {
     const cutoff = Date.now() - this.idleMs;
     for (const [key, s] of this.sessions) {
@@ -517,17 +577,29 @@ export class LocalDockerExecutor implements Executor {
     bytes: Uint8Array,
     signal?: AbortSignal,
   ): Promise<void> {
-    const s = this.ensureSession(session);
-    await s.ready;
     const dir = path.slice(0, path.lastIndexOf("/")) || "/";
-    const proc = Bun.spawn(
-      ["docker", "exec", "-i", s.name, "sh", "-c", `mkdir -p ${shq(dir)} && cat > ${shq(path)}`],
-      { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: this.env, signal },
-    );
-    proc.stdin.write(bytes);
-    await proc.stdin.end();
-    const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
-    if (code !== 0) throw new Error(`could not write ${path}: ${stderr.trim() || `exit ${code}`}`);
+    // Not `sessionExec`: the bytes go down stdin, so this needs the process
+    // rather than its captured output. The one-retry rule is the same, and for
+    // the same reason — a container removed under us must not poison the write.
+    const attempt = async (): Promise<{ code: number; stderr: string }> => {
+      const s = this.ensureSession(session);
+      await s.ready;
+      const proc = Bun.spawn(
+        ["docker", "exec", "-i", s.name, "sh", "-c", `mkdir -p ${shq(dir)} && cat > ${shq(path)}`],
+        { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: this.env, signal },
+      );
+      proc.stdin.write(bytes);
+      await proc.stdin.end();
+      const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
+      return { code, stderr };
+    };
+    let r = await attempt();
+    if (r.code !== 0 && isMissingContainer(r.stderr)) {
+      this.sessions.delete(session);
+      r = await attempt();
+    }
+    if (r.code !== 0)
+      throw new Error(`could not write ${path}: ${r.stderr.trim() || `exit ${r.code}`}`);
   }
 
   /**
@@ -543,14 +615,12 @@ export class LocalDockerExecutor implements Executor {
    * where handing back replacement characters would look like content.
    */
   async readFile(session: string, path: string, signal?: AbortSignal): Promise<ReadResult> {
-    const s = this.ensureSession(session);
-    await s.ready;
     const max = MAX_READ_BYTES;
     const script =
       `p=${shq(path)}; ` +
       `if [ -d "$p" ]; then echo DIR; elif [ ! -e "$p" ]; then echo MISSING; else ` +
       `n=$(wc -c < "$p"); if [ "$n" -gt ${max} ]; then echo "BIG $n"; else echo "OK $n"; cat "$p"; fi; fi`;
-    const r = await dockerRun(["exec", s.name, "sh", "-c", script], this.env, signal);
+    const r = await this.sessionExec(session, (name) => ["exec", name, "sh", "-c", script], signal);
     const nl = r.stdout.indexOf("\n");
     const verdict = (nl < 0 ? r.stdout : r.stdout.slice(0, nl)).trim();
     if (verdict === "DIR") return { kind: "directory" };
@@ -643,32 +713,29 @@ export class LocalDockerExecutor implements Executor {
     const command = withTimeout(spec.command, timeoutMs);
     const t = this.timed(timeoutMs + 2_000, signal);
     try {
-      let argv: string[];
-      if (spec.session) {
-        const s = this.ensureSession(spec.session);
-        try {
-          await s.ready;
-        } catch (e) {
-          this.sessions.delete(spec.session); // let the next call retry a fresh container
-          throw e;
-        }
-        argv = ["exec", "--workdir", "/workspace", s.name, "sh", "-c", command];
-      } else {
-        argv = [
-          "run",
-          "--rm",
-          "--interactive",
-          "--label",
-          "kloe-sandbox=1",
-          ...this.runtimeArgs(),
-          ...this.limits(),
-          this.image,
-          "sh",
-          "-c",
-          command,
-        ];
-      }
-      const r = await dockerRun(argv, this.env, t.signal);
+      const r = spec.session
+        ? await this.sessionExec(
+            spec.session,
+            (name) => ["exec", "--workdir", "/workspace", name, "sh", "-c", command],
+            t.signal,
+          )
+        : await dockerRun(
+            [
+              "run",
+              "--rm",
+              "--interactive",
+              "--label",
+              "kloe-sandbox=1",
+              ...this.runtimeArgs(),
+              ...this.limits(),
+              this.image,
+              "sh",
+              "-c",
+              command,
+            ],
+            this.env,
+            t.signal,
+          );
       const timedOut = t.state.timedOut || r.exitCode === TIMEOUT_EXIT;
       return {
         stdout: clamp(r.stdout),

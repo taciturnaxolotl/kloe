@@ -3,6 +3,7 @@ import {
   createExecutor,
   formatExecResult,
   isDaemonDown,
+  isMissingContainer,
   LocalDockerExecutor,
 } from "../src/executor";
 
@@ -398,4 +399,80 @@ liveTest(
     expect(msg).toContain("do not retry");
   },
   60_000,
+);
+
+test("a removed container is recognised, and the daemon being down is not it", () => {
+  expect(isMissingContainer("Error response from daemon: No such container: kloe-sbx-abc")).toBe(
+    true,
+  );
+  expect(isMissingContainer("exec failed: no such file or directory")).toBe(false);
+});
+
+liveTest(
+  "a container removed behind the executor's back is rebuilt, not reported to the model",
+  async () => {
+    // What a restart used to do: the startup sweep culled a container the
+    // conversation had just adopted, and every later call in that turn handed
+    // the model "No such container" as if the command had said it.
+    const e = new LocalDockerExecutor(SANDBOX);
+    const session = "test-" + Math.random().toString(36).slice(2);
+    try {
+      expect((await e.run({ command: "echo hi > /workspace/note.txt", session })).exitCode).toBe(0);
+      const name = (e as unknown as { containerName(s: string): string }).containerName(session);
+      await Bun.spawn(["docker", "rm", "-f", name], { stdout: "ignore", stderr: "ignore" }).exited;
+
+      const r = await e.run({ command: "echo alive", session });
+      expect(r.stderr).not.toContain("No such container");
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("alive");
+      // The workspace was in the container, so it is genuinely gone. That is
+      // the honest outcome; a dead session for the rest of the turn is not.
+      expect((await e.readFile(session, "/workspace/note.txt")).kind).toBe("missing");
+    } finally {
+      e.disposeSession(session);
+    }
+  },
+  120_000,
+);
+
+liveTest(
+  "a restart adopts the containers it finds instead of sweeping them at boot",
+  async () => {
+    // The container outlived the process, so by uptime it is always older than
+    // the idle TTL. Culling on that at boot cost every open conversation its
+    // workspace, which is the opposite of what surviving a restart is for.
+    const name = "kloe-sbx-test-" + Math.random().toString(36).slice(2);
+    await Bun.spawn(
+      [
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        name,
+        "--label",
+        "kloe-sandbox=1",
+        SANDBOX.image,
+        "sh",
+        "-c",
+        "exec tail -f /dev/null",
+      ],
+      { stdout: "ignore", stderr: "ignore" },
+    ).exited;
+    try {
+      // Old by uptime, which is the only thing a fresh process can measure, and
+      // the thing the boot sweep used to cull on.
+      const idleMs = 3_000;
+      await Bun.sleep(idleMs + 1_000);
+      new LocalDockerExecutor({ ...SANDBOX, idleMs });
+      await Bun.sleep(1_000); // let the constructor's sweep finish
+      const alive = await Bun.spawn(["docker", "inspect", "-f", "{{.State.Running}}", name], {
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+      expect((await new Response(alive.stdout).text()).trim()).toBe("true");
+    } finally {
+      await Bun.spawn(["docker", "rm", "-f", name], { stdout: "ignore", stderr: "ignore" }).exited;
+    }
+  },
+  120_000,
 );
