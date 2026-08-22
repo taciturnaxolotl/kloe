@@ -411,7 +411,7 @@ export function mount(root, params, ctx) {
     $("#crumbname").textContent = name;
     $("#pdesc").textContent = desc;
     $("#pdesc").hidden = !desc;
-    document.title = name + " · Kloe";
+    document.title = name + " - Kloe";
     closeDetails();
   });
   function onKeydown(e) {
@@ -477,7 +477,7 @@ export function mount(root, params, ctx) {
     if (j === shownJson) return;
     shownJson = j;
     project = data.project;
-    document.title = project.name + " · Kloe";
+    document.title = project.name + " - Kloe";
     $("#crumbname").textContent = project.name;
     $("#pname").textContent = project.name;
     $("#pdesc").textContent = project.description || "";

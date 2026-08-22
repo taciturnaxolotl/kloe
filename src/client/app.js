@@ -3469,6 +3469,12 @@ import { mountSidebar } from "./sidebar.js";
     return null;
   }
 
+  // What the browser tab reads on each satellite section.
+  var SECTION_TITLES = {
+    conversations: "Conversations - Kloe",
+    projects: "Projects - Kloe",
+    settings: "Settings - Kloe",
+  };
   // Light up the rail row for the current section (the MPA baked this into each
   // page's HTML; soft-nav has to do it live). "New chat" and the active recent are
   // handled separately by sidebar.render, so chat clears both top rows.
@@ -3479,6 +3485,15 @@ import { mountSidebar } from "./sidebar.js";
     // Leaving chat drops the recents/"New chat" highlights, which belong to the
     // chat view; a satellite view never re-renders the rail on its own.
     sidebar.refresh();
+    if (section !== "chat") {
+      // The document pane sits beside the chat rather than inside the shell the
+      // router hides, so it would otherwise hang over Settings. Closing (not
+      // stashing) matches coming back: openStream closes it on any re-entry.
+      closePane();
+      // The tab still read as the conversation we left. Chat titles itself from
+      // setHeader; a project refines "Projects" to its own name once it mounts.
+      document.title = SECTION_TITLES[section] || "Kloe";
+    }
   }
 
   // Shared context handed to mounted views: the live sidebar, the dialog helpers,
