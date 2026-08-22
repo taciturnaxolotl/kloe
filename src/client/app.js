@@ -842,7 +842,19 @@ import { mountSidebar } from "./sidebar.js";
   }
 
   function assistantTurn(messageId) {
-    if (msgs[messageId]) return msgs[messageId];
+    var have = msgs[messageId];
+    if (have) {
+      // Every event for a turn arrives through here, which makes this the one
+      // place that knows a turn is still changing. A run's later messages push
+      // an earlier turn off `:last-child` while its tools are still out, and a
+      // tool result lands fifteen document cards in it — growth a SKIPPED turn
+      // never re-measures, which shortens `scrollHeight` and puts the end of the
+      // thread out of reach. Marking it keeps it measured for the rest of the
+      // session; history loads below stay skippable, which is where skipping
+      // earns its keep.
+      if (!bulkLoading) have.turn.classList.add("live");
+      return have;
+    }
     var t = makeTurn("Assistant", "generating");
     var rec = {
       turn: t,

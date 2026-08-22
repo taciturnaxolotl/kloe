@@ -1003,11 +1003,17 @@ body.selecting #selectBtn {
    the difference, and the bottom of the conversation is unreachable until a
    reload re-measures everything.
 
-   The growing turn is always the last one, so the last one is never skipped.
-   Older turns are static by the time they leave the viewport, which is the
+   The growing turn is USUALLY the last one, so the last one is never skipped.
+   The exception is a run that keeps going: its next message takes over as the
+   last turn while the previous one still has tools out, and their results land
+   documents in a turn that is now neither last nor generating. app.js marks any
+   turn it is still writing into `.live` (see assistantTurn).
+
+   Everything else is static by the time it leaves the viewport, which is the
    case content-visibility is actually good at. */
 .turn:last-child,
-.turn.generating {
+.turn.generating,
+.turn.live {
   content-visibility: visible;
 }
 .turn:first-child {
