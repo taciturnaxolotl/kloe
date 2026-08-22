@@ -46,9 +46,55 @@ export function enrich(el) {
 // handle so smdWrite doesn't recurse.
 export var MATH_MARK = String.fromCharCode(0xe000); // prefix inside a wrapped-math <code>
 export var DOLLAR_MASK = String.fromCharCode(0xe001); // masked `$`, restored by add_text
+export var UND_MASK = String.fromCharCode(0xe002); // masked intraword `_`, restored by add_text
 var smdParserWrite = smd.parser_write;
+
+// CommonMark leaves an underscore alone when word characters sit on both sides
+// of it — `read_file` is a name, not emphasis, and `single_choice or
+// multi_choice` is two names rather than one italic phrase. smd applies no such
+// rule, so every snake_case identifier a model writes comes out as "single" +
+// italic "choice or multi" + "choice", underscores eaten and the words run
+// together. Mask those so smd's tokenizer never sees them; add_text puts them
+// back. Underscores that could really be emphasis (` _like this_ `, `__init__`)
+// are left exactly as they are.
+var INTRAWORD_UND = /(?<=[\p{L}\p{N}])_+(?=[\p{L}\p{N}])/gu;
+function maskUnderscores(text) {
+  return text.indexOf("_") < 0 ? text : text.replace(INTRAWORD_UND, maskRun);
+}
+function maskRun(run) {
+  return UND_MASK.repeat(run.length);
+}
+function maskAll(text) {
+  var out = maskUnderscores(text);
+  return out.indexOf("$") < 0 ? out : out.split("$").join(DOLLAR_MASK);
+}
+// A chunk that ends mid-name ("…single_" then "choice…") can't tell yet whether
+// its last underscores are intraword, so that much waits for the next chunk —
+// the word character before them comes along for the ride, since it is what the
+// test needs. smdEnd flushes whatever is still held.
+var HELD = new WeakMap(); // parser -> a trailing `<word>_+` waiting on its next neighbour
+var HOLD_RE = /[\p{L}\p{N}]_+$/u;
 export function smdWrite(parser, text) {
-  smdParserWrite(parser, text.indexOf("$") < 0 ? text : text.split("$").join(DOLLAR_MASK));
+  var held = HELD.get(parser);
+  if (held) {
+    HELD.delete(parser);
+    text = held + text;
+  }
+  var m = HOLD_RE.exec(text);
+  if (m) {
+    HELD.set(parser, m[0]);
+    text = text.slice(0, text.length - m[0].length);
+  }
+  if (text) smdParserWrite(parser, maskAll(text));
+}
+/** Ends a parser started by `smdWrite`, writing back anything it was holding. */
+export function smdEnd(parser) {
+  var held = HELD.get(parser);
+  if (held) {
+    HELD.delete(parser);
+    smdParserWrite(parser, maskAll(held));
+  }
+  smd.parser_end(parser);
 }
 // Match $$…$$ (display) or $…$ (inline) at src[i]; mirrors smd's rule that `$`
 // before a digit/space is not math (so "$5" stays currency). Returns null if no
@@ -135,7 +181,9 @@ export function makeRenderer(root) {
   r._stripped = false;
   var baseAddText = r.add_text;
   r.add_text = function (data, text) {
-    baseAddText(data, text.indexOf(DOLLAR_MASK) < 0 ? text : text.split(DOLLAR_MASK).join("$"));
+    if (text.indexOf(DOLLAR_MASK) >= 0) text = text.split(DOLLAR_MASK).join("$");
+    if (text.indexOf(UND_MASK) >= 0) text = text.split(UND_MASK).join("_");
+    baseAddText(data, text);
   };
   var base = r.set_attr;
   r.set_attr = function (data, type, value) {
@@ -181,8 +229,8 @@ export function strippedUrl(renderer) {
 /** A complete document, rendered into `el` in one pass and then enriched. */
 export function renderMarkdown(el, text) {
   var np = newParser(el);
-  smd.parser_write(np.parser, protectMath(text));
-  smd.parser_end(np.parser);
+  smdWrite(np.parser, protectMath(text));
+  smdEnd(np.parser);
   enrich(el);
   return strippedUrl(np.renderer);
 }

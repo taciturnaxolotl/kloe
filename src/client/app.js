@@ -18,7 +18,6 @@
  * zero-dep library (streaming-markdown, ~3KB brotli). The durable event log
  * stays authoritative — optimism is a local projection reconciled by the echo.
  */
-import * as smd from "streaming-markdown";
 import { requireAuth, setPfp } from "./authguard.js";
 import { mountDialogs } from "./confirm.js";
 import { mountConn } from "./conn.js";
@@ -50,6 +49,7 @@ import {
   strippedUrl as finalize,
   newParser,
   protectMath,
+  smdEnd,
   smdWrite,
 } from "./md.js";
 import { mountRosette } from "./rosette.js";
@@ -536,8 +536,8 @@ import { mountSidebar } from "./sidebar.js";
   function renderStaticMd(container, text) {
     var el = proseBlock(container);
     var np = newParser(el);
-    smd.parser_write(np.parser, protectMath(text)); // full text → wrap math, mask stray `$`
-    smd.parser_end(np.parser);
+    smdWrite(np.parser, protectMath(text)); // full text → wrap math, mask stray `$`
+    smdEnd(np.parser);
     queueEnrich(el);
     return finalize(np.renderer);
   }
@@ -1153,7 +1153,7 @@ import { mountSidebar } from "./sidebar.js";
         smdWrite(rr.parser, rr.buf);
         rr.buf = "";
       }
-      smd.parser_end(rr.parser);
+      smdEnd(rr.parser);
       rr.ended = true;
       queueEnrich(rr.body);
     }
@@ -2597,7 +2597,7 @@ import { mountSidebar } from "./sidebar.js";
         smdWrite(p.parser, p.buf);
         p.buf = "";
       }
-      smd.parser_end(p.parser);
+      smdEnd(p.parser);
       if (finalize(p.renderer)) stripped = true;
       // The live stream masks `$` (no full text to scan), so math content was
       // parsed with markdown mangling. Now that the block is complete, re-render
@@ -2605,8 +2605,8 @@ import { mountSidebar } from "./sidebar.js";
       if (p.full && p.full.indexOf("$") >= 0) {
         p.el.textContent = "";
         var rp = newParser(p.el);
-        smd.parser_write(rp.parser, protectMath(p.full));
-        smd.parser_end(rp.parser);
+        smdWrite(rp.parser, protectMath(p.full));
+        smdEnd(rp.parser);
         if (finalize(rp.renderer)) stripped = true;
       }
       queueEnrich(p.el);
