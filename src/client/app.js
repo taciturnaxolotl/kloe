@@ -3476,9 +3476,9 @@ import { mountSidebar } from "./sidebar.js";
     currentSection = section;
     document.getElementById("chatsBtn").classList.toggle("active", section === "conversations");
     document.getElementById("projectsBtn").classList.toggle("active", section === "projects");
-    // Leaving chat clears the "New chat" highlight now (views like Projects don't
-    // re-render the sidebar); on chat, enterChat's sidebar.render sets it.
-    if (section !== "chat") document.getElementById("new").classList.remove("active");
+    // Leaving chat drops the recents/"New chat" highlights, which belong to the
+    // chat view; a satellite view never re-renders the rail on its own.
+    sidebar.refresh();
   }
 
   // Shared context handed to mounted views: the live sidebar, the dialog helpers,

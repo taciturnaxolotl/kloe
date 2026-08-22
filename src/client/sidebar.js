@@ -111,7 +111,11 @@ export function mountSidebar(config) {
 
   function paint(conversations, count) {
     railList.innerHTML = "";
-    var active = config.activeId ? config.activeId() : null;
+    // Both highlights (the active recent and "New chat") belong to the chat view.
+    // onChat() lets the shell say whether it's showing; a satellite view like
+    // Settings must not leave a conversation lit.
+    var onChat = config.onChat ? config.onChat() : config.active !== "conversations";
+    var active = onChat && config.activeId ? config.activeId() : null;
     if (!conversations.length) {
       var e = document.createElement("div");
       e.className = "empty";
@@ -147,14 +151,8 @@ export function mountSidebar(config) {
       });
     }
     // Highlight "New chat" while the open conversation is brand new — it has an
-    // id but isn't in the saved list yet (nothing persisted). Not on the
-    // Conversations page, which has its own active nav row.
-    // "New chat" lights up only on the chat view, and only for a brand-new chat
-    // that has an id but isn't saved yet. onChat() lets the shell say whether the
-    // chat view is even showing (a satellite view must not keep this lit).
-    var onChat = config.onChat ? config.onChat() : config.active !== "conversations";
+    // id but isn't in the saved list yet (nothing persisted).
     var isNewChat =
-      onChat &&
       !!active &&
       !conversations.some(function (c) {
         return c.id === active;
@@ -189,5 +187,11 @@ export function mountSidebar(config) {
   var cached = readRecents();
   if (cached && cached.length) render(cached);
 
-  return { render: render, closeRail: closeRail, toggleRail: toggleRail };
+  // Repaint the list without refetching — the shell calls this when the section
+  // changes, so the highlights follow the view.
+  function refresh() {
+    if (lastList) paint(lastList, Math.min(fits(), lastList.length));
+  }
+
+  return { render: render, refresh: refresh, closeRail: closeRail, toggleRail: toggleRail };
 }
