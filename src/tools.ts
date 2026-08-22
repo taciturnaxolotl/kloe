@@ -2,7 +2,7 @@ import { generateText, jsonSchema, type LanguageModel, type Tool, type ToolSet, 
 import { OWNER, type Role, roleCan } from "./auth";
 import type { BlobStore } from "./blobs";
 import { replaceOnce, viewSlice } from "./edits";
-import type { ArtifactRef } from "./events";
+import type { ArtifactRef, AskQuestion } from "./events";
 import {
   type Executor,
   formatExecResult,
@@ -750,6 +750,159 @@ function readImage(store: Store, blobs: BlobStore, conversationId: string, visio
   });
 }
 
+/**
+ * A batch is a form, not an interview: four questions is already a lot to put in
+ * front of someone mid-answer, and five choices is where a list stops being
+ * scannable. The caps are enforced (a violation comes back as an error the model
+ * can act on) because the composer has to render this, and a twenty-choice
+ * question renders as a wall.
+ */
+const ASK_MAX_QUESTIONS = 4;
+const ASK_MAX_CHOICES = 5;
+
+/**
+ * Checks a batch before it reaches the user. Returns a sentence the MODEL reads:
+ * specific about which question, and about what to do instead.
+ */
+function askProblem(questions: AskQuestion[]): string | null {
+  if (!Array.isArray(questions) || questions.length === 0) return "Ask at least one question.";
+  if (questions.length > ASK_MAX_QUESTIONS) {
+    return `${questions.length} questions is more than the ${ASK_MAX_QUESTIONS} that fit in one form. Ask the ones that block you now, and say more will follow.`;
+  }
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i]!;
+    const where = `Question ${i + 1} ("${(q.question ?? "").slice(0, 40)}")`;
+    if (!q.question?.trim()) return `${where}: the question text is required.`;
+    const choices = q.choices ?? [];
+    if (q.type === "free_text") {
+      if (choices.length) return `${where}: free_text takes no choices. Use single_choice instead.`;
+      continue;
+    }
+    if (q.type !== "single_choice" && q.type !== "multi_choice" && q.type !== "rank_priorities") {
+      return `${where}: unknown type "${q.type}". Use single_choice, multi_choice, rank_priorities, or free_text.`;
+    }
+    if (choices.length < 2) {
+      return `${where}: ${q.type} needs at least 2 choices. With one option there is nothing to choose; state it and move on.`;
+    }
+    if (choices.length > ASK_MAX_CHOICES) {
+      return `${where}: ${choices.length} choices is more than the ${ASK_MAX_CHOICES} that fit. Group them, or drop the ones you would not recommend.`;
+    }
+    const seen = new Set<string>();
+    for (const c of choices) {
+      if (!c?.id?.trim() || !c?.label?.trim())
+        return `${where}: every choice needs an id and a label.`;
+      if (seen.has(c.id)) return `${where}: two choices share the id "${c.id}".`;
+      seen.add(c.id);
+    }
+  }
+  return null;
+}
+
+/** The tool's name, which inference.ts also needs: it is what stops the loop. */
+export const ASK_TOOL = "ask_user";
+
+function askUser() {
+  return tool({
+    description:
+      "Ask the user a question and wait for their answer. It is for eliciting what only " +
+      "they can tell you — a preference, a constraint, which direction they want — and their " +
+      "answer comes back as this call's result, so ask BEFORE you build, not after.\n\n" +
+      "Read what they already said first. A question they have answered in their own words " +
+      "is worse than no question at all, and someone who wrote a careful prompt should never " +
+      "be asked to specify it again.\n\n" +
+      "If you are about to write clarifying questions as a bulleted list, stop: they belong " +
+      "here instead. That is what this tool is.\n\n" +
+      "Not for: anything you could settle by reading, searching, or running something; a " +
+      'question they came to YOU to answer ("which is faster?", "review this") — they ' +
+      "want your judgement, not their own options handed back as buttons; venting, where the " +
+      "answer is to listen; or checking in on work you can simply do.\n\n" +
+      `One question is the target and ${ASK_MAX_QUESTIONS} is the ceiling. Each one is a ` +
+      "single decision, with short choices that genuinely exclude each other. Say a line " +
+      "first about what you are asking and why — never fire this silently. A single_choice " +
+      "question carries a line for the user's own words underneath it, so never add an " +
+      "'Other' or 'Something else' choice to one; multi_choice and rank_priorities are " +
+      "answered from their choices alone. " +
+      "The user may dismiss the form: that is an answer too, and it means carry on with your " +
+      "best judgement rather than asking again.",
+    inputSchema: jsonSchema<{ questions: AskQuestion[] }>({
+      type: "object",
+      properties: {
+        questions: {
+          type: "array",
+          minItems: 1,
+          maxItems: ASK_MAX_QUESTIONS,
+          description: "The questions to put in one form, in the order they should be answered.",
+          items: {
+            type: "object",
+            properties: {
+              type: {
+                type: "string",
+                enum: ["single_choice", "multi_choice", "rank_priorities", "free_text"],
+                description:
+                  "single_choice: pick one of the choices (a yes/no confirmation is this, with " +
+                  "two choices). multi_choice: pick any number. rank_priorities: drag the " +
+                  "choices into order, for when what matters is what comes FIRST rather than " +
+                  "which ones count — the answer comes back in their order. free_text: no " +
+                  "choices, an open answer.",
+              },
+              question: {
+                type: "string",
+                description: "The question itself: one line, direct, answerable as asked.",
+              },
+              description: {
+                type: "string",
+                description:
+                  "The context that makes the question answerable: the tradeoff, what you " +
+                  "would pick, what happens either way. Markdown, a couple of sentences.",
+              },
+              choices: {
+                type: "array",
+                maxItems: ASK_MAX_CHOICES,
+                description:
+                  "Required for single_choice, multi_choice and rank_priorities; omit for free_text.",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: {
+                      type: "string",
+                      description:
+                        "Short stable handle, e.g. 'postgres'. Comes back in the answer.",
+                    },
+                    label: { type: "string", description: "What the user reads, a few words." },
+                    description: {
+                      type: "string",
+                      description: "One line on what picking this means. Optional.",
+                    },
+                  },
+                  required: ["id", "label"],
+                  additionalProperties: false,
+                },
+              },
+            },
+            required: ["type", "question"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["questions"],
+      additionalProperties: false,
+    }),
+    execute: async ({ questions }) => {
+      const problem = askProblem(questions);
+      if (problem) return problem;
+      // Nothing to wait for: the run stops on this call (see inference.ts), and
+      // the answer arrives as the user's next message rather than as a result
+      // fed back into this turn. That is what makes asking and then answering
+      // yourself impossible instead of merely discouraged. This text is what the
+      // model reads in history next turn, where it explains the gap.
+      return (
+        "Asked. The form is in front of them now and your turn ends here — their answer " +
+        "comes back as their next message, not as more of this one."
+      );
+    },
+  });
+}
+
 /** A description is prose about one picture, not a document. */
 const VISION_MAX_TOKENS = 2_000;
 
@@ -783,6 +936,14 @@ const REGISTRY: Array<{
       const p = ctx.search ?? createSearchProvider();
       return p ? webSearch(p) : null;
     },
+  },
+  {
+    name: "ask_user",
+    executor: "in-proc",
+    // Offered only when something is listening for the answer: a nested run has
+    // no user in front of it, and a tool that asks into the void would park the
+    // whole run for its timeout.
+    create: (ctx) => (ctx.canAsk ? askUser() : null),
   },
   {
     name: "deep_research",
@@ -1008,6 +1169,12 @@ export interface ToolContext {
    * listening (a nested run, a test), and every caller treats it as optional.
    */
   onProgress?: (p: { toolCallId: string; toolName: string; phase: string; data?: unknown }) => void;
+  /**
+   * Whether a person is actually watching this run. False for a nested one (a
+   * research subagent has no composer in front of it), and `ask_user` is simply
+   * not offered then.
+   */
+  canAsk?: boolean;
 }
 
 /**

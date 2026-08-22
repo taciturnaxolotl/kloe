@@ -29,6 +29,8 @@ import {
   CHEV_ICON as CHEV,
   COPY_ICON,
   FILE_ICON as FILE_SVG,
+  GRIP_ICON as GRIP,
+  ASK_ICON as ICON_ASK,
   BLANK_ICON as ICON_BLANK,
   CLOCK_ICON as ICON_CLOCK,
   EXT_ICON as ICON_EXT,
@@ -648,6 +650,18 @@ import { mountSidebar } from "./sidebar.js";
     // Skip during a bulk history load — replaying each turn's message-start/end
     // would strobe the button between Stop and Send; the caller repaints once after.
     if (bulkLoading) return;
+    // Answering a question is the one thing the button does while it's up: the
+    // way out of a question is Dismiss (which lets the run carry on), not Stop.
+    if (asking) {
+      $("stop").style.display = "none";
+      send.style.display = "inline-flex";
+      send.innerHTML = SEND;
+      var can = askReady();
+      send.className = "send" + (can ? " ready" : "");
+      send.disabled = !can;
+      send.setAttribute("aria-label", "Send answer");
+      return;
+    }
     $("stop").style.display = streaming ? "inline-flex" : "none";
     send.style.display = streaming ? "none" : "inline-flex";
     send.innerHTML = SEND;
@@ -775,16 +789,16 @@ import { mountSidebar } from "./sidebar.js";
     return t;
   }
 
-  function optimisticUser(content, runId, attachments) {
+  function optimisticUser(content, runId, attachments, ask) {
     var t = makeTurn("You", "pending");
     var body = t.querySelector(".body");
-    if (content) renderStaticMd(body, content);
+    renderUserBody(body, content, ask);
     renderAttachments(body, attachments);
     markCopyable(t, content);
     autoScroll();
     pending[runId] = { turn: t, content: content, attachments: attachments };
   }
-  function confirmUser(runId, content, attachments) {
+  function confirmUser(runId, content, attachments, ask) {
     // A queued steer being promoted by the flush: drop it from the staging
     // panel — it now enters the thread as a real turn (rendered fresh below,
     // the first time it appears there).
@@ -801,10 +815,59 @@ import { mountSidebar } from "./sidebar.js";
     // Not ours (history, another device, or a promoted steer): render fresh.
     var t = makeTurn("You");
     var body = t.querySelector(".body");
-    if (content) renderStaticMd(body, content);
+    renderUserBody(body, content, ask);
     renderAttachments(body, attachments);
     markCopyable(t, content);
     autoScroll();
+  }
+
+  /**
+   * A user turn, as prose — or, when it answers a form, as the form answered:
+   * each question with what they picked lit up under it. The prose the model
+   * reads is still in `content`, and rendering both would say everything twice.
+   * A form nobody answered has nothing to draw, so it falls back to the words.
+   */
+  function renderUserBody(body, content, ask) {
+    if (ask && Array.isArray(ask.questions) && renderAskCard(body, ask)) return;
+    if (content) renderStaticMd(body, content);
+  }
+  function renderAskCard(body, ask) {
+    var card = document.createElement("div");
+    card.className = "askcard";
+    ask.questions.forEach(function (q, i) {
+      var a = (ask.answers && ask.answers[i]) || {};
+      var ids = a.choiceIds || [];
+      if (!ids.length && !a.text) return; // left alone: the card says nothing about it
+      var qEl = document.createElement("div");
+      qEl.className = "askcardq";
+      qEl.textContent = q.question || "";
+      card.appendChild(qEl);
+      if (ids.length) {
+        var ranked = q.type === "rank_priorities";
+        var row = document.createElement("div");
+        row.className = "askcardpicks" + (ranked ? " ranked" : "");
+        ids.forEach(function (id, k) {
+          var chip = document.createElement("span");
+          chip.className = "askcardpick";
+          var c = (q.choices || []).find(function (x) {
+            return x.id === id;
+          });
+          var label = (c && c.label) || id;
+          chip.textContent = ranked ? k + 1 + ". " + label : label;
+          row.appendChild(chip);
+        });
+        card.appendChild(row);
+      }
+      if (a.text) {
+        var t = document.createElement("div");
+        t.className = "askcardtext";
+        t.textContent = a.text;
+        card.appendChild(t);
+      }
+    });
+    if (!card.childElementCount) return false;
+    body.appendChild(card);
+    return true;
   }
   function confirmQueued(runId, content, attachments) {
     // Staging only: queued steers never enter the thread until promoted. The
@@ -2372,6 +2435,48 @@ import { mountSidebar } from "./sidebar.js";
         else defaultResult(t, output);
       },
     },
+    ask_user: {
+      icon: ICON_ASK,
+      row: function (input) {
+        var qs = (input && input.questions) || [];
+        if (qs.length > 1) return qs.length + " questions";
+        return (qs[0] && qs[0].question) || "ask_user";
+      },
+      // The step in the thread is the record of what was asked; the answering
+      // happens in the composer, so this reads as a note rather than a control.
+      summary: function (steps, active) {
+        var n = lastInput(steps).questions;
+        var count = Array.isArray(n) ? n.length : 1;
+        if (active) return count > 1 ? "Waiting on your answers" : "Waiting on your answer";
+        return count > 1 ? "Asked you " + count + " questions" : "Asked you a question";
+      },
+      // The result is a note to the model about how its turn ends, which is no
+      // use to a reader. What belongs in the step is what was actually asked —
+      // the transcript's record of it, once the form itself is gone.
+      result: function (t) {
+        var qs = (t.input && t.input.questions) || [];
+        var wrap = document.createElement("div");
+        wrap.className = "askrecord";
+        qs.forEach(function (q) {
+          var line = document.createElement("div");
+          line.className = "askrecordq";
+          line.textContent = q.question;
+          wrap.appendChild(line);
+          var opts = (q.choices || [])
+            .map(function (c) {
+              return c.label || c.id;
+            })
+            .join(" · ");
+          if (opts) {
+            var o = document.createElement("div");
+            o.className = "askrecordopts";
+            o.textContent = opts;
+            wrap.appendChild(o);
+          }
+        });
+        t.body.appendChild(wrap);
+      },
+    },
     fetch_url: {
       icon: ICON_PAGE,
       // Full custom summary: favicon + the page title (filled in on result), with
@@ -2675,7 +2780,8 @@ import { mountSidebar } from "./sidebar.js";
   function applyEvent(name, data) {
     switch (name) {
       case "user-message":
-        confirmUser(data.runId, data.content, data.attachments);
+        settleAsk(); // they said something; the question is settled either way
+        confirmUser(data.runId, data.content, data.attachments, data.ask);
         break;
       case "queued-message":
         confirmQueued(data.runId, data.content, data.attachments);
@@ -2696,6 +2802,10 @@ import { mountSidebar } from "./sidebar.js";
       }
       case "tool-call":
         toolStep(assistantTurn(data.messageId), data);
+        // The question tool's whole UI is the composer form, and the call is
+        // what raises it — there is no separate event, and no result to wait
+        // for: the turn ends here and the answer comes back as a message.
+        if (data.toolName === "ask_user" && !renderAnchor) openAsk(data);
         break;
       case "tool-progress":
         toolProgress(assistantTurn(data.messageId), data);
@@ -2730,6 +2840,7 @@ import { mountSidebar } from "./sidebar.js";
       }
       case "run-error": {
         streaming = false;
+        settleAsk();
         var la = lastAssistant();
         if (la) {
           la.turn.classList.add("failed");
@@ -2742,8 +2853,13 @@ import { mountSidebar } from "./sidebar.js";
       case "conversation-title":
         applyTitle(data.title);
         break;
+      // A question outlives its run (that is the point), but not the answer: any
+      // message from the user settles it, and so does the next run starting. On
+      // replay that means a form comes back only when the conversation really
+      // did end on an unanswered question.
       case "run-started":
       case "cancelled":
+        settleAsk();
         break;
     }
   }
@@ -2829,8 +2945,10 @@ import { mountSidebar } from "./sidebar.js";
     $("chatShell").classList.remove("loaded"); // until this one's history lands
     convId = id;
     // The open document belongs to the conversation being left, so it goes with
-    // it rather than hanging over the next one.
+    // it rather than hanging over the next one. So does an unanswered question:
+    // the next conversation's history replays its own, if it has one.
     closePane();
+    closeAsk();
     refreshArtifacts(id);
     // Clear the previous conversation's thread synchronously, before the async
     // history load. Otherwise, when the chat shell is re-revealed after a detour
@@ -3072,6 +3190,12 @@ import { mountSidebar } from "./sidebar.js";
     input.style.height = Math.min(input.scrollHeight, window.innerHeight * 0.44) + "px";
   }
   function submit() {
+    // While a question is up the composer is its form, so Enter and the send
+    // button answer it. The text underneath waits its turn.
+    if (asking) {
+      submitAsk();
+      return;
+    }
     var content = input.value.trim();
     // Sendable with text or attachments; nothing to send if both are empty.
     if ((!content && staged.length === 0) || !selected || uploadingCount() > 0) return;
@@ -3079,20 +3203,25 @@ import { mountSidebar } from "./sidebar.js";
     input.value = "";
     autosize();
     clearStaged();
+    sendMessage(content, attachments);
+  }
+  // While a run is in flight a message joins the steer queue; otherwise it starts
+  // a run. Shared by the composer and by an answered question, which sends the
+  // user's picks as an ordinary message of their own.
+  function sendMessage(content, attachments, ask) {
     var runId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random();
-    // While a run is in flight the message joins the steer queue; otherwise it
-    // starts a run.
-    if (streaming) {
-      doSteer(content, runId, attachments);
-      return;
-    }
-    doSend(content, runId, attachments);
+    // A steer is a queued message and has no room for the answered form, so an
+    // answer sent into a live run goes as its plain text. It says the same
+    // thing; it just doesn't get to look like the form afterwards.
+    if (streaming) doSteer(content, runId, attachments || []);
+    else doSend(content, runId, attachments || [], ask);
   }
   // Only send `attachments` in the body when there are some, so a plain text
   // message stays byte-identical to before.
-  function bodyFor(content, runId, attachments) {
+  function bodyFor(content, runId, attachments, ask) {
     var b = { content: content, model: selected.ref, runId: runId };
     if (attachments && attachments.length) b.attachments = attachments;
+    if (ask) b.ask = ask;
     // Per message, so a chat can hold "what's this error" and "design the
     // migration" without them sharing a thinking budget.
     var effort = currentEffort();
@@ -3101,16 +3230,16 @@ import { mountSidebar } from "./sidebar.js";
   }
   // Optimistic apply now, POST after: the user's turn is on screen before the
   // request leaves. Reconciled by the server's user-message echo (same runId).
-  async function doSend(content, runId, attachments) {
+  async function doSend(content, runId, attachments, ask) {
     var wasNew = !hasConversation(convId);
-    optimisticUser(content, runId, attachments);
+    optimisticUser(content, runId, attachments, ask);
     streaming = true;
     updateSend(); // job is queued + cancellable even pre-first-token
     try {
       var res = await fetch("/api/conversations/" + encodeURIComponent(convId) + "/prompt", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: bodyFor(content, runId, attachments),
+        body: bodyFor(content, runId, attachments, ask),
       });
       if (!res.ok) {
         streaming = false;
@@ -3202,6 +3331,580 @@ import { mountSidebar } from "./sidebar.js";
     fetch("/api/conversations/" + encodeURIComponent(convId) + "/cancel", { method: "POST" }).catch(
       function () {},
     );
+  }
+
+  // ---- the model's questions ----------------------------------------------
+  /**
+   * The form `ask_user` puts in the composer, and the message it sends back.
+   *
+   * The model's turn ENDS on the question (see inference.ts), so there is no
+   * pending call to resolve here and nothing to post to: the answer leaves as an
+   * ordinary user message and starts the next run. The form is a nicer way of
+   * composing that message, which is why it lives in the composer rather than in
+   * a dialog over the thread — answering is the same motion as typing, and a
+   * half-written message underneath survives it (the textarea is hidden, not
+   * cleared).
+   *
+   * Choices and free text sit side by side on purpose: "the second one, but only
+   * for images" is a real answer, and the tool's schema forbids an "Other"
+   * choice precisely because this field is always here.
+   */
+  var askEl = $("ask");
+  // Bound once, for the life of the page, and inert unless a question is open.
+  // On the form itself it would have to be re-bound per question (and unbound
+  // again, or every key would fire twice over), and it would answer only while
+  // focus happened to be inside — a click anywhere in the thread would take the
+  // shortcuts away with it.
+  document.addEventListener("keydown", askKeys);
+  var asking = null; // { toolCallId, questions, picks, touched, inputs, pages, page }
+
+  function openAsk(call) {
+    var questions = call && call.input && call.input.questions;
+    if (!Array.isArray(questions) || !questions.length) return;
+    if (asking && asking.toolCallId === call.toolCallId) return; // a replay of the same one
+    asking = {
+      toolCallId: call.toolCallId,
+      questions: questions,
+      picks: [], // per question: chosen ids, and for a ranking their order
+      touched: [], // whether a ranking was actually arranged (its default says nothing)
+      inputs: [],
+      pages: [],
+      page: 0,
+    };
+    askEl.innerHTML = "";
+    askEl.appendChild(askHead());
+    questions.forEach(function (q, i) {
+      var page = askQuestion(q, i);
+      asking.pages.push(page);
+      askEl.appendChild(page);
+    });
+    askEl.tabIndex = -1; // focusable, but not in the tab order
+    askEl.classList.remove("hidden");
+    composer.classList.add("asking");
+    setAskPage(0, !bulkLoading);
+    if (!bulkLoading) autoScroll();
+    updateSend();
+  }
+
+  /**
+   * The form's header: what is being asked, where you are in it, and the way out.
+   *
+   * The question lives up here rather than as its own heading below, because a
+   * label over the top of it ("QUESTION 1 OF 2", in small caps) was two headings
+   * for one question. The count belongs to the pager, which is the only thing it
+   * describes.
+   *
+   * Several questions are paged rather than stacked. Four questions in a column
+   * is a survey, and a survey in the composer is a worse thing to be handed than
+   * a conversation — one at a time keeps it a conversation.
+   */
+  function askHead() {
+    var head = document.createElement("div");
+    head.className = "askhead";
+    asking.title = document.createElement("span");
+    asking.title.className = "askqtext";
+    head.appendChild(asking.title);
+    if (asking.questions.length > 1) {
+      var pager = document.createElement("div");
+      pager.className = "askpager";
+      asking.prev = pagerBtn("askprev", "Previous question", -1);
+      asking.count = document.createElement("span");
+      asking.count.className = "askcount";
+      asking.next = pagerBtn("asknext", "Next question", 1);
+      pager.appendChild(asking.prev);
+      pager.appendChild(asking.count);
+      pager.appendChild(asking.next);
+      head.appendChild(pager);
+    }
+    var skip = document.createElement("button");
+    skip.type = "button";
+    skip.className = "askx";
+    skip.innerHTML = X_ICON;
+    skip.setAttribute("aria-label", "Dismiss this question");
+    skip.title = "Dismiss";
+    // Dismissing is local and silent: the run already ended at the question, so
+    // there is nothing to unblock and nothing worth saying to the model.
+    skip.onclick = closeAsk;
+    head.appendChild(skip);
+    return head;
+  }
+  /**
+   * The form, driven from the keyboard.
+   *
+   *   ← →      the previous/next question
+   *   ↑ ↓      walk the answers, including in and out of the line you type on
+   *   space    toggle the row you are on (the rows are buttons; this is native)
+   *   1-9      pick that numbered row from anywhere but the text line
+   *   enter    send, or move on when there are questions left
+   *
+   * Nothing is highlighted until you move to it: a row you landed on by pressing
+   * a key is a cursor, while a row highlighted on arrival is an answer nobody
+   * gave.
+   */
+  function askKeys(e) {
+    if (!asking || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+    var t = e.target || document.body;
+    // Someone else's field is not ours to type into: a rename dialog, the model
+    // search, anything editable that isn't our own line.
+    var inText = !!(t.classList && t.classList.contains("asktext"));
+    if (t.isContentEditable) return;
+    if (!inText && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || "")) return;
+    // Vertical arrows walk the rows — but inside the answer field they belong to
+    // the text first, and only carry you out of it once the caret has run out of
+    // text to move through.
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if (
+        inText &&
+        (e.key === "ArrowUp" ? t.selectionStart > 0 : t.selectionEnd < t.value.length)
+      ) {
+        return;
+      }
+      e.preventDefault();
+      moveAskCursor(e.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+    // Everything below would be typing if the text line has the caret.
+    if (inText) return;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      if (asking.questions.length < 2) return;
+      e.preventDefault();
+      setAskPage(asking.page + (e.key === "ArrowRight" ? 1 : -1), true);
+      return;
+    }
+    // Space belongs to whatever row holds the cursor — a choice row is a button
+    // and clicks itself, so the only thing to do is keep it from scrolling the
+    // thread out from under the form when it lands anywhere else.
+    if (e.key === " ") {
+      if (!(t.closest && t.closest(".askchoice"))) e.preventDefault();
+      return;
+    }
+    if (e.key === "Enter") {
+      if (t.closest && t.closest("button, .askrow")) return; // the button's own key
+      e.preventDefault();
+      if (onLastAskPage()) submitAsk();
+      else setAskPage(asking.page + 1, true);
+      return;
+    }
+    if (!/^[1-9]$/.test(e.key)) return;
+    var hit = asking.pages[asking.page].querySelectorAll(".askchoice")[Number(e.key) - 1];
+    if (!hit) return;
+    e.preventDefault();
+    hit.click();
+  }
+  // Grows with what you type, up to the ceiling the stylesheet sets, where it
+  // starts scrolling instead of pushing the composer up the screen.
+  function askAutosize(el) {
+    el.style.height = "0"; // measured from nothing, so it shrinks back as well
+    el.style.height = Math.min(el.scrollHeight, window.innerHeight * 0.22) + "px";
+  }
+  /** What the arrows walk: every row of this question that can hold the cursor. */
+  function askCursorRows() {
+    return Array.prototype.slice.call(
+      asking.pages[asking.page].querySelectorAll(".askchoice, .askrankrow, .asktext"),
+    );
+  }
+  function moveAskCursor(delta) {
+    var rows = askCursorRows();
+    if (!rows.length) return;
+    var at = rows.indexOf(document.activeElement);
+    // Coming from the form itself, the first press lands on the near end.
+    var next = at === -1 ? (delta > 0 ? 0 : rows.length - 1) : at + delta;
+    if (next < 0 || next >= rows.length) return; // the ends hold; wrapping disorients
+    rows[next].focus();
+  }
+  function pagerBtn(cls, label, delta) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "askpage " + cls;
+    b.innerHTML = CHEV; // the same chevron both ways; CSS turns one around
+    b.setAttribute("aria-label", label);
+    b.onclick = function () {
+      setAskPage(asking.page + delta, true);
+    };
+    return b;
+  }
+  function setAskPage(i, focus) {
+    var n = asking.questions.length;
+    asking.page = Math.max(0, Math.min(n - 1, i));
+    asking.pages.forEach(function (p, k) {
+      p.hidden = k !== asking.page;
+    });
+    asking.title.textContent = asking.questions[asking.page].question || "";
+    if (asking.count) asking.count.textContent = asking.page + 1 + " of " + n;
+    if (asking.prev) asking.prev.disabled = asking.page === 0;
+    if (asking.next) asking.next.disabled = asking.page === n - 1;
+    // Focus the form itself rather than its first row. Focus on a row tints it,
+    // which reads as already picked — an answer nobody gave. The form holds the
+    // key handling, so 1-9 and Enter still work from here, and Tab still walks
+    // into the rows for anyone driving it that way.
+    if (focus) askEl.focus();
+  }
+  function onLastAskPage() {
+    return asking.page === asking.questions.length - 1;
+  }
+
+  /** One question's body: why it matters, what can be picked, and a way to type. */
+  function askQuestion(q, i) {
+    var wrap = document.createElement("div");
+    wrap.className = "askq";
+    if (q.description) {
+      var desc = document.createElement("div");
+      desc.className = "askqdesc";
+      renderStaticMd(desc, q.description);
+      wrap.appendChild(desc);
+    }
+    asking.picks[i] = [];
+    var choices = Array.isArray(q.choices) ? q.choices : [];
+    var list = document.createElement("div");
+    list.className = "asklist";
+    if (choices.length && q.type === "rank_priorities") askRank(list, i, choices);
+    else if (choices.length) askChoices(list, q, i, choices);
+    // A line for your own words belongs where the choices can't hold one: under
+    // a single pick, or as the whole answer when nothing was offered. Picking
+    // several already says more than one thing, and a note on an ordering is a
+    // footnote to a sentence nobody wrote.
+    if (!choices.length || q.type === "single_choice") {
+      list.appendChild(askTextRow(q, i, choices.length > 0));
+    }
+    wrap.appendChild(list);
+    return wrap;
+  }
+
+  /**
+   * The way to say something the choices don't cover: the last row of the same
+   * list, with a pencil on it. A bare rule under the form said nothing about
+   * what it was for, and read as leftover space rather than an option.
+   */
+  function askTextRow(q, i, hasChoices) {
+    var row = document.createElement("label");
+    row.className = "askrow asktextrow";
+    var mark = document.createElement("span");
+    mark.className = "askmark";
+    mark.innerHTML = ICON_PENCIL;
+    row.appendChild(mark);
+    // A textarea, not a one-line field: an answer in your own words is as long
+    // as it needs to be, and it grows the way the composer's does rather than
+    // scrolling a sentence past a slot.
+    var input = document.createElement("textarea");
+    // A question with nothing to pick from is answered in prose, so it opens at
+    // the size of a short paragraph rather than a slot — the box says how much
+    // of an answer is wanted before anyone types a word. Under a list of
+    // choices, one line, because there it is the aside and not the answer.
+    input.rows = hasChoices ? 1 : 3;
+    input.className = "asktext" + (hasChoices ? "" : " askfree");
+    input.placeholder = hasChoices ? "Something else…" : "Your answer…";
+    input.setAttribute("aria-label", q.question || "Answer");
+    input.addEventListener("input", function () {
+      askAutosize(input);
+      updateSend();
+    });
+    // Enter walks the form rather than sending it, until there is nowhere left
+    // to walk — and shift-enter is a new line, as it is everywhere else here.
+    input.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" || e.shiftKey) return;
+      e.preventDefault();
+      if (onLastAskPage()) submitAsk();
+      else setAskPage(asking.page + 1, true);
+    });
+    asking.inputs[i] = input;
+    row.appendChild(input);
+    return row;
+  }
+
+  /**
+   * Pick one, or several.
+   *
+   * Full-width rows rather than chips: they are the same shape as a ranking's
+   * rows and as the write-your-own row below them, so one question reads as one
+   * list however it is answered. A single-choice row is numbered and the number
+   * is also its key — 1 through 9 pick, from anywhere but the text field.
+   */
+  function askChoices(list, q, i, choices) {
+    var multi = q.type === "multi_choice";
+    choices.forEach(function (c, n) {
+      var b = document.createElement("button");
+      b.type = "button"; // never a submit: picking is not answering
+      b.className = "askrow askchoice" + (multi ? " askcheck" : "");
+      b.setAttribute("aria-pressed", "false");
+      var mark = document.createElement("span");
+      mark.className = "askmark" + (multi ? " askbox" : " asknum");
+      if (multi)
+        mark.innerHTML = CHECK; // CSS reveals it once the row is picked
+      else mark.textContent = n + 1;
+      b.appendChild(mark);
+      var text = document.createElement("span");
+      text.className = "askrowtext";
+      var label = document.createElement("span");
+      label.className = "askchoicelabel";
+      label.textContent = c.label || c.id;
+      text.appendChild(label);
+      if (c.description) {
+        var cd = document.createElement("span");
+        cd.className = "askchoicedesc";
+        cd.textContent = c.description;
+        text.appendChild(cd);
+      }
+      b.appendChild(text);
+      b.onclick = function () {
+        var on = b.getAttribute("aria-pressed") === "true";
+        // A single-choice list is exclusive; clicking the picked one clears it,
+        // so a mis-click is undoable without a "none of these" choice.
+        if (!multi) {
+          var all = list.querySelectorAll(".askchoice");
+          for (var k = 0; k < all.length; k++) all[k].setAttribute("aria-pressed", "false");
+          asking.picks[i] = [];
+        }
+        if (on) {
+          b.setAttribute("aria-pressed", "false");
+          asking.picks[i] = asking.picks[i].filter(function (id) {
+            return id !== c.id;
+          });
+        } else {
+          b.setAttribute("aria-pressed", "true");
+          asking.picks[i].push(c.id);
+        }
+        updateSend();
+      };
+      list.appendChild(b);
+    });
+  }
+
+  /**
+   * Put them in order.
+   *
+   * Ranking is choosing with more information in it, so it reads as the same
+   * list, just numbered. Dragging is the nice way; the two nudge buttons are the
+   * way that works with a keyboard, on a phone, and for anyone who has ever lost
+   * a row to a fumbled drag. Both write the same order.
+   *
+   * The order as offered is not an answer — it is the model's own guess, and
+   * reporting it back untouched would put words in the user's mouth. Arranging
+   * it (either way) is what makes it one.
+   */
+  function askRank(list, i, choices) {
+    asking.picks[i] = choices.map(function (c) {
+      return c.id;
+    });
+    function rows() {
+      return Array.prototype.slice.call(list.querySelectorAll(".askrankrow"));
+    }
+    function commit() {
+      asking.picks[i] = rows().map(function (r) {
+        return r.dataset.id;
+      });
+      asking.touched[i] = true;
+      renumber();
+      updateSend();
+    }
+    function renumber() {
+      var all = rows();
+      all.forEach(function (r, k) {
+        r.querySelector(".askmark").textContent = k + 1;
+        r.querySelector(".askrankup").disabled = k === 0;
+        r.querySelector(".askrankdown").disabled = k === all.length - 1;
+      });
+    }
+    /**
+     * Reorder, and let the rows travel to their new places.
+     *
+     * FLIP: note where every row is, let the DOM change, then put each one back
+     * where it was and take the brake off — the browser runs it home. Without it
+     * the list teleports and you have to find your row again, which is the one
+     * thing you were watching.
+     */
+    function flip(mutate) {
+      var was = {};
+      rows().forEach(function (r) {
+        was[r.dataset.id] = r.getBoundingClientRect().top;
+      });
+      mutate();
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+      rows().forEach(function (r) {
+        if (r.classList.contains("dragging")) return; // the gap is already where it is
+        var dy = was[r.dataset.id] - r.getBoundingClientRect().top;
+        if (!dy) return;
+        r.style.transition = "none";
+        r.style.transform = "translateY(" + dy + "px)";
+        void r.offsetHeight; // flush, so the transition below has somewhere to start
+        r.style.transition = "";
+        r.style.transform = "";
+      });
+    }
+    function move(row, delta) {
+      var all = rows();
+      var k = all.indexOf(row);
+      var to = k + delta;
+      if (to < 0 || to >= all.length) return;
+      flip(function () {
+        if (delta < 0) list.insertBefore(row, all[to]);
+        else list.insertBefore(all[to], row);
+      });
+      commit();
+      row.focus();
+    }
+    choices.forEach(function (c) {
+      var row = document.createElement("div");
+      row.className = "askrow askrankrow";
+      row.draggable = true;
+      row.tabIndex = 0;
+      row.dataset.id = c.id;
+      var grip = document.createElement("span");
+      grip.className = "askrankgrip";
+      grip.innerHTML = GRIP;
+      var n = document.createElement("span");
+      n.className = "askmark asknum";
+      var label = document.createElement("span");
+      label.className = "askrowtext";
+      label.textContent = c.label || c.id;
+      if (c.description) label.title = c.description;
+      var nudge = document.createElement("span");
+      nudge.className = "asknudge";
+      nudge.appendChild(nudgeBtn("askrankup", "Move up", row, -1, move));
+      nudge.appendChild(nudgeBtn("askrankdown", "Move down", row, 1, move));
+      row.appendChild(grip);
+      row.appendChild(n);
+      row.appendChild(label);
+      row.appendChild(nudge);
+      row.addEventListener("dragstart", function (e) {
+        dragRank = row;
+        row.classList.add("dragging");
+        list.classList.add("dragging");
+        e.dataTransfer.effectAllowed = "move";
+        try {
+          e.dataTransfer.setData("text/plain", c.id);
+        } catch (_) {}
+      });
+      row.addEventListener("dragend", function () {
+        row.classList.remove("dragging");
+        list.classList.remove("dragging");
+        dragRank = null;
+        commit();
+      });
+      list.appendChild(row);
+    });
+    list.addEventListener("dragover", function (e) {
+      if (!dragRank || dragRank.parentNode !== list) return;
+      e.preventDefault();
+      // Past the last row, land above the write-your-own line rather than after
+      // it: that row is not part of the ranking, and "below Something else" is
+      // not a position anything can hold.
+      var before = rankRowAfter(list, e.clientY) || list.querySelector(".asktextrow");
+      if (before === dragRank) return;
+      flip(function () {
+        list.insertBefore(dragRank, before);
+      });
+    });
+    list.addEventListener("drop", function (e) {
+      if (dragRank) e.preventDefault();
+    });
+    renumber();
+  }
+  var dragRank = null;
+  function nudgeBtn(cls, label, row, delta, move) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "asknudgebtn " + cls;
+    b.innerHTML = CHEV;
+    b.setAttribute("aria-label", label);
+    b.onclick = function () {
+      move(row, delta);
+    };
+    return b;
+  }
+  /** The row the dragged one should sit before: the first whose middle is below the cursor. */
+  function rankRowAfter(list, y) {
+    var all = Array.prototype.slice.call(list.querySelectorAll(".askrankrow:not(.dragging)"));
+    for (var i = 0; i < all.length; i++) {
+      var r = all[i].getBoundingClientRect();
+      if (y < r.top + r.height / 2) return all[i];
+    }
+    return null;
+  }
+
+  /** A question's chosen ids: a ranking counts only once it has been arranged. */
+  function askPicks(i) {
+    if (asking.questions[i].type === "rank_priorities" && !asking.touched[i]) return [];
+    return asking.picks[i] || [];
+  }
+  function askLabel(q, id) {
+    var c = (q.choices || []).find(function (x) {
+      return x.id === id;
+    });
+    return (c && c.label) || id;
+  }
+  /**
+   * What the user actually says back, in their own turn of the transcript. The
+   * questions are already in the thread (and in the model's history, as this
+   * call's input), so a single answer needs no preamble; a batch labels its
+   * lines because otherwise the mapping is lost. A question left alone says
+   * nothing at all rather than "skipped" — silence is the honest report.
+   */
+  function askContent() {
+    var one = asking.questions.length === 1;
+    var lines = [];
+    asking.questions.forEach(function (q, i) {
+      var labels = askPicks(i).map(function (id) {
+        return askLabel(q, id);
+      });
+      var typed = asking.inputs[i] ? asking.inputs[i].value.trim() : "";
+      if (!labels.length && !typed) return;
+      var ranked = q.type === "rank_priorities";
+      var answer = labels.join(ranked ? ", then " : ", ");
+      if (typed) answer = answer ? answer + " (" + typed + ")" : typed;
+      var lead = ranked ? "Ranked: " : "Selected: ";
+      lines.push(
+        one ? (labels.length ? lead + answer : answer) : "**" + q.question + "** " + answer,
+      );
+    });
+    return lines.join("\n");
+  }
+  /** The same answers as structure, so the sent message can render as the form it answers. */
+  function askReply() {
+    return {
+      toolCallId: asking.toolCallId,
+      questions: asking.questions,
+      answers: asking.questions.map(function (_q, i) {
+        var a = {};
+        var ids = askPicks(i);
+        if (ids.length) a.choiceIds = ids;
+        var typed = asking.inputs[i] ? asking.inputs[i].value.trim() : "";
+        if (typed) a.text = typed;
+        return a;
+      }),
+    };
+  }
+  // Sendable once ANY question has something in it: skipping question three is a
+  // legitimate answer, and holding the button hostage to all four is not.
+  function askReady() {
+    return !!asking && askContent().length > 0;
+  }
+  function submitAsk() {
+    if (!askReady()) return;
+    var content = askContent();
+    var reply = askReply();
+    closeAsk();
+    sendMessage(content, null, reply);
+  }
+  /**
+   * Close an open question because something settled it — but only when that
+   * something actually came after it.
+   *
+   * Backfill walks the conversation's OLDER events into the thread once the tail
+   * is already on screen, so during that burst a user message is one from before
+   * the question was asked, and it settles nothing. (`renderAnchor` marks exactly
+   * that burst; `streaming` is saved and restored across it for the same
+   * reason.) Raising the form is guarded the same way at the tool call.
+   */
+  function settleAsk() {
+    if (!renderAnchor) closeAsk();
+  }
+  function closeAsk() {
+    if (!asking) return;
+    asking = null;
+    askEl.innerHTML = "";
+    askEl.classList.add("hidden");
+    composer.classList.remove("asking");
+    updateSend();
   }
 
   // ---- steer queue -------------------------------------------------------

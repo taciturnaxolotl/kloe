@@ -264,6 +264,8 @@ export class JobDriver {
       // A long tool reports straight into the log rather than through this
       // generator, which is parked on the provider stream while it runs.
       onProgress: (p) => actor.toolProgress({ runId: spec.runId, messageId: spec.messageId, ...p }),
+      // A person is watching this one, so it may ask them something.
+      canAsk: true,
     })) {
       if (timing && step.kind === "text") {
         if (!timing.firstTokenAt) timing.firstTokenAt = Date.now();

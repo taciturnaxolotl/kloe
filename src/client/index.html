@@ -95,6 +95,9 @@
             <!-- Connection hat: collapsed to nothing while live; conn.js fills it. -->
             <div class="hat" id="hat" data-state="live" role="status" aria-live="polite"></div>
             <div class="staged hidden" id="staged" aria-label="Attachments"></div>
+            <!-- The model's question, when it asked one (ask_user). While this is
+                 up it stands in for the textarea: the composer IS the form. -->
+            <div class="ask hidden" id="ask" aria-live="polite"></div>
             <textarea id="input" rows="1" placeholder="Reply, or ask something new…" aria-label="Message"></textarea>
             <div class="tools">
               <button class="icon attach" id="attach" type="button" aria-label="Add attachment" title="Add attachment">

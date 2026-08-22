@@ -2645,7 +2645,9 @@ body.resizing {
   }
 }
 
-.card textarea {
+/* The composer's own field, and only that one: the question form has a textarea
+   of its own inside this card, which these sizes are wrong for. */
+.card > textarea {
   width: 100%;
   resize: none;
   border: 0;
@@ -2659,10 +2661,10 @@ body.resizing {
   max-height: 44vh;
   overflow-y: auto;
 }
-.card textarea:focus {
+.card > textarea:focus {
   outline: none;
 }
-.card textarea::placeholder {
+.card > textarea::placeholder {
   color: var(--ink-faint);
 }
 
@@ -3070,6 +3072,472 @@ body.resizing {
 /* ---- attachments ------------------------------------------------------- */
 /* Staged tray inside the composer (before send). The card has no top padding,
    so the tray provides its own; horizontal 8px aligns chips with the textarea. */
+/* ---- the model's question ----------------------------------------------
+   The composer's own surface, standing in for the textarea while `ask_user`
+   waits (see app.js). It borrows the card's padding rather than drawing a
+   second box inside it: the point is that the composer BECAME the form, not
+   that a panel appeared in it. */
+.ask {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 13px 8px 4px;
+}
+.ask.hidden {
+  display: none;
+}
+/* The composer's own textarea (and the paperclip, which has nothing to attach
+   to) step aside while the form is up. Hidden, not emptied — a half-typed
+   message is still there when the question is gone. Direct child only: the
+   form's own answer field is a textarea too, and this rule used to hide it. */
+.card.asking > textarea,
+.card.asking .attach {
+  display: none;
+}
+.askhead {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+/* The question IS the heading; nothing labels it. */
+.askqtext {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--ink);
+}
+.askx {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink-faint);
+  cursor: pointer;
+}
+.askx svg {
+  width: 15px;
+  height: 15px;
+}
+.askx:hover {
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  color: var(--ink);
+}
+/* Paging chrome: the count belongs to the pager, which is the only thing it
+   describes. The same chevron both ways, one of them turned around. */
+.askpager {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+.askpage {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+.askpage svg {
+  width: 15px;
+  height: 15px;
+}
+.askprev svg {
+  transform: rotate(180deg);
+}
+.askpage:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  color: var(--ink);
+}
+.askpage:disabled {
+  color: var(--ink-faint);
+  opacity: 0.45;
+  cursor: default;
+}
+.askcount {
+  font-size: 12px;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  padding: 0 2px;
+}
+.askq[hidden] {
+  display: none;
+}
+.askq {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.askqdesc {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-muted);
+}
+.askqdesc p {
+  margin: 0 0 4px;
+}
+.askqdesc p:last-child {
+  margin-bottom: 0;
+}
+
+/* ---- one question, one list ---------------------------------------------
+   Choices, a ranking and the write-your-own line are all rows of the same list,
+   so a question reads as one thing however it happens to be answered. The
+   hairlines step aside for whichever row is under the cursor or picked, which
+   is what lets that row read as a raised block rather than a striped cell. */
+.asklist {
+  display: flex;
+  flex-direction: column;
+}
+.askrow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  user-select: none; /* a drag should move the row, not select its label */
+  transition: background 0.12s ease;
+}
+/* The hairline between two rows is drawn ON the seam rather than as a border:
+   a border follows the row's rounded corners and curls up at both ends, and the
+   gap a dragged row leaves behind would carry one too. */
+.askrow + .askrow::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 10px;
+  right: 10px;
+  height: 1px;
+  background: var(--rule);
+}
+/* A row that is raised — hovered, picked, focused, or the gap under a drag —
+   has no seam above it, and neither has the row below it. */
+.askrow:hover::before,
+.askrow:focus-visible::before,
+.askrow[aria-pressed="true"]::before,
+.askrow.dragging::before,
+.asktextrow:focus-within::before,
+.askrow:hover + .askrow::before,
+.askrow:focus-visible + .askrow::before,
+.askrow[aria-pressed="true"] + .askrow::before,
+.askrow.dragging + .askrow::before,
+.asktextrow:focus-within + .askrow::before {
+  opacity: 0;
+}
+/* Hover fills a row in; focus only outlines it. A filled row reads as picked,
+   which is a thing to say only when someone has actually picked it — the text
+   row is the exception, where the fill follows the caret. */
+.askrow:hover,
+.asktextrow:focus-within {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+.ask:focus {
+  outline: none;
+}
+.askrow:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.askrow[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+/* A checkbox row is a toggle in its own right rather than one line of a list:
+   it sits tighter, and keeps a little air around itself instead of a seam
+   tying it to its neighbours. */
+.askcheck {
+  padding: 5px 8px;
+  margin: 2px 0;
+}
+.askcheck::before,
+.askcheck + .askrow::before {
+  opacity: 0;
+}
+
+.askrowtext {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+/* The leading mark: a number to pick by, a box to tick, or the pencil. */
+.askmark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: var(--radius-xs);
+  color: var(--ink-muted);
+}
+.askmark svg {
+  width: 13px;
+  height: 13px;
+}
+.asknum {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+}
+.askrow[aria-pressed="true"] .asknum {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--ink);
+}
+.askbox {
+  width: 17px;
+  height: 17px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-xs);
+}
+.askbox svg {
+  opacity: 0;
+  width: 12px;
+  height: 12px;
+}
+/* Ticked, the fill is the whole statement — an outline around it as well is a
+   second one. Transparent rather than gone, so the box keeps its size. */
+.askrow[aria-pressed="true"] .askbox {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--ink);
+}
+.askrow[aria-pressed="true"] .askbox svg {
+  opacity: 1;
+}
+.askchoicelabel {
+  font-weight: 500;
+}
+.askchoicedesc {
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+/* The last row of the list rather than a rule beneath it: an option, phrased
+   like the others, instead of leftover space. It carries its own edge and fill,
+   because unlike the rows above it this one is a field — the difference between
+   "pick this" and "write here" should be visible before you click either. */
+.asktextrow {
+  cursor: text;
+  align-items: flex-start;
+  margin-top: 5px;
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+.asktextrow::before {
+  opacity: 0; /* it has an edge of its own; a seam as well would be two lines */
+}
+/* Its fill is what sets it apart from the rows above; focus just deepens it,
+   which is quieter than drawing an edge that only appears when you look at it. */
+.asktextrow:hover,
+.asktextrow:focus-within {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+}
+.asktextrow .askmark {
+  margin-top: 0;
+}
+.asktext {
+  flex: 1;
+  min-width: 0;
+  user-select: text;
+  resize: none;
+  overflow-y: auto;
+  /* One line to start with; askAutosize grows it from there, and past the
+     ceiling it scrolls rather than pushing the composer up the screen. The
+     min-height is the floor it can never shrink below, which is what makes the
+     three-line variant below hold its size while it is empty. */
+  height: 20px;
+  min-height: 20px;
+  max-height: 22vh;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  padding: 0;
+}
+/* The whole answer, rather than an aside under a list of choices. */
+.askfree {
+  height: 60px;
+  min-height: 60px;
+}
+.asktext:focus {
+  outline: none;
+}
+.asktext::placeholder {
+  color: var(--ink-faint);
+}
+
+/* ---- ranking ------------------------------------------------------------
+   The same rows, in an order you set: drag them, or nudge them with the two
+   chevrons — the nudges are the ones that work on a phone and from the
+   keyboard, so they are always reachable, just quiet until the row is under
+   the cursor. */
+.askrankrow {
+  cursor: grab;
+  /* The travel a reorder animates (see flip() in app.js); the row it is moving
+     around gets out of the way rather than blinking there. */
+  transition:
+    background 0.12s ease,
+    transform 0.16s ease;
+}
+/* The row being dragged leaves a gap where it will land, not a faded copy of
+   itself: two of the same row on screen is one more than there are. The box
+   keeps its height so nothing below it jumps while you decide. */
+.askrankrow.dragging {
+  cursor: grabbing;
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+}
+/* While a row is in the air the list stops reacting to the cursor entirely: no
+   row tints under it, and — the part that looked broken — the seams stop
+   blanking out as it passes over them. Every divider stays put, the rhythm
+   holds, and the only thing that moves is the gap. */
+.asklist.dragging .askrow:hover,
+.asklist.dragging .asktextrow:hover {
+  background: none;
+}
+.asklist.dragging .askrow + .askrow::before {
+  opacity: 1;
+}
+.askrankrow.dragging > * {
+  visibility: hidden;
+}
+.askrankgrip {
+  display: inline-flex;
+  flex: none;
+  color: var(--ink-faint);
+  margin-right: -6px;
+}
+.askrankgrip svg {
+  width: 14px;
+  height: 14px;
+}
+.asknudge {
+  display: flex;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.askrankrow:hover .asknudge,
+.askrankrow:focus-within .asknudge {
+  opacity: 1;
+}
+/* No hover on a touch screen, so they would never appear there — and dragging
+   is the thing that doesn't work, which makes them the only way through. */
+@media (hover: none) {
+  .asknudge {
+    opacity: 1;
+  }
+}
+.asknudgebtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+.asknudgebtn svg {
+  width: 13px;
+  height: 13px;
+}
+.askrankup svg {
+  transform: rotate(-90deg);
+}
+.askrankdown svg {
+  transform: rotate(90deg);
+}
+.asknudgebtn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink);
+}
+.asknudgebtn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* ---- an answered form, in the user's own turn --------------------------- */
+.askcard {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 11px 13px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--bg-sunk);
+}
+.askcardq {
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+.askcardq:not(:first-child) {
+  margin-top: 6px;
+}
+.askcardpicks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.askcardpick {
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--ink);
+  font-size: 13px;
+}
+/* A ranking is a sequence, not a set: keep it on one line each, in order. */
+.askcardpicks.ranked {
+  flex-direction: column;
+  align-items: flex-start;
+}
+.askcardtext {
+  font-size: 13px;
+  color: var(--ink);
+}
+
+/* What was asked, kept in the step after the form is gone. */
+.askrecord {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 13px;
+}
+.askrecordq {
+  color: var(--ink);
+}
+.askrecordopts {
+  color: var(--ink-faint);
+  margin-bottom: 4px;
+}
+
 .staged {
   display: flex;
   flex-wrap: wrap;

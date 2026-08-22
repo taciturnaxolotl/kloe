@@ -1,4 +1,12 @@
-import { type JSONValue, type LanguageModel, type ModelMessage, stepCountIs, streamText } from "ai";
+import {
+  hasToolCall,
+  type JSONValue,
+  type LanguageModel,
+  type ModelMessage,
+  stepCountIs,
+  streamText,
+  type ToolSet,
+} from "ai";
 import type { RunStep } from "./actor";
 import type { Role } from "./auth";
 import type { BlobStore } from "./blobs";
@@ -12,7 +20,7 @@ import { RateLimiter } from "./ratelimit";
 import { searchProviderFor } from "./search";
 import { getConfig } from "./settings";
 import type { Store } from "./store";
-import { type ToolContext, toolSet } from "./tools";
+import { ASK_TOOL, type ToolContext, toolSet } from "./tools";
 import { metered } from "./usage";
 
 /**
@@ -431,6 +439,25 @@ export interface RunOptions {
    * through it would surface only once the tool had already finished.
    */
   onProgress?: ToolContext["onProgress"];
+  /** Whether a person is watching: without it `ask_user` isn't offered. */
+  canAsk?: boolean;
+}
+
+/**
+ * When the tool loop stops.
+ *
+ * The step cap is the runaway guard (0 → uncapped: the loop runs until the model
+ * stops calling tools, or the user cancels). `ask_user` is the other one, and it
+ * is not a guard but the tool's whole mechanic: asking ENDS the turn. A model
+ * that could keep generating past its own question would answer it itself —
+ * the failure the tool exists to prevent — so the stop is structural here
+ * rather than a line in a prompt asking nicely.
+ */
+function stopConditions(tools: ToolSet, maxToolSteps: number) {
+  const stops = [];
+  if (maxToolSteps > 0) stops.push(stepCountIs(maxToolSteps));
+  if (ASK_TOOL in tools) stops.push(hasToolCall(ASK_TOOL));
+  return stops.length ? stops : () => false;
 }
 
 export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGenerator<RunStep> {
@@ -474,6 +501,7 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
     researchLead: leadRef ? await resolveModelFor(leadRef, who) : undefined,
     researchWorker: workerRef ? await resolveModelFor(workerRef, who) : undefined,
     onProgress: opts.onProgress,
+    canAsk: opts.canAsk,
   });
   const hasTools = Object.keys(tools).length > 0;
   // Output cap: an explicit provider override wins; otherwise fall back to the
@@ -518,13 +546,9 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
     abortSignal: opts.abortSignal,
     ...(maxOutputTokens ? { maxOutputTokens } : {}),
     ...(providerOpts ? { providerOptions: { [providerName]: providerOpts } } : {}),
-    // Tools + a step cap: streamText runs the agentic loop (call → execute →
-    // feed back), bounded so a runaway can't loop forever.
-    // 0 → unlimited: never force-stop, so the loop runs until the model stops
-    // calling tools or the user cancels (abortSignal). A positive cap bounds it.
-    ...(hasTools
-      ? { tools, stopWhen: maxToolSteps > 0 ? stepCountIs(maxToolSteps) : () => false }
-      : {}),
+    // streamText runs the agentic loop (call → execute → feed back); see
+    // stopConditions for what ends it.
+    ...(hasTools ? { tools, stopWhen: stopConditions(tools, maxToolSteps) } : {}),
   });
   // Consume the FULL stream (not just textStream) so reasoning models — whose
   // answer arrives as reasoning parts — come through instead of an empty turn.
@@ -540,8 +564,15 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
   // signature that must be echoed on replay arrives on the reasoning parts; we
   // accumulate it and, at the block's end, emit it so the actor can persist it.
   const reasoningMeta = new Map<string, Record<string, Record<string, unknown>>>();
+  // Set once this turn has asked the user something. A well-behaved provider
+  // ends the message on that call, but some OpenAI-compatible ones emit the call
+  // AND an answer to it in the same completion — text written before the model
+  // could possibly know the answer. It goes nowhere: the turn ended at the
+  // question.
+  let asked = false;
   for await (const part of result.fullStream) {
     if (part.type === "text-delta") {
+      if (asked) continue;
       textChunks++;
       grownChars += part.text.length;
       yield { kind: "text", chunk: part.text };
@@ -561,6 +592,7 @@ export async function* run(messages: ModelMessage[], opts: RunOptions): AsyncGen
         reasoningMeta.get(part.id);
       if (meta && hasSignature(meta)) yield { kind: "reasoning-signature", providerOptions: meta };
     } else if (part.type === "tool-call") {
+      if (part.toolName === ASK_TOOL) asked = true;
       grownChars += JSON.stringify(part.input ?? "").length;
       yield {
         kind: "tool-call",

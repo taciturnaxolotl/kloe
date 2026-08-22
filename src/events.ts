@@ -59,6 +59,8 @@ export interface UserMessageData {
   content: string;
   /** Files/images the user attached; absent for a plain text turn. */
   attachments?: AttachmentRef[];
+  /** Present when this message is the answer to an `ask_user` form. */
+  ask?: AskReply;
 }
 
 /** A steered message parked in the queue until the current run finishes. */
@@ -151,6 +153,55 @@ export interface ToolProgressData {
   phase: string;
   /** Phase-specific payload — a query, a page, a chunk of the draft. */
   data?: unknown;
+}
+
+/**
+ * A choice offered by `ask_user`. The `id` is what comes back in the answer, so
+ * it is what the model reads — name it for meaning ("postgres"), not position.
+ */
+export interface AskChoice {
+  id: string;
+  label: string;
+  /** One line of what picking this means; shown under the label. */
+  description?: string;
+}
+
+/** One question in an `ask_user` call. */
+export interface AskQuestion {
+  /** Everything but `free_text` carries `choices`, which `rank_priorities` orders. */
+  type: "single_choice" | "multi_choice" | "rank_priorities" | "free_text";
+  question: string;
+  /** Markdown context under the question: the tradeoff, the default, the risk. */
+  description?: string;
+  choices?: AskChoice[];
+}
+
+/**
+ * One question's answer. `choiceIds` is a set for the choice types and a running
+ * ORDER for `rank_priorities` — same field, because "which of these" and "these,
+ * in this order" are the same act with more information in the second.
+ *
+ * Both may carry `text` as well: the composer keeps a line for the user's own
+ * words under every question, so "the second one, but only for images" is
+ * sayable without an "Other" choice to invent it.
+ */
+export interface AskAnswer {
+  choiceIds?: string[];
+  text?: string;
+}
+
+/**
+ * The form, answered. It rides the user's message so their turn can render as
+ * what it is — a question and what they picked — instead of the prose the model
+ * reads. Self-contained on purpose: `questions` is copied in rather than looked
+ * up from the tool call, because a tail-loaded thread may not have that call on
+ * screen at all.
+ */
+export interface AskReply {
+  toolCallId: string;
+  questions: AskQuestion[];
+  /** Positional with `questions`; an empty entry is a question left alone. */
+  answers: AskAnswer[];
 }
 
 export interface ToolResultData {

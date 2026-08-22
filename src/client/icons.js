@@ -22,6 +22,7 @@ import {
   Hash,
   Image,
   MessageCirclePlus,
+  MessageCircleQuestionMark,
   MessageSquare,
   MessagesSquare,
   PanelLeft,
@@ -83,6 +84,7 @@ export var CHATS_ICON = icon(MessagesSquare, { "stroke-width": 1.8 });
 export var SETTINGS_ICON = icon(Settings, { "stroke-width": 1.7 });
 export var PLUS_ICON = icon(Plus);
 export var PENCIL_ICON = icon(Pencil, { "stroke-width": 1.8 });
+export var ASK_ICON = icon(MessageCircleQuestionMark, { "stroke-width": 1.8 });
 export var FOLDER_ICON = icon(Folder, { "stroke-width": 1.8 });
 export var USER_ICON = icon(User, { "stroke-width": 1.8 });
 export var USERS_ICON = icon(Users, { "stroke-width": 1.8 });

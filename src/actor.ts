@@ -10,6 +10,7 @@ import {
 import { providerErrorDetail, requestShape } from "./errors";
 import {
   type ArtifactRef,
+  type AskReply,
   type AttachmentRef,
   Event,
   type EventData,
@@ -221,12 +222,18 @@ export class ConversationActor {
     this.persist(Event.Title, { threadId: this.conversationId, title });
   }
 
-  appendUser(content: string, runId: string = randomUUID(), attachments?: AttachmentRef[]): void {
+  appendUser(
+    content: string,
+    runId: string = randomUUID(),
+    attachments?: AttachmentRef[],
+    ask?: AskReply,
+  ): void {
     this.persist(Event.User, {
       runId,
       threadId: this.conversationId,
       content: truncateUtf8(content),
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(ask ? { ask } : {}),
     });
     if (attachments) {
       for (const a of attachments) this.store.addBlobRef(a.sha256, this.conversationId);

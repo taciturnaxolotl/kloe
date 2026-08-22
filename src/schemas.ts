@@ -21,6 +21,39 @@ export const Attachment = v.object({
 });
 export type Attachment = v.InferOutput<typeof Attachment>;
 
+/**
+ * An answered `ask_user` form, riding the message the user sends back (see
+ * AskReply). The client hands the questions back with the answers so the turn
+ * renders as a question-and-answer rather than as the prose the model reads;
+ * everything here is bounded because it is user input that gets persisted.
+ */
+const AskChoiceBody = v.object({
+  id: v.pipe(v.string(), v.maxLength(200)),
+  label: v.pipe(v.string(), v.maxLength(200)),
+  description: v.optional(v.pipe(v.string(), v.maxLength(500))),
+});
+const AskQuestionBody = v.object({
+  type: v.picklist(["single_choice", "multi_choice", "rank_priorities", "free_text"]),
+  question: v.pipe(v.string(), v.maxLength(500)),
+  description: v.optional(v.pipe(v.string(), v.maxLength(2000))),
+  choices: v.optional(v.pipe(v.array(AskChoiceBody), v.maxLength(10))),
+});
+export const AskReplyBody = v.object({
+  toolCallId: v.pipe(v.string(), v.minLength(1), v.maxLength(200)),
+  questions: v.pipe(v.array(AskQuestionBody), v.maxLength(10)),
+  answers: v.pipe(
+    v.array(
+      v.object({
+        choiceIds: v.optional(
+          v.pipe(v.array(v.pipe(v.string(), v.maxLength(200))), v.maxLength(10)),
+        ),
+        text: v.optional(v.pipe(v.string(), v.maxLength(10_000))),
+      }),
+    ),
+    v.maxLength(10),
+  ),
+});
+
 /** POST /api/conversations/:id/prompt */
 export const PromptBody = v.object({
   content: v.string(),
@@ -34,6 +67,8 @@ export const PromptBody = v.object({
    * the same budget.
    */
   effort: v.optional(v.pipe(v.string(), v.maxLength(20))),
+  /** Set when this message answers a question the model asked. */
+  ask: v.optional(AskReplyBody),
 });
 export type PromptBody = v.InferOutput<typeof PromptBody>;
 

@@ -75,3 +75,41 @@ test("withBody returns 422 and does NOT call the handler on a schema failure", a
   expect(body.error).toBe("validation failed");
   expect(body.issues.length).toBeGreaterThan(0);
 });
+
+// An answered `ask_user` form rides the message that answers it, so the prompt
+// body carries it — bounded, because it is user input on its way to the log.
+test("a prompt carries an answered form, questions and all", async () => {
+  const r = await validate(PromptBody, {
+    content: "Ranked: Speed, then Cost",
+    model: "openai/gpt-4",
+    ask: {
+      toolCallId: "call-1",
+      questions: [
+        {
+          type: "rank_priorities",
+          question: "What matters most?",
+          choices: [
+            { id: "speed", label: "Speed" },
+            { id: "cost", label: "Cost" },
+          ],
+        },
+      ],
+      answers: [{ choiceIds: ["speed", "cost"] }],
+    },
+  });
+  expect(r.ok).toBe(true);
+  if (r.ok) expect(r.value.ask?.questions[0]?.type).toBe("rank_priorities");
+});
+
+test("a prompt with an unknown question type is rejected", async () => {
+  const r = await validate(PromptBody, {
+    content: "hi",
+    model: "openai/gpt-4",
+    ask: {
+      toolCallId: "call-1",
+      questions: [{ type: "interrogation", question: "well?" }],
+      answers: [{}],
+    },
+  });
+  expect(r.ok).toBe(false);
+});

@@ -492,7 +492,7 @@ function startRun(
   const actor = getActor(conversationId, store);
   const runId = data.runId ?? randomUUID();
   const messageId = randomUUID();
-  actor.appendUser(data.content, runId, data.attachments);
+  actor.appendUser(data.content, runId, data.attachments, data.ask);
   // Record the owner on the freshly-created conversation (first writer wins), so
   // per-user lard identity can resolve back to whose token to use.
   store.setConversationOwner(conversationId, owner);

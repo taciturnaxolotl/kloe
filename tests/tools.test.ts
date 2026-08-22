@@ -201,3 +201,81 @@ test("read_artifact returns a shaped result, so a step can name what it read", a
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- ask_user ------------------------------------------------------------
+// The question tool is a contract with two readers: the model, which gets the
+// validation errors and the formatted answers, and the person answering, whose
+// form the caps exist to protect.
+
+/** Runs `ask_user`, returning what the model gets back from the call. */
+async function ask(questions: unknown): Promise<string> {
+  const tools = toolSet({ canAsk: true });
+  const exec = tools.ask_user!.execute as (i: unknown, o: unknown) => Promise<string>;
+  return exec({ questions }, { toolCallId: "call-1", messages: [] });
+}
+
+test("ask_user is offered only when a person is watching the run", () => {
+  expect(toolSet({}).ask_user).toBeUndefined();
+  expect(toolSet({ canAsk: true }).ask_user).toBeDefined();
+});
+
+test("ask_user refuses a batch bigger than the form, and says what to do", async () => {
+  const q = (n: number) => ({ type: "free_text", question: `q${n}` });
+  const out = await ask([q(1), q(2), q(3), q(4), q(5)]);
+  expect(out).toContain("more than the 4");
+  expect(out).toContain("will follow");
+});
+
+test("ask_user refuses a choice question that offers no choice", async () => {
+  const out = await ask([
+    { type: "single_choice", question: "Which one?", choices: [{ id: "a", label: "A" }] },
+  ]);
+  expect(out).toContain("at least 2 choices");
+});
+
+test("ask_user refuses choices that share an id, which would make the answer ambiguous", async () => {
+  const out = await ask([
+    {
+      type: "multi_choice",
+      question: "Which?",
+      choices: [
+        { id: "a", label: "A" },
+        { id: "a", label: "Also A" },
+      ],
+    },
+  ]);
+  expect(out).toContain('share the id "a"');
+});
+
+test("a valid batch tells the model its turn ends at the question", async () => {
+  const out = await ask([
+    {
+      type: "single_choice",
+      question: "Which database?",
+      choices: [
+        { id: "pg", label: "PostgreSQL" },
+        { id: "sqlite", label: "SQLite" },
+      ],
+    },
+  ]);
+  expect(out).toContain("your turn ends here");
+  expect(out).toContain("their next message");
+});
+
+test("ask_user takes a ranking, which needs something to rank", async () => {
+  const ok = await ask([
+    {
+      type: "rank_priorities",
+      question: "What matters most?",
+      choices: [
+        { id: "speed", label: "Speed" },
+        { id: "cost", label: "Cost" },
+      ],
+    },
+  ]);
+  expect(ok).toContain("your turn ends here");
+  const bad = await ask([
+    { type: "rank_priorities", question: "Order these", choices: [{ id: "a", label: "A" }] },
+  ]);
+  expect(bad).toContain("at least 2 choices");
+});
